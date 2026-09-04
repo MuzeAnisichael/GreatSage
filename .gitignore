@@ -1,0 +1,29 @@
+# Credentials and personal runtime data
+.env
+.env.*
+!.env.example
+.runtime/
+data/
+recordings/
+logs/
+*.sqlite*
+*.db
+*.key
+*.pem
+settings.local.json
+# Build and dependencies
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+node_modules/
+dist/
+build/
+release/
+.coverage
+coverage/
+*.log
+.DS_Store
+Thumbs.db

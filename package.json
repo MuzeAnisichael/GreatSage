@@ -1,0 +1,22 @@
+{
+  "name": "greatsage",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "GreatSage · 大贤者 — real-time desktop voice secretary",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "check": "node --check desktop/main.cjs && node --check desktop/preload.cjs",
+    "package": "electron-builder --win dir"
+  },
+  "devDependencies": { "electron": "^40.0.0", "electron-builder": "^26.0.0" },
+  "build": {
+    "appId": "io.greatsage.desktop",
+    "productName": "GreatSage",
+    "files": ["desktop/**", "ui/**", "package.json"],
+    "extraResources": [{"from":"dist/greatsage-backend", "to":"backend", "filter":["**/*"]}],
+    "win": {"target": "dir"},
+    "directories": {"output": "release"}
+  }
+}
