@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>GreatSage · 大贤者</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#conversation" aria-label="GreatSage 首页">
+          <span class="brand-mark">✦</span>
+          <span><strong>GreatSage</strong><small>大贤者 · 桌面秘书</small></span>
+        </a>
+        <div class="workspace-label">你的个人工作空间</div>
+        <nav aria-label="主导航">
+          <button class="nav-item active" data-view="conversation"><span class="nav-icon">◈</span>对话与感知<span class="nav-shortcut">01</span></button>
+          <button class="nav-item" data-view="memory"><span class="nav-icon">▧</span>长期记忆<span class="nav-shortcut">02</span></button>
+          <button class="nav-item" data-view="skills"><span class="nav-icon">✧</span>技能库<span class="nav-shortcut">03</span></button>
+          <button class="nav-item" data-view="logs"><span class="nav-icon">≋</span>运行日志<span class="nav-shortcut">04</span></button>
+          <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span>设置<span class="nav-shortcut">05</span></button>
+        </nav>
+        <div class="sidebar-spacer"></div>
+        <div class="pet-preview" id="pet-preview">
+          <img src="sage.svg" alt="GreatSage 原创青绿色小精灵" />
+          <strong>在桌面上陪伴你</strong>
+          <p>轻触互动，让回应变得可见。</p>
+          <button class="button ghost full" id="show-pet">打开桌宠 <span>↗</span></button>
+        </div>
+        <div class="sidebar-footer"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">正在连接</span><span id="version">v0.1</span></div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <div class="breadcrumb">工作空间 <span>/</span> <strong id="page-breadcrumb">对话与感知</strong></div>
+          <div class="topbar-actions"><span class="quiet-label" id="session-label">本地会话</span><button class="button subtle small" id="new-session">＋ 新会话</button><button class="icon-button" id="minimize" title="最小化" aria-label="最小化窗口">−</button></div>
+        </header>
+        <div id="connection-banner" class="connection-banner" hidden role="alert"><span id="connection-error"></span><button class="button small ghost" id="reconnect">重新连接</button></div>
+        <section class="view active" id="view-conversation" aria-labelledby="conversation-heading">
+          <div class="page-heading"><div><div class="eyebrow">ALWAYS PRESENT, THOUGHTFULLY HELPFUL</div><h1 id="conversation-heading">你的大贤者，已就位<span class="accent">。</span></h1><p>聆听当下，记住重要的事。在需要的时候回应。</p></div><span class="status-pill" id="state-pill"><i></i><span>连接中</span></span></div>
+          <div class="stat-strip">
+            <div class="stat"><span>当前模式</span><strong id="mode-stat">—</strong><small id="mode-description">等待读取配置</small></div>
+            <div class="stat"><span>推理模型</span><strong id="model-stat">—</strong><small id="provider-stat">本地与云端自由组合</small></div>
+            <div class="stat"><span>首段响应</span><strong id="latency-stat">—<em> ms</em></strong><small>本次请求实际耗时</small></div>
+            <div class="stat"><span>语音输出</span><strong id="voice-stat">—</strong><small id="language-stat">等待读取配置</small></div>
+          </div>
+          <div class="conversation-layout">
+            <div class="panel conversation-panel">
+              <div class="panel-heading"><h2><span class="live-dot"></span>对话</h2><div class="panel-tools"><button class="button small subtle danger-hover" id="interrupt">■ 停止回应</button><span class="tag" id="message-count">0 条</span></div></div>
+              <div id="chat-messages" class="chat-messages" aria-live="polite" aria-relevant="additions text">
+                <div class="empty-state" id="chat-empty"><div class="empty-orbit"><img src="sage.svg" alt="" /></div><h3>今天，从哪件事开始？</h3><p>直接输入问题，或选择音源后开始聆听。<br />你的指令决定我何时回应。</p><div class="suggestions"><button data-prompt="你可以怎样协助我的日常工作？">了解你的能力 <span>↗</span></button><button data-prompt="请根据本次会话，帮我梳理重点。">帮我梳理重点 <span>↗</span></button></div></div>
+              </div>
+              <div id="audio-unlock" class="inline-warning" hidden><span>浏览器阻止了自动播报。</span><button class="button small ghost" id="resume-audio">点击播放</button></div>
+              <form id="chat-form" class="composer"><label class="sr-only" for="chat-input">向 GreatSage 提问</label><textarea id="chat-input" rows="2" placeholder="问我任何事，或告诉我需要关注什么…" maxlength="32000"></textarea><div class="composer-footer"><span><kbd>Enter</kbd> 发送 · <kbd>Shift Enter</kbd> 换行</span><button type="submit" class="send-button" id="send-message" title="发送消息" aria-label="发送消息">↑</button></div></form>
+            </div>
+            <aside class="context-column">
+              <div class="panel source-panel"><div class="panel-heading"><h2>实时感知</h2><span class="tag" id="capture-tag">未监听</span></div><div class="panel-body">
+                <label class="field"><span>行为预设</span><select id="quick-mode"><option value="conversation">对话伙伴 · 等你说完</option><option value="listen">旁听助手 · 提问时回应</option><option value="proactive">主动秘书 · 按指令介入</option></select></label>
+                <label class="switch-row"><span><strong>麦克风</strong><small>直接对秘书说话</small></span><input type="checkbox" role="switch" id="quick-microphone" /></label>
+                <label class="field compact"><span>输入设备</span><select id="quick-microphone-device"><option value="">系统默认设备</option></select></label>
+                <label class="field"><span>桌面音源</span><select id="quick-desktop-source"><option value="none">不监听桌面声音</option><option value="system">系统整体声音</option><option value="process">指定程序声音</option></select></label>
+                <label class="field compact" id="process-field" hidden><span>选择程序</span><select id="quick-process"><option value="">请选择程序</option></select></label>
+                <div class="source-note" id="source-note">音频来源分别标记，原始录音默认关闭。</div>
+                <button class="button primary full" id="toggle-listening"><span>▶</span> 开始聆听</button>
+                <button class="button subtle full small" id="refresh-sources">刷新音频设备与程序</button>
+              </div></div>
+              <div class="panel transcript-panel"><div class="panel-heading"><h2>实时转写</h2><span class="transcript-wave" id="transcript-wave"><i></i><i></i><i></i><i></i><i></i></span></div><div class="transcripts" id="transcripts"><div class="small-empty" id="transcript-empty">开启聆听后，识别到的语音会显示在这里。</div></div></div>
+              <div class="privacy-note"><span>◇</span><p>记忆与审计记录保存在本机。使用云端服务时，相应内容会发给你选择的服务商。</p></div>
+            </aside>
+          </div>
+        </section>
+        <section class="view" id="view-memory" aria-labelledby="memory-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">CONTEXT THAT STAYS WITH YOU</div><h1 id="memory-heading">长期记忆<span class="accent">。</span></h1><p>让重要的信息跨越会话，保留每一条记忆的来源。</p></div><button class="button ghost" id="refresh-memory">↻ 刷新</button></div>
+          <div class="info-card"><span>◈</span><div><strong>近期原文 → 分层摘要 → 长期记忆</strong><p>上下文压缩保留重要事实与来源。你可以随时添加偏好，或删除不再需要的信息。</p></div></div>
+          <div class="panel"><div class="panel-heading"><h2>记忆库 <span class="count-badge" id="memory-count">0</span></h2><input type="search" id="memory-search" class="search-input" placeholder="搜索记忆内容…" aria-label="搜索记忆内容" /></div><form class="memory-add" id="memory-form"><input id="memory-input" placeholder="记住：例如，我希望你默认使用简洁的中文回答。" maxlength="8000" aria-label="新增长期记忆" required /><button type="submit" class="button primary">＋ 添加记忆</button></form><div class="memory-list" id="memory-list"><div class="small-empty">正在读取记忆…</div></div></div>
+          <div class="panel history-panel"><div class="panel-heading"><h2>会话原文</h2><button class="button small subtle danger-hover" id="clear-history">清空历史与关联记忆</button></div><p class="panel-hint">删除原文时会同步处理关联记忆，避免已删除内容再次被检索。</p><div id="history-list" class="history-list"></div></div>
+        </section>
+        <section class="view" id="view-skills" aria-labelledby="skills-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">A LITTLE MORE CAPABLE, EVERY DAY</div><h1 id="skills-heading">技能库<span class="accent">。</span></h1><p>复用现成的 SKILL.md，让秘书掌握你的工作方式。</p></div><button class="button ghost" id="refresh-skills">↻ 刷新</button></div>
+          <div class="info-card"><span>✧</span><div><strong>按需加载，回答有据可查</strong><p>启用的技能可提供指令与参考资料；首版不执行技能附带的脚本。每次使用会记录在审计日志中。</p></div></div>
+          <form id="skill-form" class="panel skill-import"><label class="field"><span>导入本地技能目录</span><div class="input-row"><input id="skill-path" placeholder="例如 C:\Users\你\.codex\skills\my-skill" aria-label="技能目录路径" required /><button type="button" class="button ghost" id="choose-skill">选择文件夹</button><button type="submit" class="button primary">导入技能</button></div></label><p>选择包含 SKILL.md 的文件夹。导入后可独立启用或停用。</p></form>
+          <div class="skills-grid" id="skills-list"><div class="small-empty">正在读取技能…</div></div>
+        </section>
+        <section class="view" id="view-logs" aria-labelledby="logs-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">EVERY RESPONSE HAS A TRAIL</div><h1 id="logs-heading">运行日志<span class="accent">。</span></h1><p>从感知到回应，追踪事件、调用、耗时与错误。</p></div><button class="button ghost" id="export-logs">↓ 导出当前日志</button></div>
+          <div class="panel logs-panel"><div class="panel-heading log-controls"><div class="panel-tools"><h2><span class="live-dot"></span>事件流</h2><span class="tag" id="event-count">0 条</span></div><div class="panel-tools"><select id="log-kind" aria-label="筛选事件类型"><option value="all">全部事件</option><option value="error">错误</option><option value="transcript">语音转写</option><option value="response">模型回应</option><option value="metrics">性能指标</option><option value="memory">记忆</option><option value="skill">技能</option><option value="state">状态</option></select><input type="search" id="log-search" class="search-input" placeholder="内容或 trace ID…" aria-label="搜索日志" /><label class="check-label"><input type="checkbox" id="log-follow" checked />跟随最新</label></div></div><div class="logs-table-header"><span>时间</span><span>事件</span><span>内容 / 追踪</span></div><div class="events-list" id="events-list"><div class="small-empty">连接后将实时显示运行事件。</div></div></div>
+        </section>
+        <section class="view" id="view-settings" aria-labelledby="settings-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">MAKE IT YOUR OWN</div><h1 id="settings-heading">配置你的秘书<span class="accent">。</span></h1><p>识别、推理与合成独立配置，云端和本地可以混合使用。</p></div><button class="button primary" id="save-settings" form="settings-form" type="submit">保存设置</button></div>
+          <form id="settings-form" class="settings-grid">
+            <section class="panel settings-section wide"><div class="panel-heading"><h2>行为与输出</h2><span class="tag">全局规则</span></div><div class="panel-body form-grid"><label class="field"><span>默认行为预设</span><select name="mode"><option value="conversation">对话伙伴</option><option value="listen">旁听助手</option><option value="proactive">主动秘书</option></select></label><label class="field"><span>输出语言</span><select name="output_language"><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ja">日本語</option></select></label><label class="field full-span"><span>全局指令</span><textarea name="global_prompt" rows="5" placeholder="定义秘书的角色、关注内容，以及在什么情况下回应或保持安静。"></textarea><small>明确设置优先于全局指令，全局指令优先于技能。来源内容作为上下文处理。</small></label><label class="switch-row"><span><strong>允许主动回应</strong><small>按全局指令解释或提醒</small></span><input type="checkbox" role="switch" name="allow_proactive" /></label><label class="field"><span>主动回应最短间隔 / 秒</span><input type="number" name="cooldown_seconds" min="0" max="3600" step="1" /></label><label class="switch-row"><span><strong>语音播报</strong><small>与文字输出同步</small></span><input type="checkbox" role="switch" name="voice_enabled" /></label><label class="field"><span>语音语言</span><select name="voice_language"><option value="zh-CN">简体中文</option><option value="en">English</option><option value="ja">日本語</option></select></label></div></section>
+            <section class="panel settings-section"><div class="panel-heading"><h2><span class="step-number">01</span>语音识别</h2><button type="button" class="button small subtle test-provider" data-component="asr">测试连接 ↗</button></div><div class="panel-body provider-fields" data-provider="asr"><label class="field"><span>服务提供方</span><select name="asr.provider"><option value="openai">OpenAI 兼容 API</option><option value="openrouter">OpenRouter</option><option value="faster_whisper">本地 faster-whisper</option></select></label><label class="field"><span>API 地址</span><input name="asr.base_url" placeholder="https://api.openai.com/v1" type="url" /></label><label class="field"><span>模型</span><input name="asr.model" placeholder="whisper-1" /></label><label class="field"><span>API 密钥环境变量</span><input name="asr.api_key_env" placeholder="OPENAI_API_KEY" autocomplete="off" /></label><label class="field"><span>设置新的 API 密钥</span><input name="asr.api_key" type="password" placeholder="留空保留已配置的密钥" autocomplete="new-password" /></label><label class="field"><span>识别语言</span><input name="asr.language" placeholder="zh（留空自动检测）" /></label><div class="provider-result" id="test-asr" role="status"></div></div></section>
+            <section class="panel settings-section"><div class="panel-heading"><h2><span class="step-number">02</span>语言模型</h2><button type="button" class="button small subtle test-provider" data-component="llm">测试连接 ↗</button></div><div class="panel-body provider-fields" data-provider="llm"><label class="field"><span>服务提供方</span><select name="llm.provider"><option value="openrouter">OpenRouter</option><option value="ollama">本地 Ollama</option><option value="openai">OpenAI 兼容 API</option></select></label><label class="field"><span>API 地址</span><input name="llm.base_url" placeholder="https://openrouter.ai/api/v1" type="url" /></label><label class="field"><span>模型</span><input name="llm.model" placeholder="provider/model 或 qwen3:4b" /></label><label class="field"><span>API 密钥环境变量</span><input name="llm.api_key_env" placeholder="OPENROUTER_API_KEY" autocomplete="off" /></label><label class="field"><span>设置新的 API 密钥</span><input name="llm.api_key" type="password" placeholder="留空保留已配置的密钥" autocomplete="new-password" /></label><div class="form-grid"><label class="field"><span>上下文预算 / tokens</span><input name="llm.context_tokens" type="number" min="1024" max="2000000" step="1024" /></label><label class="field"><span>最大输出 / tokens</span><input name="llm.max_tokens" type="number" min="64" max="128000" step="64" /></label></div><div class="provider-result" id="test-llm" role="status"></div></div></section>
+            <section class="panel settings-section"><div class="panel-heading"><h2><span class="step-number">03</span>语音合成</h2><button type="button" class="button small subtle test-provider" data-component="tts">测试连接 ↗</button></div><div class="panel-body provider-fields" data-provider="tts"><label class="field"><span>服务提供方</span><select name="tts.provider"><option value="openai">OpenAI 兼容 API</option><option value="openrouter">OpenRouter</option><option value="system">本地系统语音</option></select></label><label class="field"><span>API 地址</span><input name="tts.base_url" placeholder="https://api.openai.com/v1" type="url" /></label><label class="field"><span>模型</span><input name="tts.model" placeholder="tts-1" /></label><label class="field"><span>音色</span><input name="tts.voice" placeholder="alloy 或系统音色名称" /></label><label class="field"><span>API 密钥环境变量</span><input name="tts.api_key_env" placeholder="OPENAI_API_KEY" autocomplete="off" /></label><label class="field"><span>设置新的 API 密钥</span><input name="tts.api_key" type="password" placeholder="留空保留已配置的密钥" autocomplete="new-password" /></label><div class="provider-result" id="test-tts" role="status"></div></div></section>
+            <section class="panel settings-section"><div class="panel-heading"><h2>保存与隐私</h2><span class="tag">本地存储</span></div><div class="panel-body"><label class="switch-row"><span><strong>保存原始录音</strong><small>关闭时仅保留短时音频缓冲</small></span><input type="checkbox" role="switch" name="record_audio" /></label><label class="field"><span>录音保留 / 天</span><input name="recording_retention_days" type="number" min="1" max="3650" step="1" /></label><label class="field"><span>详细日志保留 / 天</span><input name="log_retention_days" type="number" min="1" max="3650" step="1" /></label><div class="settings-note"><strong>你的配置，由你掌控。</strong><p>API 密钥保存于本机，不在界面中回显。文本历史与记忆持续保留，直到你手动删除。切换服务后请保存，再测试连接。</p></div><button type="button" class="button ghost full" id="hide-pet">收起桌宠</button></div></section>
+          </form>
+        </section>
+        <footer class="page-footer"><span>✦ GreatSage</span><span>感知 · 理解 · 记忆 · 回应</span></footer>
+      </main>
+    </div>
+    <div class="toast-stack" id="toasts" aria-live="polite"></div>
+    <dialog id="confirm-dialog"><form method="dialog"><span class="dialog-icon">!</span><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="dialog-actions"><button class="button ghost" value="cancel">取消</button><button class="button danger" value="confirm">确认删除</button></div></form></dialog>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

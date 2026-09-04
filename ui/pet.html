@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GreatSage · 桌宠</title>
+  <link rel="stylesheet" href="pet.css" />
+</head>
+<body>
+  <div class="pet-shell">
+    <div class="pet-toolbar"><span class="pet-handle" title="按住这里拖动桌宠">⠿ <span>GreatSage</span></span><div class="pet-tools"><button id="pet-console" aria-label="打开控制台" title="打开控制台">↗</button><button id="pet-through" aria-label="鼠标穿透 10 秒" title="鼠标穿透 10 秒后自动恢复">◇</button><button id="pet-hide" aria-label="收起桌宠" title="收起桌宠">×</button></div></div>
+    <div class="pet-bubble-wrap"><div class="pet-bubble" id="pet-bubble" aria-live="polite"><span class="bubble-eyebrow" id="bubble-eyebrow">GREAT SAGE</span><p id="pet-message">正在连接你的秘书…</p></div></div>
+    <button class="pet-character" id="pet-character" aria-label="摸摸 GreatSage" title="摸摸我"><div id="character-art"></div><span class="touch-ripple"></span><span class="floating-heart heart-one">♡</span><span class="floating-heart heart-two">♡</span></button>
+    <div class="pet-status"><span id="pet-dot"></span><span id="pet-state">连接中</span></div>
+  </div>
+  <script type="module" src="pet.js"></script>
+</body>
+</html>
