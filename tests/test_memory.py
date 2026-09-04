@@ -13,6 +13,21 @@ def store(tmp_path):
     memory.close()
 
 
+def test_citation_lookup_reaches_old_originals_and_resolves_summary_sources(store):
+    session = store.new_session()
+    source = store.add_message("user", "最早的可审计原文", session_id=session)
+    summary = store.save_summary("摘要中的可追溯事实", [source["id"]])
+    memory = store.add_memory("显式长期偏好", [source["id"]])
+    for index in range(105):
+        store.add_message("user", f"无关历史 {index}", session_id=session)
+    assert source["id"] not in {record["id"] for record in store.history()}
+    for record_id in (source["id"], summary["id"], memory["id"]):
+        assert store.search(f"[来源:{record_id}]")[0]["id"] == source["id"]
+    store.delete_message(source["id"])
+    assert not store.search(summary["id"])
+    assert not store.search(memory["id"])
+
+
 def test_restart_preserves_sessions_explicit_memories_and_source_identity(tmp_path):
     first = MemoryStore(tmp_path)
     session = first.new_session()

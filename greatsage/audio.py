@@ -15,9 +15,76 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from . import winloopback
+
+
+class _PortAudioHost:
+    """Process-wide, single-threaded owner of PortAudio and its streams.
+
+    PortAudio initialization/termination must not race across PyAudio instances.
+    Leases keep one shared instance alive while capture is running. All native
+    calls also use the owner thread, including WASAPI COM setup and teardown.
+    Waiting for samples and user callbacks happens outside this thread.
+    """
+
+    def __init__(self) -> None:
+        self._start_lock = threading.Lock()
+        self._requests: queue.Queue = queue.Queue()
+        self._worker: threading.Thread | None = None
+        self._audio = None
+        self._leases = 0
+
+    def _invoke(self, operation):
+        future = Future()
+        with self._start_lock:
+            if self._worker is None:
+                self._worker = threading.Thread(
+                    target=self._serve, name="greatsage-portaudio", daemon=True)
+                self._worker.start()
+            self._requests.put((operation, future))
+        return future.result()
+
+    def _serve(self) -> None:
+        while (request := self._requests.get()) is not None:
+            operation, future = request
+            try:
+                future.set_result(operation())
+            except BaseException as exc:
+                future.set_exception(exc)
+
+    def _acquire(self) -> None:
+        if self._audio is None:
+            import pyaudiowpatch as pa
+
+            self._audio = pa.PyAudio()
+        self._leases += 1
+
+    def _release(self) -> None:
+        self._leases -= 1
+        if self._leases == 0:
+            try:
+                self._audio.terminate()
+            finally:
+                self._audio = None
+
+    @contextmanager
+    def lease(self):
+        self._invoke(self._acquire)
+        try:
+            yield self
+        finally:
+            self._invoke(self._release)
+
+    def call(self, operation):
+        return self._invoke(lambda: operation(self._audio))
+
+
+# Shared by every manager and HTTP request; an instance lock is insufficient.
+_PORTAUDIO = _PortAudioHost()
 
 
 @dataclass(frozen=True)
@@ -88,7 +155,7 @@ class AudioCaptureManager:
         try:
             import pyaudiowpatch as pa
 
-            with pa.PyAudio() as audio:
+            def enumerate_devices(audio):
                 wasapi = audio.get_host_api_info_by_type(pa.paWASAPI)
                 for info in audio.get_device_info_generator():
                     if (info["hostApi"] == wasapi["index"]
@@ -106,6 +173,9 @@ class AudioCaptureManager:
                         result["system_available"] = True
                     except OSError:
                         pass
+
+            with _PORTAUDIO.lease() as host:
+                host.call(enumerate_devices)
         except Exception as exc:
             result["errors"].append(f"Could not list audio devices: {exc}")
         return result
@@ -236,14 +306,14 @@ class AudioCaptureManager:
     def _capture_device(device_id, loopback, stop, emit, report) -> None:
         import pyaudiowpatch as pa
 
-        with pa.PyAudio() as audio:
+        def open_device(audio):
             if loopback:
                 info = audio.get_default_wasapi_loopback()
             elif device_id is None or device_id == "":
-                host = audio.get_host_api_info_by_type(pa.paWASAPI)
-                if host["defaultInputDevice"] < 0:
+                host_info = audio.get_host_api_info_by_type(pa.paWASAPI)
+                if host_info["defaultInputDevice"] < 0:
                     raise OSError("No default WASAPI microphone is available")
-                info = audio.get_device_info_by_index(host["defaultInputDevice"])
+                info = audio.get_device_info_by_index(host_info["defaultInputDevice"])
             else:
                 info = audio.get_device_info_by_index(int(device_id))
             if not loopback and info.get("isLoopbackDevice", False):
@@ -260,30 +330,43 @@ class AudioCaptureManager:
                 input=True, input_device_index=int(info["index"]),
                 frames_per_buffer=block_frames,
             )
+            return stream, converter, source, block_frames
+
+        with _PORTAUDIO.lease() as host:
+            stream, converter, source, block_frames = host.call(open_device)
+
+            def read_available(audio):
+                ready = stream.get_read_available()
+                if ready < block_frames:
+                    if not stream.is_active():
+                        raise OSError("Audio device stream stopped unexpectedly")
+                    return None
+                return stream.read(min(ready, block_frames * 5), exception_on_overflow=True)
+
+            def close_stream(audio):
+                try:
+                    stream.stop_stream()
+                finally:
+                    stream.close()
+
             try:
                 while not stop.is_set():
                     # Poll availability so stopping never waits for a full read
                     # on a silent/unplugged device. Native errors are reported.
-                    ready = stream.get_read_available()
-                    if ready < block_frames:
-                        if not stream.is_active():
-                            raise OSError("Audio device stream stopped unexpectedly")
-                        stop.wait(0.005)
-                        continue
                     try:
-                        pcm = stream.read(min(ready, block_frames * 5), exception_on_overflow=True)
+                        pcm = host.call(read_available)
                     except OSError as exc:
                         if getattr(exc, "errno", None) == pa.paInputOverflowed or (
                                 exc.args and exc.args[0] == pa.paInputOverflowed):
                             report(f"{source}: microphone input overflow; an audio gap occurred")
                             continue
                         raise
+                    if pcm is None:
+                        stop.wait(0.005)
+                        continue
                     emit(source, converter.convert(pcm))
             finally:
-                try:
-                    stream.stop_stream()
-                finally:
-                    stream.close()
+                host.call(close_stream)
 
     def stop(self) -> None:
         """Signal immediately, then release worker-owned devices (normally <100ms).

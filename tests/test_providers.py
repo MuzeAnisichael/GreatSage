@@ -239,7 +239,7 @@ async def test_network_error_does_not_echo_request_url_or_key():
     provider = service(handler)
     with pytest.raises(ProviderError) as error:
         await provider.transcribe({"provider": "openai", "model": "whisper"}, b"\0\0" * 16)
-    assert str(error.value) == "openai: network_error"
+    assert str(error.value) == "openai: connection_failed"
     await provider._client.aclose()
 
 

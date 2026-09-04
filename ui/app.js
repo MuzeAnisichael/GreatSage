@@ -3,12 +3,17 @@ import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } f
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
 const client = new SageClient();
-const state = { settings: null, status: {}, history: [], memories: [], skills: [], events: [], seenEvents: new Set(), streams: new Map(), sources: {}, listening: false, connected: false, initialized: false, resyncing: false, streamGap: false, pendingEvents: [] };
+const state = { settings: null, status: {}, history: [], memories: [], summaries: [], skills: [], events: [], seenEvents: new Set(), streams: new Map(), sources: {}, listening: false, connected: false, initialized: false, resyncing: false, streamGap: false, pendingEvents: [] };
 const modeLabels = { conversation: '对话伙伴', listen: '旁听助手', proactive: '主动秘书' };
 const modeDescriptions = { conversation: '听你说完，再作回应', listen: '持续旁听，提问时回应', proactive: '根据指令主动解释与提醒' };
 const languageLabels = { 'zh-CN': '简体中文', zh: '中文', en: 'English', 'en-US': 'English', ja: '日本語' };
 let memoryRefreshTimer;
 let eventRenderTimer;
+let sourcesRefresh = null;
+let refreshChatWithMemory = false;
+let historySearchTimer;
+let historySearchEpoch = 0;
+let historySearchResults = null;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -132,6 +137,9 @@ function setupProviderExtras() {
   const note = element('p', 'source-note', '先保存本地识别配置，再手动准备模型。首次准备可能下载模型文件；开启监听不会自动下载。');
   localAsr.append(prepare, note);
   $('#test-asr').before(localAsr);
+  const localLlmNote = element('p', 'source-note', '本机可优先尝试 gemma3:4b，模型名称仍可编辑。首次加载可能较慢，实际延迟会记录在日志中。');
+  localLlmNote.id = 'local-llm-note';
+  $('#test-llm').before(localLlmNote);
   prepare.addEventListener('click', () => busy(prepare, async () => {
     const output = $('#test-asr');
     output.className = 'provider-result';
@@ -150,7 +158,29 @@ function setupProviderExtras() {
   select.addEventListener('change', () => { $('[name="tts.voice"]').value = select.value; renderVoiceOptions(); });
   refresh.addEventListener('click', () => busy(refresh, refreshVoiceList));
   for (const component of ['asr', 'tts']) $(`[name="${component}.provider"]`).addEventListener('change', () => {
+    const provider = $(`[name="${component}.provider"]`).value;
+    if (provider === state.settings?.[component]?.provider) {
+      for (const name of ['base_url', 'model', 'api_key_env', ...(component === 'tts' ? ['voice'] : [])]) $(`[name="${component}.${name}"]`).value = state.settings[component][name] || '';
+    } else if (component === 'asr' && provider !== 'faster_whisper') {
+      $('[name="asr.base_url"]').value = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
+      $('[name="asr.model"]').value = provider === 'openrouter' ? 'openai/whisper-large-v3-turbo' : 'whisper-1';
+      $('[name="asr.api_key_env"]').value = provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY';
+    } else if (component === 'tts' && provider !== 'system') {
+      $('[name="tts.base_url"]').value = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
+      $('[name="tts.model"]').value = provider === 'openrouter' ? 'qwen/qwen-audio-3.0-tts-flash' : 'tts-1';
+      $('[name="tts.voice"]').value = provider === 'openrouter' ? 'loongjohn' : 'alloy';
+      $('[name="tts.api_key_env"]').value = provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY';
+    }
+    $(`[name="${component}.api_key"]`).value = '';
+    if (component === 'asr' && $('[name="asr.provider"]').value === 'faster_whisper' && state.settings?.asr?.provider !== 'faster_whisper') { $('[name="asr.model"]').value = 'small'; $('[name="asr.base_url"]').value = ''; }
     if (component === 'tts' && $('[name="tts.provider"]').value === 'system' && state.settings?.tts?.provider !== 'system') $('[name="tts.voice"]').value = '';
+    refreshProviderControls();
+  });
+  $('[name="llm.provider"]').addEventListener('change', () => {
+    const provider = $('[name="llm.provider"]').value;
+    const defaults = provider === state.settings?.llm?.provider ? state.settings.llm : ({ ollama: { base_url: 'http://127.0.0.1:11434', model: 'gemma3:4b', api_key_env: '' }, openrouter: { base_url: 'https://openrouter.ai/api/v1', model: 'google/gemini-2.5-flash-lite', api_key_env: 'OPENROUTER_API_KEY' }, openai: { base_url: 'https://api.openai.com/v1', model: '', api_key_env: 'OPENAI_API_KEY' } })[provider];
+    for (const name of ['base_url', 'model', 'api_key_env']) $(`[name="llm.${name}"]`).value = defaults?.[name] || '';
+    $('[name="llm.api_key"]').value = '';
     refreshProviderControls();
   });
   $('[name="voice_language"]').addEventListener('change', renderVoiceOptions);
@@ -159,6 +189,7 @@ function setupProviderExtras() {
 function refreshProviderControls() {
   const localAsr = $('[name="asr.provider"]').value === 'faster_whisper';
   $('#local-asr-tools').hidden = !localAsr;
+  $('#local-llm-note').hidden = $('[name="llm.provider"]').value !== 'ollama';
   for (const name of ['base_url', 'api_key_env', 'api_key']) $(`[name="asr.${name}"]`).closest('label').hidden = localAsr;
   const system = $('[name="tts.provider"]').value === 'system';
   $('#system-voice-tools').hidden = !system;
@@ -204,7 +235,16 @@ async function saveQuickSettings() {
   updateQuickSettings();
 }
 
-async function refreshSources() {
+function refreshSources() {
+  if (sourcesRefresh) return sourcesRefresh;
+  const button = $('#refresh-sources');
+  const wasDisabled = button.disabled;
+  button.disabled = true;
+  sourcesRefresh = loadSources().finally(() => { sourcesRefresh = null; button.disabled = wasDisabled; });
+  return sourcesRefresh;
+}
+
+async function loadSources() {
   state.sources = await client.request('/api/audio/sources');
   const microphone = $('#quick-microphone-device');
   const process = $('#quick-process');
@@ -230,6 +270,7 @@ function messageNode(message) {
   $('#chat-empty')?.remove();
   const node = element('article', `chat-message ${message.role === 'user' ? 'user' : 'assistant'}`);
   node.dataset.id = message.id || '';
+  node.dataset.trace = message.trace_id || '';
   const avatar = element('div', 'chat-avatar', message.role === 'user' ? '你' : '✦');
   const body = element('div', 'chat-message-body');
   const meta = element('div', 'chat-meta');
@@ -253,17 +294,22 @@ function attachTrace(node, trace) {
 
 function findMessage(id) { return $$('.chat-message').find(node => node.dataset.id === String(id)); }
 
-function renderChat() {
+function renderChat({ preserveStreams = false } = {}) {
   const history = state.history.filter(message => !state.status.session_id || !message.session_id || message.session_id === state.status.session_id);
-  if (!history.length) {
+  const activeTraces = new Set(state.streams.keys());
+  const current = preserveStreams ? $$('.chat-message').filter(node => node.dataset.trace && activeTraces.has(node.dataset.trace)) : [];
+  if (!history.length && !current.length) {
     if ($$('.chat-message').length) {
-      $('#chat-messages').replaceChildren(element('div', 'small-empty', '新会话已开始。输入问题，或开始聆听。'));
+      $('#chat-messages').replaceChildren(element('div', 'small-empty', '暂无当前会话内容。输入问题，或开始聆听。'));
       $('#message-count').textContent = '0 条';
     }
     return;
   }
   $('#chat-messages').replaceChildren();
   for (const message of history) if (message.role === 'user' || message.role === 'assistant') messageNode(message);
+  const historyIds = new Set(history.map(message => String(message.id)));
+  for (const node of current) if (!node.dataset.id || !historyIds.has(node.dataset.id)) $('#chat-messages').append(node);
+  $('#message-count').textContent = `${$$('.chat-message').length} 条`;
   chatScroll(true);
 }
 
@@ -346,7 +392,7 @@ function onEvent(event) {
       if (latency !== undefined) $('#latency-stat').replaceChildren(document.createTextNode(Number(latency).toFixed(0)), element('em', '', ' ms'));
       break;
     }
-    case 'memory_updated': scheduleMemoryRefresh(); break;
+    case 'memory_updated': scheduleMemoryRefresh(Boolean(data.deleted_id || data.cleared || ['revise', 'delete', 'clear'].includes(data.action))); break;
     case 'skills_updated': refreshSkills().catch(error => toast(error.message, 'error')); break;
   }
 }
@@ -410,19 +456,30 @@ function renderEvents() {
   list.scrollTop = $('#log-follow').checked ? list.scrollHeight : previousTop;
 }
 
-function scheduleMemoryRefresh() { clearTimeout(memoryRefreshTimer); memoryRefreshTimer = setTimeout(() => refreshMemory().catch(() => {}), 600); }
+function scheduleMemoryRefresh(refreshChat = false) {
+  refreshChatWithMemory ||= refreshChat;
+  clearTimeout(memoryRefreshTimer);
+  memoryRefreshTimer = setTimeout(() => {
+    const updateChat = refreshChatWithMemory;
+    refreshChatWithMemory = false;
+    refreshMemory({ refreshChat: updateChat }).catch(error => toast(error.message, 'error'));
+  }, 600);
+}
 
-async function refreshMemory() {
-  const [memories, history] = await Promise.all([client.request('/api/memories'), client.request('/api/history')]);
+async function refreshMemory({ refreshChat = false } = {}) {
+  const [memories, history, summaries] = await Promise.all([client.request('/api/memories'), client.request('/api/history'), client.request('/api/summaries')]);
   state.memories = Array.isArray(memories) ? memories : memories.memories || [];
   state.history = Array.isArray(history) ? history : history.messages || history.history || [];
+  state.summaries = Array.isArray(summaries) ? summaries : summaries.summaries || [];
   renderMemories(); renderHistory();
+  if (refreshChat) renderChat({ preserveStreams: true });
+  if ($('#history-search')?.value.trim()) scheduleHistorySearch();
 }
 
 function renderMemories() {
   const query = $('#memory-search').value.toLowerCase();
-  const memories = state.memories.filter(item => JSON.stringify(item).toLowerCase().includes(query));
-  $('#memory-count').textContent = state.memories.length;
+  const memories = [...state.memories, ...state.summaries.map(item => ({ ...item, read_only_summary: true }))].filter(item => JSON.stringify(item).toLowerCase().includes(query));
+  $('#memory-count').textContent = state.memories.length + state.summaries.length;
   const list = $('#memory-list');
   list.replaceChildren();
   if (!memories.length) list.append(element('div', 'small-empty', query ? '没有匹配的记忆。' : '这里会保存偏好、重要事实与上下文摘要。你也可以添加第一条记忆。'));
@@ -431,18 +488,32 @@ function renderMemories() {
     const body = element('div', 'memory-content');
     body.append(element('p', 'memory-text', memory.text || memory.content || memory.summary));
     const meta = element('div', 'memory-meta');
-    const type = memory.kind || memory.type || 'memory';
+    const type = memory.read_only_summary ? 'summary' : memory.kind || memory.type || 'memory';
     meta.append(element('span', 'tag', ({ summary: '摘要', preference: '偏好', fact: '事实', manual: '手动添加', memory: '长期记忆' })[type] || type), element('time', '', timeLabel(memory.updated_at || memory.created_at, true)));
     const sources = memory.source_ids || memory.sources || memory.source_message_ids;
-    if (sources?.length) meta.append(element('span', '', `来源：${sources.map(source => typeof source === 'object' ? source.id || source.message_id : source).join(', ')}`));
+    if (sources?.length) {
+      for (const source of sources) {
+        const id = typeof source === 'object' ? source.id || source.message_id : source;
+        if (!id) continue;
+        const link = element('button', 'source-link', `来源 ${String(id).slice(0, 8)} ↗`);
+        link.type = 'button'; link.title = String(id); link.dataset.sourceId = id;
+        link.addEventListener('click', () => { $('#history-search').value = id; scheduleHistorySearch(); $('.history-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+        meta.append(link);
+      }
+    }
     else if (memory.source) meta.append(element('span', '', sourceLabel(memory.source)));
     body.append(meta);
+    if (memory.read_only_summary) {
+      row.classList.add('summary-card');
+      body.append(element('small', 'summary-note', `只读摘要 · ${memory.model || '上下文压缩'} · 原文修正或删除后自动失效`));
+      row.append(element('span', 'memory-icon', '▧'), body); list.append(row); continue;
+    }
     const remove = element('button', 'delete-button', '删除');
     remove.type = 'button';
     remove.addEventListener('click', () => busy(remove, async () => {
       if (!await confirmAction('删除这条记忆？', '此记忆将不再参与后续检索。需要同时移除来源时，请在下方会话原文中删除对应记录。')) return;
       await client.request(`/api/memories/${encodeURIComponent(memory.id)}`, { method: 'DELETE' });
-      await refreshMemory();
+      await refreshMemory({ refreshChat: true });
       toast('记忆已删除。');
     }));
     const revise = element('button', 'delete-button', '修正'); revise.type = 'button';
@@ -450,7 +521,7 @@ function renderMemories() {
       const text = await editText('修正这条记忆', memory.text || memory.content || memory.summary);
       if (text === null) return;
       await client.request(`/api/memories/${encodeURIComponent(memory.id)}`, { method: 'PUT', body: { text } });
-      await refreshMemory(); toast('记忆已修正，旧版本不再用于检索。');
+      await refreshMemory({ refreshChat: true }); toast('记忆已修正，旧版本不再用于检索。');
     }));
     const actions = element('div', 'record-actions'); actions.append(revise, remove);
     row.append(element('span', 'memory-icon', '◈'), body, actions);
@@ -460,8 +531,8 @@ function renderMemories() {
 
 function renderHistory() {
   const list = $('#history-list'); list.replaceChildren();
-  const history = state.history.slice(-150).reverse();
-  if (!history.length) list.append(element('div', 'small-empty', '暂无会话原文。'));
+  const history = historySearchResults === null ? state.history.slice(-150).reverse() : historySearchResults;
+  if (!history.length) list.append(element('div', 'small-empty', historySearchResults === null ? '暂无会话原文。' : '没有找到匹配的跨会话原文。'));
   for (const message of history) {
     const row = element('article', 'history-row');
     const body = element('div');
@@ -471,9 +542,7 @@ function renderHistory() {
     remove.addEventListener('click', () => busy(remove, async () => {
       if (!await confirmAction('删除这条原文？', '此原文及其关联记忆将按后端规则同步移除。此操作不可撤销。')) return;
       await client.request(`/api/history/${encodeURIComponent(message.id)}`, { method: 'DELETE' });
-      await refreshMemory();
-      findMessage(message.id)?.remove();
-      $('#message-count').textContent = `${$$('.chat-message').length} 条`;
+      await refreshMemory({ refreshChat: true });
       toast('原文已删除。');
     }));
     const revise = element('button', 'delete-button', '修正'); revise.type = 'button';
@@ -481,11 +550,39 @@ function renderHistory() {
       const text = await editText('修正会话原文', message.text || message.content);
       if (text === null) return;
       await client.request(`/api/history/${encodeURIComponent(message.id)}`, { method: 'PUT', body: { text } });
-      await refreshMemory(); renderChat(); toast('原文已修正，关联记忆已同步处理。');
+      await refreshMemory({ refreshChat: true }); toast('原文已修正，关联记忆已同步处理。');
     }));
     const actions = element('div', 'record-actions'); actions.append(revise, remove);
     row.append(body, actions); list.append(row);
   }
+}
+
+function setupHistorySearch() {
+  const search = element('input', 'search-input'); search.id = 'history-search'; search.type = 'search'; search.maxLength = 2000;
+  search.placeholder = '检索全部会话原文…'; search.setAttribute('aria-label', '检索全部会话原文');
+  $('#clear-history').before(search);
+  search.addEventListener('input', scheduleHistorySearch);
+}
+
+function scheduleHistorySearch() {
+  clearTimeout(historySearchTimer);
+  const epoch = ++historySearchEpoch;
+  const query = $('#history-search').value.trim();
+  if (!query) { historySearchResults = null; renderHistory(); return; }
+  historySearchResults = [];
+  $('#history-list').replaceChildren(element('div', 'small-empty', '正在检索全部会话原文…'));
+  historySearchTimer = setTimeout(async () => {
+    try {
+      const result = await client.request(`/api/memory/search?q=${encodeURIComponent(query)}`);
+      if (epoch !== historySearchEpoch) return;
+      historySearchResults = Array.isArray(result) ? result : result.messages || result.results || [];
+      renderHistory();
+    } catch (error) {
+      if (epoch !== historySearchEpoch) return;
+      $('#history-list').replaceChildren(element('div', 'small-empty', '历史检索失败，请稍后重试。'));
+      toast(error.message, 'error');
+    }
+  }, 250);
 }
 
 async function refreshSkills() {
@@ -691,6 +788,7 @@ $('#minimize').hidden = !window.greatsage?.minimize;
 $('#minimize').addEventListener('click', () => window.greatsage?.minimize());
 $('#reconnect').addEventListener('click', () => busy($('#reconnect'), async () => { client.connect(); await loadInitial(); }));
 setupProviderExtras();
+setupHistorySearch();
 
 client.addEventListener('connection', event => {
   showConnection(event.detail.state, event.detail.message);

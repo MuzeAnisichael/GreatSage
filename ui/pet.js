@@ -76,6 +76,12 @@ client.addEventListener('event', event => {
   const data = item.data || {};
   switch (item.kind) {
     case 'state': setState(data.state); break;
+    case 'memory_updated':
+      if (data.deleted_id || data.cleared || ['revise', 'delete', 'clear'].includes(data.action)) {
+        currentText = ''; currentTrace = null; lastText = '记录已更新。我在这里，随时听你说。';
+        setMessage(lastText, '记忆已更新');
+      }
+      break;
     case 'stream_reset': streamGap = true; currentText = ''; currentTrace = null; setMessage('实时内容正在重新同步…', '连接提示'); client.request('/api/status').then(status => setState(status.state)).catch(() => {}); break;
     case 'response_start': streamGap = false; currentTrace = item.trace_id; currentText = ''; setState('thinking'); setMessage('让我想一想…', '正在思考'); break;
     case 'response_delta':

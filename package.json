@@ -2,6 +2,8 @@
   "name": "greatsage",
   "version": "0.1.0-alpha.1",
   "private": true,
+  "author": "GreatSage contributors",
+  "license": "MIT",
   "description": "GreatSage · 大贤者 — real-time desktop voice secretary",
   "main": "desktop/main.cjs",
   "scripts": {

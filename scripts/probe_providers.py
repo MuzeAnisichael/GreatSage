@@ -10,7 +10,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from greatsage.echo import decode_reference
-from greatsage.providers import ProviderError, Providers
+from greatsage.providers import ProviderError, Providers, _desktop_http_client
 from greatsage.settings import SettingsStore
 
 FIXTURE_TEXT = "大贤者已经准备好了。今天是语音功能测试。"
@@ -61,12 +61,13 @@ async def run(args):
     try:
         if args.catalog:
             config = store.provider("llm")
-            async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
+            async with _desktop_http_client() as client:
                 for modality in ("transcription", "speech"):
                     async def catalog(modality=modality):
                         response = await client.get(config["base_url"].rstrip("/") + "/models",
                                                     params={"output_modalities": modality},
-                                                    headers={"Authorization": "Bearer " + config["api_key"]})
+                                                    headers={"Authorization": "Bearer " + config["api_key"]},
+                                                    timeout=60)
                         response.raise_for_status()
                         models = response.json()["data"]
                         return {"models": [{"id": model["id"],
@@ -127,13 +128,22 @@ async def run(args):
                 record({"kind": "asr", "status": "skipped", "provider": config["provider"],
                         "model": config["model"], "reason": "synthetic_fixture_unavailable"})
             else:
-                async def transcribe():
-                    if args.local_speech:
-                        await provider.warmup(config)
-                    result = await provider.transcribe(config, speech, 16000)
-                    return {"text": result["text"], "expected_text": FIXTURE_TEXT,
-                            "fixture_source": fixture_source, "usage": result.get("usage", {})}
-                await stage("asr", {"provider": config["provider"], "model": config["model"]}, transcribe)
+                cases = [("final", config, speech)]
+                if getattr(args, "compare_asr", False):
+                    if config["provider"] != "openrouter":
+                        raise ValueError("This bounded ASR comparison requires OpenRouter")
+                    cases = [(phase, {**config, "model": model}, sample)
+                             for model in ("openai/whisper-1", "openai/whisper-large-v3-turbo")
+                             for phase, sample in (("snapshot", speech[:2 * 32000]), ("final", speech))]
+                for phase, case_config, sample in cases:
+                    async def transcribe(config=case_config, sample=sample, phase=phase):
+                        if args.local_speech:
+                            await provider.warmup(config)
+                        result = await provider.transcribe(config, sample, 16000)
+                        return {"text": result["text"], "expected_text": FIXTURE_TEXT if phase == "final" else None,
+                                "fixture_source": fixture_source, "usage": result.get("usage", {})}
+                    await stage("asr", {"provider": case_config["provider"], "model": case_config["model"],
+                                        "phase": phase, "audio_seconds": len(sample) / 32000}, transcribe)
     finally:
         try:
             await provider.close()
@@ -155,6 +165,8 @@ if __name__ == "__main__":
     parser.add_argument("--whisper-model", default="base")
     parser.add_argument("--tts-model")
     parser.add_argument("--asr-model")
+    parser.add_argument("--compare-asr", action="store_true",
+                        help="One bounded round: whisper-1 and large-v3-turbo, 2s snapshot plus full fixture")
     parser.add_argument("--voice")
     parser.add_argument("--components", default="llm,tts,asr", help="Comma-separated subset: llm,tts,asr")
     parser.add_argument("--output")

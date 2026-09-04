@@ -12,6 +12,7 @@ import io
 import json
 import locale
 import math
+import os
 import re
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import getproxies
 
 import httpx
 
@@ -148,10 +150,46 @@ def _json(value: str | bytes, provider: str) -> dict:
     return result
 
 
+def _desktop_http_client() -> httpx.AsyncClient:
+    """Honor an existing Windows proxy when no proxy environment is configured.
+
+    HTTPX reads environment proxies but does not read Windows Internet Settings.
+    Loopback model servers stay direct. Certificate verification remains enabled.
+    """
+    mounts = {}
+    if sys.platform == "win32" and not any(os.getenv(name) for name in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")):
+        configured = getproxies()
+        for scheme in ("http", "https"):
+            if configured.get(scheme):
+                mounts[f"{scheme}://"] = httpx.AsyncHTTPTransport(proxy=configured[scheme])
+        for host in ("localhost", "127.0.0.1", "[::1]"):
+            mounts[f"all://{host}"] = None
+    return httpx.AsyncClient(follow_redirects=False, mounts=mounts)
+
+
+def _network_code(exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.ConnectError):
+        # Classify locally, but never return arbitrary exception text.
+        detail = str(exc).lower()
+        if "certificate_verify_failed" in detail:
+            return "tls_certificate_verification_failed"
+        if "10061" in detail or "refused" in detail:
+            return "connection_refused"
+        if "getaddrinfo" in detail or "name resolution" in detail:
+            return "dns_resolution_failed"
+        return "connection_failed"
+    if isinstance(exc, httpx.ProxyError):
+        return "proxy_connection_failed"
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return "remote_protocol_error"
+    return "network_error"
+
+
 class Providers:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(follow_redirects=False)
+        self._client = client or _desktop_http_client()
         self._local_executor: ThreadPoolExecutor | None = None
         self._models: dict[tuple, object] = {}
         self._closed = False
@@ -292,8 +330,8 @@ class Providers:
                         raise ProviderError(provider, "stream_ended_before_completion")
         except (TimeoutError, httpx.TimeoutException):
             raise ProviderError(provider, "timeout") from None
-        except httpx.HTTPError:
-            raise ProviderError(provider, "network_error") from None
+        except httpx.HTTPError as exc:
+            raise ProviderError(provider, _network_code(exc)) from None
 
     async def transcribe(self, config: dict, pcm: bytes, sample_rate: int = 16000) -> dict:
         provider = _provider(config)
@@ -336,8 +374,8 @@ class Providers:
                 return {"text": data["text"].strip(), "usage": usage}
         except (TimeoutError, httpx.TimeoutException):
             raise ProviderError(provider, "timeout") from None
-        except httpx.HTTPError:
-            raise ProviderError(provider, "network_error") from None
+        except httpx.HTTPError as exc:
+            raise ProviderError(provider, _network_code(exc)) from None
 
     async def synthesize(self, config: dict, text: str, language: str = "zh-CN") -> dict:
         provider = _provider(config)
@@ -399,8 +437,8 @@ class Providers:
             return {"audio": bytes(audio), "mime": _MIME[fmt], "usage": usage}
         except (TimeoutError, httpx.TimeoutException):
             raise ProviderError(provider, "timeout") from None
-        except httpx.HTTPError:
-            raise ProviderError(provider, "network_error") from None
+        except httpx.HTTPError as exc:
+            raise ProviderError(provider, _network_code(exc)) from None
 
     async def _local_call(self, function, *args, timeout: float):
         if self._closed:

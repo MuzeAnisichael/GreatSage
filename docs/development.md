@@ -88,6 +88,8 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 语音文件生成时间不能代替实际播放时间；前端占位状态不能算首段有效回答。记录冷／热启动、样本、网络和失败情况，对未达到的性能目标如实报告。
 
+可用 `scripts/benchmark_pipeline.py --tts-provider system --dry-run` 检查合成管线配置，再在授权服务范围内去掉 `--dry-run` 进行真实调用。脚本用固定系统合成语音和独立运行目录，输出断句、ASR、首文及音频 ready 指标，不打开真实音源或播放扬声器。复现方法、原始样本差异及实测限制见[性能基线](performance-baseline.md)。
+
 ## 5. 贡献流程
 
 1. 阅读仓库 AGENTS.md、[需求](requirements.md)和相关架构文档，确认变更属于当前版本范围。
@@ -110,7 +112,15 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二者一致，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。当前打包配置仍需独立后端产物与完整安装验证，不能只因构建文件存在就宣布支持独立安装。
+Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二者一致，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。已用 PyInstaller 和 Electron Builder 生成本机目录包；构建流程见 README，实际验证见 [validation.md](validation.md)。目录包不等于跨电脑验证过的安装器。
+
+可重复的桌面 smoke test 使用独立运行目录：
+
+```powershell
+.\node_modules\electron\dist\electron.exe scripts/smoke_desktop.cjs --parallel-sources
+```
+
+默认只操作本地合成数据和界面，不录音、不调用模型。加 `--live` 才会发送固定的合成模型请求，并用静音播放验证系统语音链路。报告和截图保存在 `.runtime/desktop-smoke/`。`GREATSAGE_DATA_DIR` 可隔离测试与日常数据。
 
 | 文档 | 更新时机 |
 | --- | --- |

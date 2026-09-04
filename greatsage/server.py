@@ -183,7 +183,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def revise_memory(record_id: str, body: dict):
         await runtime.before_delete()
         result = runtime.memory.revise_memory(record_id, str(body.get("text", "")))
-        await runtime.emit("memory_updated", {"id": result["id"]})
+        await runtime.emit("memory_updated", {"id": result["id"], "action": "revise"})
         return result
 
     @app.delete("/api/memories/{record_id}", dependencies=api)
@@ -199,7 +199,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         result = runtime.memory.revise_message(record_id, str(body.get("text", "")))
         if len(record_id) == 32 and all(c in "0123456789abcdef" for c in record_id):
             (runtime.data_dir / "recordings" / f"{record_id}.wav").unlink(missing_ok=True)
-        await runtime.emit("memory_updated", {"id": result["id"]})
+        await runtime.emit("memory_updated", {"id": result["id"], "action": "revise"})
         return result
 
     @app.delete("/api/history/{record_id}", dependencies=api)

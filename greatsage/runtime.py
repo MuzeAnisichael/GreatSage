@@ -48,7 +48,7 @@ def request_bytes(messages: list[dict]) -> int:
 def explicit_request(text: str) -> bool:
     """The listen preset's documented default: a question or direct invocation."""
     return bool(re.search(
-        r"[?？]|大贤者|\bgreat\s*sage\b|请问|帮我|告诉我|请(?:解释|总结|翻译|回答)|"
+        r"[?？]|大贤者|大賢者|\bgreat\s*sage\b|请问|請問|帮我|幫我|告诉我|告訴我|[请請](?:解释|解釋|总结|總結|翻译|翻譯|回答)|"
         r"为什么|为何|怎么|如何|什么|哪[个些里天]|是否|能否|可否|多少|几点|"
         r"[吗么呢][。！!]?\s*$|\b(?:who|what|when|where|why|how|can you|could you|would you)\b",
         text, re.I))
@@ -296,7 +296,10 @@ class Runtime:
             now = time.time()
             normalized = re.sub(r"\W", "", text).casefold()
             own = [(t, re.sub(r"\W", "", s).casefold()) for t, s in self.played_texts]
-            if len(normalized) > 5 and any(now - t < 20 and normalized in s for t, s in own):
+            # A user may deliberately quote or repeat us. Never drop microphone
+            # speech based on text similarity alone; the acoustic gate handles
+            # only high-confidence reference copies before VAD.
+            if not source.startswith("microphone") and len(normalized) > 5 and any(now - t < 20 and normalized in s for t, s in own):
                 await self.emit("suppressed", {"reason": "assistant_audio_echo", "source": source}, trace_id)
                 return
             if any(now - t < 3 and normalized == s and oldsource != source
@@ -362,7 +365,7 @@ class Runtime:
         if message["role"] != "user" or not (message["source"] == "text" or message["source"].startswith("microphone")):
             return
         content = message["text"].strip()
-        match = re.match(r"^(?:请|帮我)?记住(?:[：:\s]+|(?=我|我们|以后|今天|明天|这|下次))(.+)$", content, re.S)
+        match = re.match(r"^(?:请|請|帮我|幫我)?(?:记住|記住)(?:[：:,，\s]+|(?=我|我们|我們|以后|以後|今天|明天|这|這|下次))(.+)$", content, re.S)
         if not match:
             match = re.match(r"^(?:please\s+)?remember(?:\s+that)?\s+(.+)$", content, re.I | re.S)
         if not match or not match.group(1).strip():

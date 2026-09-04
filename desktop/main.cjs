@@ -264,7 +264,9 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (app.isReady()) showMain(); });
   app.whenReady().then(async () => {
-    dataDir = app.isPackaged ? app.getPath('userData') : path.join(projectRoot, '.runtime');
+    dataDir = process.env.GREATSAGE_DATA_DIR
+      ? path.resolve(process.env.GREATSAGE_DATA_DIR)
+      : app.isPackaged ? app.getPath('userData') : path.join(projectRoot, '.runtime');
     fs.mkdirSync(dataDir, { recursive: true });
     const logPath = path.join(dataDir, 'backend.log');
     if (fs.existsSync(logPath) && fs.statSync(logPath).size > 5 * 1024 * 1024) {

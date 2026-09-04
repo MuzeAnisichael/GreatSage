@@ -165,6 +165,21 @@ class MemoryStore:
             return []
         with self._lock:
             candidates: dict[str, dict] = {}
+            # Citation IDs may refer to originals, summaries or explicit memory.
+            # Resolve derived IDs back to source originals for audit lookup even
+            # when those messages are older than the UI's recent-history page.
+            cited_ids = re.findall(r"\b[0-9a-f]{32}\b", query.lower())
+            for cited_id in cited_ids[:20]:
+                ids = [cited_id]
+                memory = self._db.execute("SELECT source_ids FROM memories WHERE id=?", (cited_id,)).fetchone()
+                if memory:
+                    ids = json.loads(memory["source_ids"])
+                for source_id in self._leaf_sources(ids):
+                    row = self._db.execute("SELECT * FROM messages WHERE id=?", (source_id,)).fetchone()
+                    if row:
+                        candidates[row["id"]] = self._row(row)
+            if candidates:
+                return sorted(candidates.values(), key=lambda item: item["created_at"])[:min(int(limit), 100)]
             if self._fts:
                 fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
                 for row in self._db.execute("""SELECT m.* FROM message_fts f

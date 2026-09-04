@@ -195,6 +195,27 @@ async def test_desktop_audio_is_observation_and_always_schedules_compression(run
     assert not any(event["kind"] == "user_message" for event in runtime.memory.events())
 
 
+async def test_user_can_repeat_assistant_words_without_text_only_echo_suppression(runtime):
+    runtime.listening = True
+    runtime.providers.transcript = "请再解释一下这段内容"
+    runtime.played_texts.append((time.time(), runtime.providers.transcript))
+    await runtime._transcribe("microphone", b"\0" * 320, True, time.time(), 0)
+    await finish_reply(runtime)
+    assert runtime.memory.history()[0]["text"] == runtime.providers.transcript
+    assert runtime.memory.history()[-1]["role"] == "assistant"
+
+
+async def test_playback_reference_begins_on_actual_play_and_clears_on_interrupt(runtime):
+    reference = b"\x10\x00" * 16000
+    runtime.playback_references[("test-trace", "一句话")] = (time.time(), reference)
+    assert runtime.echo.last_decision["reason"] == "no_reference"
+    await runtime.playback(True, "一句话", "test-trace")
+    assert runtime.echo.last_decision["reason"] == "reference_ready"
+    await runtime.interrupt()
+    assert runtime.echo.last_decision["reason"] == "no_reference"
+    assert not runtime.playback_references
+
+
 @pytest.mark.parametrize("operation", ["reset", "delete"])
 async def test_late_asr_and_queued_audio_do_not_cross_session_or_deletion(runtime, operation):
     runtime.listening = True
@@ -380,7 +401,7 @@ async def test_cross_session_context_recovers_explicit_memory_and_original_evide
     assert memory["origin"] == "user_explicit"
 
 
-@pytest.mark.parametrize("text", ["记住：我喜欢简短回答", "请记住我喜欢中文", "remember that I prefer concise replies"])
+@pytest.mark.parametrize("text", ["记住：我喜欢简短回答", "请记住我喜欢中文", "请记住，我喜欢简短的中文回答。", "請記住,我喜歡簡短的中文回答。", "remember that I prefer concise replies"])
 async def test_only_explicit_user_memory_requests_persist_and_follow_source_deletion(runtime, text):
     sent = await runtime.chat(text)
     await finish_reply(runtime)
