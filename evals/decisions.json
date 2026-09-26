@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "provenance": "Project-authored, labelled conversational scenarios; these are not recordings or measured user conversations.",
+  "cases": [
+    {"id":"direct_zh","text":"大贤者，帮我解释一下这个方案。","respond":true},
+    {"id":"question_zh","text":"这个公式是什么意思？","respond":true},
+    {"id":"request_zh","text":"请总结刚才讨论的三个重点。","respond":true},
+    {"id":"uncertain_zh","text":"我没听懂最后一步，能再解释一遍吗","respond":true},
+    {"id":"english","text":"GreatSage, explain the last point please.","respond":true},
+    {"id":"english_question","text":"Could you help me understand this error?","respond":true},
+    {"id":"japanese","text":"大賢者、この言葉の意味を教えてください。","respond":true},
+    {"id":"statement_zh","text":"今天的讨论到这里结束。","respond":false},
+    {"id":"statement_en","text":"I will review the notes tomorrow.","respond":false},
+    {"id":"negated","text":"不用回答，我只是在念一下这段文字。","respond":false},
+    {"id":"quiet_question","text":"先别回答这个问题：为什么项目延期了？","respond":false},
+    {"id":"quiet_english","text":"Don't answer this question: why is it slow?","respond":false},
+    {"id":"quoted_zh","text":"他刚才问我：为什么要改这个方案？","respond":false},
+    {"id":"quoted_en","text":"She asked me, \"What does this mean?\"","respond":false},
+    {"id":"reported_question","text":"会议纪要里有一句：请解释成本增加的原因。","respond":false},
+    {"id":"self_question","text":"我在想为什么会这样，暂时不用解释。","respond":false},
+    {"id":"invocation_override","text":"大贤者，刚才他说的\"为什么\"是什么意思？","respond":true},
+    {"id":"name_in_report","text":"他说大贤者能回答这个问题。","respond":false},
+    {"id":"reminder_context","text":"请提醒我这段论证有什么遗漏。","respond":true},
+    {"id":"thanks","text":"好的，谢谢，暂时没有问题。","respond":false}
+  ]
+}
