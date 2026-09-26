@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import anyio
 import audioop
 import contextlib
 import io
@@ -195,6 +196,23 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def events(limit: int = 200):
         return redact(runtime.memory.events(min(max(limit, 1), 1000)))
 
+    @app.get('/api/audit', dependencies=api)
+    async def audit_list(trace_id: str | None = None, limit: int = 100):
+        return runtime.memory.snapshots(trace_id, limit)
+
+    @app.get('/api/audit/{snapshot_id}', dependencies=api)
+    async def audit_detail(snapshot_id: str, include_content: bool = False):
+        return runtime.memory.snapshot(snapshot_id, include_content)
+
+    @app.post('/api/audit/{snapshot_id}/export', dependencies=api)
+    async def audit_export(snapshot_id: str, body: dict):
+        if not isinstance(body.get('include_content', False), bool):
+            raise ValueError('include_content must be a boolean')
+        record = runtime.memory.snapshot(snapshot_id, body.get('include_content', False))
+        await runtime.emit('audit_export', {'snapshot_id': snapshot_id, 'include_content': body.get('include_content', False)}, record['trace_id'])
+        return JSONResponse({'format': 'greatsage-request-audit-v1', 'snapshot': record},
+                            headers={'Content-Disposition': f'attachment; filename="greatsage-audit-{snapshot_id}.json"'})
+
     @app.get("/api/memories", dependencies=api)
     async def memories():
         return runtime.memory.list_memories()
@@ -204,9 +222,30 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         text = body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > 12000:
             raise ValueError("记忆内容需要 1–12000 个字符。")
-        result = runtime.memory.add_memory(text.strip())
-        await runtime.emit("memory_updated", {"id": result["id"]})
+        await runtime.pause_background()
+        return await runtime.add_memory_checked(text.strip())
+
+    @app.get("/api/memory/conflicts", dependencies=api)
+    async def memory_conflicts():
+        return runtime.memory.conflicts()
+
+    @app.post("/api/memory/conflicts/{candidate_id}", dependencies=api)
+    async def resolve_conflict(candidate_id: str, body: dict):
+        if body.get("resolution") not in ("replace", "keep_existing", "keep_both"):
+            raise ValueError("请选择替换、保留旧记忆或同时保留。")
+        await runtime.before_delete()
+        result = runtime.memory.resolve_conflict(candidate_id, body["resolution"])
+        await runtime.emit("memory_updated", {**result, "action": "resolve_conflict"})
+        runtime._schedule_compression()
         return result
+
+    @app.get("/api/records/{record_id}", dependencies=api)
+    async def record_details(record_id: str):
+        return runtime.memory.record_details(record_id)
+
+    @app.get("/api/history/page", dependencies=api)
+    async def history_page(cursor: int | None = None, session_id: str | None = None, limit: int = 30):
+        return runtime.memory.history_page(cursor, session_id, limit)
 
     @app.get("/api/memory/search", dependencies=api)
     async def search(q: str):
@@ -362,13 +401,16 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
             pass
         finally:
             runtime.subscribers.discard(queue)
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Disconnect cancellation can race with sender shutdown. Finish
+            # draining both local tasks even under an ASGI cancellation scope.
+            with anyio.CancelScope(shield=True):
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     if ui_dir.is_dir():
         app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")

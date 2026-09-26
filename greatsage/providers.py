@@ -285,6 +285,12 @@ class Providers:
         endpoint = "/api/chat" if ollama else "/chat/completions"
         url, headers, timeout = self._request(config, endpoint)
         payload = {"model": config["model"], "messages": messages, "stream": True}
+        if config.get('json_schema'):
+            if ollama:
+                payload['format'] = config['json_schema']
+            else:
+                payload['response_format'] = {'type': 'json_schema', 'json_schema': {
+                    'name': 'greatsage_decision', 'strict': True, 'schema': config['json_schema']}}
         limit = config.get("max_tokens", config.get("max_output_tokens"))
         if ollama:
             payload["think"] = False

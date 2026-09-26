@@ -29,6 +29,24 @@ def service(handler):
     return Providers(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
 
+@pytest.mark.parametrize('name', ['openrouter', 'ollama'])
+async def test_structured_decision_schema_uses_provider_native_protocol(name):
+    from greatsage.decisions import DECISION_SCHEMA
+    def handler(request):
+        payload = json.loads(request.content)
+        if name == 'ollama':
+            assert payload['format'] == DECISION_SCHEMA
+            return httpx.Response(200, text='{"message":{"content":"{}"},"done":true}\n')
+        assert payload['response_format']['json_schema']['schema'] == DECISION_SCHEMA
+        return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    provider = service(handler)
+    try:
+        events = [item async for item in provider.stream_chat({'provider': name, 'model': 'fixture', 'api_key': 'fixture', 'json_schema': DECISION_SCHEMA}, [{'role': 'user', 'content': 'fixture'}])]
+        assert ''.join(e.get('text', '') for e in events) == '{}'
+    finally:
+        await provider.close()
+
+
 @pytest.mark.asyncio
 async def test_openrouter_fragmented_utf8_sse_with_usage_and_keepalive():
     stream = ByteStream((': keep alive\n\n'

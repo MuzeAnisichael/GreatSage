@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 import numpy as np
 
 
@@ -63,7 +64,7 @@ class VectorIndexMixin:
         with self._lock:
             rows = self._db.execute("""
                 SELECT * FROM (
-                  SELECT id,text,'memory' AS kind,created_at FROM memories
+                  SELECT id,text,'memory' AS kind,created_at FROM memories WHERE status='active'
                   UNION ALL SELECT id,text,'message',created_at FROM messages
                   UNION ALL SELECT id,text,'summary',created_at FROM summaries
                 ) r WHERE NOT EXISTS (SELECT 1 FROM vector_records v WHERE v.record_id=r.id AND v.fingerprint=?)
@@ -92,7 +93,7 @@ class VectorIndexMixin:
             self._db.execute("INSERT OR REPLACE INTO vector_records VALUES (?,?,?)", (id, version, content_hash))
             return True
 
-    def semantic_search(self, vector: list[float], version: str, limit: int = 20) -> list[dict]:
+    def semantic_search(self, vector: list[float], version: str, limit: int = 20, deadline: float | None = None) -> list[dict]:
         query = np.asarray(vector, dtype=np.float64)
         if query.ndim != 1 or not query.size or not np.isfinite(query).all():
             raise ValueError("Invalid query vector")
@@ -104,6 +105,8 @@ class VectorIndexMixin:
             scores = {}
             cursor = self._db.execute("SELECT record_id,vector FROM vectors WHERE fingerprint=? AND dimensions=?", (version, len(query)))
             while batch := cursor.fetchmany(256):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError('Vector search deadline reached')
                 matrix = np.stack([np.frombuffer(row["vector"], dtype="<f4") for row in batch])
                 for row, score in zip(batch, matrix @ query):
                     if score >= .25:
@@ -111,13 +114,13 @@ class VectorIndexMixin:
             result = []
             for id in sorted(scores, key=scores.get, reverse=True)[:max(0, min(limit, 100))]:
                 row = self.record(id)
-                if row:
+                if row and row.get("status", "active") == "active":
                     result.append({**row, "semantic_score": round(scores[id], 6)})
             return result
 
     def vector_status(self, version: str) -> dict:
         with self._lock:
-            total = sum(self._db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("messages", "memories", "summaries"))
+            total = sum(self._db.execute(f"SELECT count(*) FROM {table}" + (" WHERE status='active'" if table == "memories" else "")).fetchone()[0] for table in ("messages", "memories", "summaries"))
             indexed = self._db.execute("SELECT count(*) FROM vector_records WHERE fingerprint=?", (version,)).fetchone()[0]
             parts = self._db.execute("SELECT count(*) FROM vectors WHERE fingerprint=?", (version,)).fetchone()[0]
             return {"total": total, "indexed": indexed, "pending": max(0, total - indexed), "chunks": parts,

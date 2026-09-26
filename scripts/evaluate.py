@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from greatsage import __version__
 from greatsage.evaluation import classification, compare_reports, distribution
 from greatsage.memory import MemoryStore
-from greatsage.runtime import explicit_request
+from greatsage.runtime import explicit_request, Runtime
 from greatsage.providers import Providers
 from greatsage.settings import SettingsStore
 from greatsage.semantic import fingerprint, text_hash, fuse
@@ -113,13 +113,15 @@ def main():
     parser.add_argument("--suite", choices=["decisions", "memory", "all"], default="all")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--compare", type=Path, help="Compare against a previously written report for the same corpus")
-    parser.add_argument("--live", action="store_true", help="Call the configured embedding service, using only fictional fixtures")
+    parser.add_argument("--live", action="store_true", help="Call configured LLM/embedding services, using only fictional fixtures")
     parser.add_argument("--settings-dir", type=Path, default=ROOT / ".runtime")
     parser.add_argument("--embedding-provider", choices=["openrouter", "ollama"])
     parser.add_argument("--embedding-model")
+    parser.add_argument('--llm-provider', choices=['openrouter', 'ollama'])
+    parser.add_argument('--llm-model')
     args = parser.parse_args()
     suites = ["decisions", "memory"] if args.suite == "all" else [args.suite]
-    reports = {suite: asyncio.run(live_memory(args)) if args.live and suite == "memory" else offline(suite) for suite in suites}
+    reports = {suite: asyncio.run(live_memory(args) if suite == 'memory' else live_decisions(args)) if args.live else offline(suite) for suite in suites}
     output = {"reports": reports}
     if args.compare:
         baseline = json.loads(args.compare.read_text(encoding="utf-8"))["reports"]
@@ -129,6 +131,41 @@ def main():
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
+
+
+async def live_decisions(args):
+    corpus, digest = load_corpus('decisions')
+    root = ROOT / '.runtime' / 'eval'; root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='decision-', dir=root) as directory:
+        runtime = Runtime(Path(directory))
+        try:
+            runtime.settings.update(SettingsStore(args.settings_dir).raw())
+            patch = {'mode': 'listen', 'embedding': {'enabled': False}, 'voice_enabled': False, 'semantic_decisions': True}
+            if args.llm_provider:
+                patch['llm'] = {'provider': args.llm_provider,
+                                'base_url': 'http://127.0.0.1:11434' if args.llm_provider == 'ollama' else 'https://openrouter.ai/api/v1',
+                                'api_key_env': '' if args.llm_provider == 'ollama' else 'OPENROUTER_API_KEY'}
+            if args.llm_model: patch.setdefault('llm', {})['model'] = args.llm_model
+            runtime.settings.update(patch)
+            config = runtime.settings.raw()
+            report = {'schema_version': 1, 'suite': 'decisions', 'version': __version__, 'corpus_sha256': digest,
+                      'configuration': {'mode': 'live', 'model_calls': True, 'provider': config['llm']['provider'], 'model': config['llm']['model'], 'decision_timeout_seconds': 3}, 'cases': []}
+            for case in corpus['cases']:
+                message = runtime.memory.add_message('user', case['text'], 'microphone:fixture', runtime.memory.new_session(), case['id'])
+                started = time.monotonic()
+                result = await runtime._should_reply(message, config)
+                events = [e for e in runtime.memory.events(50) if e['trace_id'] == case['id']]
+                report['cases'].append({'id': case['id'], 'expected': case['respond'], 'actual': result,
+                                        'latency_ms': (time.monotonic()-started)*1000,
+                                        'reason': next((e['data']['reason'] for e in events if e['kind'] == 'decision'), 'unknown'),
+                                        'errors': [e['data']['reason'] for e in events if e['kind'] == 'decision_error']})
+            report['metrics'] = classification(report['cases'])
+            report['metrics']['semantic_failures'] = sum(r['reason'] == 'semantic_unavailable' for r in report['cases'])
+            report['latency_ms'] = distribution(r['latency_ms'] for r in report['cases'])
+            report['usage'] = [e['data'] for e in runtime.memory.events(1000) if e['kind'] == 'usage']
+            return report
+        finally:
+            await runtime.close()
 
 
 if __name__ == "__main__":
