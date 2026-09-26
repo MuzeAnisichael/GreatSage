@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 _IS_WINDOWS = sys.platform == "win32"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _SECRET_NAME = re.compile(r"secrets-[0-9a-f]{32}\.bin\Z")
-_COMPONENTS = ("asr", "llm", "tts")
+_COMPONENTS = ("asr", "llm", "tts", "embedding")
 
 
 def read_env(name: str, default: str = "") -> str:
@@ -62,9 +62,14 @@ def _defaults() -> dict:
                 "api_key_env": "OPENROUTER_API_KEY", "language": "zh",
                 "device": "cpu", "compute_type": "int8", "cache_dir": ""},
         "llm": {"provider": "openrouter", "base_url": url, "model": "google/gemini-2.5-flash-lite",
-                "api_key_env": "OPENROUTER_API_KEY", "context_tokens": 8192, "max_tokens": 768},
+                "api_key_env": "OPENROUTER_API_KEY", "context_tokens": 8192, "max_tokens": 768,
+                "tokenizer": "auto"},
         "tts": {"provider": "openrouter", "base_url": url, "model": "qwen/qwen-audio-3.0-tts-flash",
                 "voice": "loongjohn", "api_key_env": "OPENROUTER_API_KEY"},
+        "embedding": {"provider": "openrouter", "base_url": url, "model": "openai/text-embedding-3-small",
+                      "api_key_env": "OPENROUTER_API_KEY", "enabled": False, "timeout_seconds": 60,
+                      "query_timeout_seconds": 1.5},
+        "semantic_decisions": True, "audit_content": False,
         # Confirmed v0.1 policy: text stays until deletion, logs 30 days,
         # opt-in recordings 7 days. Retention is configurable in the UI.
         "record_audio": False, "recording_retention_days": 7, "log_retention_days": 30,
@@ -163,7 +168,7 @@ def _validate(config: dict) -> dict:
         raise ValueError("Invalid mode")
     if config["desktop_source"] not in ("none", "system", "process"):
         raise ValueError("Invalid desktop_source")
-    for field in ("voice_enabled", "allow_proactive", "microphone", "record_audio"):
+    for field in ("voice_enabled", "allow_proactive", "microphone", "record_audio", "semantic_decisions", "audit_content"):
         if type(config[field]) is not bool:
             raise ValueError(f"Invalid {field}: expected a boolean")
     _string(config["global_prompt"], "global_prompt", 32000)
@@ -191,12 +196,14 @@ def _validate(config: dict) -> dict:
     common = {"provider", "base_url", "model", "api_key_env", "timeout_seconds"}
     extra = {
         "asr": {"language", "device", "compute_type", "cache_dir", "beam_size", "cpu_threads", "device_index"},
-        "llm": {"context_tokens", "max_tokens", "temperature"},
+        "llm": {"context_tokens", "max_tokens", "temperature", "tokenizer"},
         "tts": {"voice", "rate", "speed"},
+        "embedding": {"enabled", "query_timeout_seconds"},
     }
     providers = {"asr": ("openai", "openrouter", "faster_whisper"),
                  "llm": ("openai", "openrouter", "ollama"),
-                 "tts": ("openai", "openrouter", "system")}
+                 "tts": ("openai", "openrouter", "system"),
+                 "embedding": ("openai", "openrouter", "ollama")}
     for component in _COMPONENTS:
         provider = config[component]
         if not isinstance(provider, dict) or set(provider) - common - extra[component]:
@@ -224,12 +231,18 @@ def _validate(config: dict) -> dict:
                 if field in provider:
                     _number(provider[field], f"asr.{field}", low, high, True)
         elif component == "llm":
+            if provider.get("tokenizer", "auto") not in ("auto", "utf8", "cl100k_base", "o200k_base"):
+                raise ValueError("Invalid llm.tokenizer")
             _number(provider["context_tokens"], "llm.context_tokens", 1024, 2000000, True)
             _number(provider["max_tokens"], "llm.max_tokens", 64, 128000, True)
             if provider["max_tokens"] + 256 >= provider["context_tokens"]:
                 raise ValueError("llm.context_tokens must leave room for both prompt and output")
             if "temperature" in provider:
                 _number(provider["temperature"], "llm.temperature", 0, 2)
+        elif component == "embedding":
+            if type(provider["enabled"]) is not bool:
+                raise ValueError("Invalid embedding.enabled: expected a boolean")
+            _number(provider["query_timeout_seconds"], "embedding.query_timeout_seconds", .2, 10)
         else:
             _string(provider.get("voice", ""), "tts.voice", 256)
             if "rate" in provider:

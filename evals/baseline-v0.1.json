@@ -4,7 +4,7 @@
       "schema_version": 1,
       "suite": "decisions",
       "version": "0.1.0a1",
-      "corpus_sha256": "9f33d885286cf7ed37804388a77c42eb175666b0ea2c2a5f7de6e7774ef7e778",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
       "configuration": {
         "mode": "offline",
         "model_calls": false
@@ -126,7 +126,7 @@
       "schema_version": 1,
       "suite": "memory",
       "version": "0.1.0a1",
-      "corpus_sha256": "6c66ecb8d8c262b9147f8be7d96e3ecab547345e1986b046b8fde0b22a8e69d4",
+      "corpus_sha256": "e984e3384664273c7211e8da2a93fb1c1ca1bfadc40b7b91924d5452111e312e",
       "configuration": {
         "mode": "offline",
         "model_calls": false

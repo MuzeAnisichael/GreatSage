@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .semantic import VectorIndexMixin, fuse
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -41,7 +43,7 @@ def _relevance(query: str, text: str) -> float:
                for term in _terms(query) if term in folded)
 
 
-class MemoryStore:
+class MemoryStore(VectorIndexMixin):
     """One WAL database, serialized transactions, and immutable source IDs.
 
     A revision creates a new ID, invalidating all derived records first. This
@@ -88,6 +90,7 @@ class MemoryStore:
             CREATE TABLE IF NOT EXISTS forgotten_memories (
                 id TEXT PRIMARY KEY, source_ids TEXT NOT NULL, deleted_at TEXT NOT NULL);
         """)
+        self._init_vectors()
         self._fts = True
         try:
             self._db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(id UNINDEXED,text,tokenize='unicode61')")
@@ -251,6 +254,7 @@ class MemoryStore:
                     self._db.execute("DELETE FROM message_fts WHERE id=?", (owner,))
         for source_id in all_ids:
             self._db.execute("DELETE FROM dependencies WHERE source_id=? OR owner_id=?", (source_id, source_id))
+        self._drop_vectors(all_ids)
         return all_ids
 
     def _checkpoint(self) -> None:
@@ -327,6 +331,8 @@ class MemoryStore:
                 self._db.execute("DELETE FROM memories WHERE source_ids != '[]'")
                 for table in ("messages", "summaries", "sessions", "events", "dependencies", "forgotten_memories"):
                     self._db.execute(f"DELETE FROM {table}")
+                self._db.execute("DELETE FROM vectors WHERE record_id NOT IN (SELECT id FROM memories)")
+                self._db.execute("DELETE FROM vector_records WHERE record_id NOT IN (SELECT id FROM memories)")
                 if self._fts:
                     self._db.execute("DELETE FROM message_fts")
             self._checkpoint()
@@ -387,7 +393,7 @@ class MemoryStore:
                 leaves.add(source_id)
         return leaves
 
-    def context(self, query: str, session_id: str, max_chars: int = 16000) -> dict:
+    def context(self, query: str, session_id: str, max_chars: int = 16000, semantic: list[dict] | None = None) -> dict:
         if max_chars < 100:
             raise ValueError("Context budget must be at least 100 characters")
         with self._lock:
@@ -417,11 +423,16 @@ class MemoryStore:
             result["recent"].reverse()
             used_ids = {item["id"] for item in result["recent"]}
             memories = sorted(self.list_memories(), key=lambda item: (_relevance(query, item["text"]), item["created_at"]), reverse=True)
+            semantic = semantic or []
+            memories = fuse(memories, [item for item in semantic if item["kind"] == "memory"])
             take("memories", memories, int(max_chars * .20))
-            take("retrieved", [item for item in self.search(query, 12) if item["id"] not in used_ids], int(max_chars * .15))
+            retrieved = fuse(self.search(query, 12), [item for item in semantic if item["kind"] == "message"])
+            take("retrieved", [item for item in retrieved if item["id"] not in used_ids], int(max_chars * .15))
             used_ids.update(item["id"] for item in result["retrieved"])
             summaries = [item for item in self.summaries(100) if not used_ids.intersection(self._leaf_sources(item["source_ids"]))]
             summaries.sort(key=lambda item: (_relevance(query, item["text"]) + (2 if item["session_id"] == session_id else 0), item["created_at"]), reverse=True)
+            eligible = {item["id"] for item in summaries}
+            summaries = fuse(summaries, [item for item in semantic if item["id"] in eligible])
             for summary in summaries:
                 leaves = self._leaf_sources(summary["source_ids"])
                 if not used_ids.intersection(leaves):

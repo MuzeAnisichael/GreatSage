@@ -18,6 +18,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .runtime import Runtime, redact
 from .providers import ProviderError
+from .budget import prepare as prepare_tokenizer, TokenCounter
+from .semantic import fingerprint
 
 
 def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_dir=None):
@@ -90,11 +92,46 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         # Validate first, then stop/reconfigure the active pipeline.
         updated = runtime.settings.update(patch)
         await runtime.interrupt("settings_changed")
+        await runtime.pause_background()
+        runtime.background.retry()
         if was_listening:
             await runtime.set_listening(False)
             await runtime.set_listening(True)
         await runtime.emit("settings_updated", {"version": runtime.settings.version()})
+        runtime._schedule_compression()
         return updated
+
+    @app.get("/api/memory/index", dependencies=api)
+    async def index_status():
+        config = runtime.settings.raw()["embedding"]
+        return {**runtime.memory.vector_status(fingerprint(config)), "enabled": config["enabled"],
+                "background": runtime.background.snapshot()}
+
+    @app.post("/api/memory/reindex", dependencies=api)
+    async def reindex():
+        await runtime.pause_background()
+        runtime.memory.clear_vectors()
+        runtime.background.retry()
+        runtime._schedule_compression()
+        await runtime.emit("index_reset", {"reason": "user_requested"})
+        return {"ok": True}
+
+    @app.post("/api/background/retry", dependencies=api)
+    async def retry_background():
+        runtime.background.retry()
+        runtime._schedule_compression()
+        return {"ok": True}
+
+    @app.get("/api/tokenizer", dependencies=api)
+    async def tokenizer_status():
+        counter = TokenCounter(runtime.settings.raw()["llm"], runtime.data_dir)
+        return {"method": counter.method, "requested": counter.name, "ready": counter.encoder is not None}
+
+    @app.post("/api/tokenizer/prepare", dependencies=api)
+    async def tokenizer_prepare():
+        result = await prepare_tokenizer(runtime.settings.raw()["llm"], runtime.data_dir, runtime.providers._client)
+        await runtime.emit("tokenizer_prepared", result)
+        return result
 
     @app.get("/api/audio/sources", dependencies=api)
     async def sources():
@@ -261,7 +298,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     @app.post("/api/providers/test", dependencies=api)
     async def test_provider(body: dict):
         component = body.get("component")
-        if component not in ("llm", "asr", "tts"):
+        if component not in ("llm", "asr", "tts", "embedding"):
             raise ValueError("无效的服务类型。")
         started = time.time()
         config = runtime._provider(component)
@@ -272,6 +309,9 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                 async for item in runtime.providers.stream_chat(config, [{"role": "user", "content": "Reply only OK."}]):
                     answer += item.get("text", "")
                 detail = answer
+            elif component == "embedding":
+                result = await runtime.providers.embed(config, ["GreatSage 语义检索测试。"])
+                detail = f"已生成 {result['dimensions']} 维向量。"
             elif component == "tts":
                 result = await runtime.providers.synthesize(config, "Great Sage is ready.", "en")
                 detail = f"已生成 {len(result['audio'])} 字节语音（未自动播放）。"
@@ -287,6 +327,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                 result = await runtime.providers.transcribe({**config, "language": "en"}, pcm, sample_rate)
                 detail = result["text"]
             metrics = {"ok": True, "component": component, "detail": detail,
+                       "provider": config["provider"], "model": config["model"],
                        "latency_ms": round((time.time()-started)*1000)}
             await runtime.emit("provider_test", metrics)
             return metrics

@@ -169,6 +169,8 @@ def _desktop_http_client() -> httpx.AsyncClient:
 
 
 def _network_code(exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
     if isinstance(exc, httpx.ConnectError):
         # Classify locally, but never return arbitrary exception text.
         detail = str(exc).lower()
@@ -232,6 +234,46 @@ class Providers:
             413: "audio_or_request_too_large", 422: "invalid_request", 429: "rate_limited",
         }.get(response.status_code, "upstream_unavailable" if response.status_code >= 500 else "http_error")
         raise ProviderError(provider, code, response.status_code)
+
+    async def embed(self, config: dict, texts: list[str]) -> dict:
+        """OpenAI-compatible embeddings or Ollama /api/embed; no implicit truncation."""
+        provider = _provider(config)
+        if not texts or len(texts) > 32 or any(not isinstance(t, str) or not t.strip() or len(t.encode("utf-8")) > 12000 for t in texts):
+            raise ProviderError(provider, "invalid_embedding_input")
+        if not config.get("model"):
+            raise ProviderError(provider, "model_missing")
+        ollama = provider == "ollama"
+        url, headers, timeout = self._request(config, "/api/embed" if ollama else "/embeddings")
+        payload = {"model": config["model"], "input": texts}
+        payload.update({"truncate": False, "keep_alive": "5m"} if ollama else {"encoding_format": "float"})
+        try:
+            response = await self._client.post(url, json=payload, headers=headers, timeout=timeout)
+            self._status(response, provider)
+            body = _json(response.content, provider)
+            if ollama:
+                vectors = body.get("embeddings")
+                usage = {"prompt_tokens": body["prompt_eval_count"]} if isinstance(body.get("prompt_eval_count"), int) else {}
+            else:
+                rows = body.get("data")
+                if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                    raise ValueError()
+                if sorted(row.get("index", -1) for row in rows) != list(range(len(texts))):
+                    raise ValueError()
+                vectors = [row.get("embedding") for row in sorted(rows, key=lambda row: row["index"])]
+                usage = _usage(body.get("usage"))
+            if not isinstance(vectors, list) or len(vectors) != len(texts):
+                raise ValueError()
+            dimension = len(vectors[0]) if isinstance(vectors[0], list) else 0
+            if not 1 <= dimension <= 16384 or any(not isinstance(v, list) or len(v) != dimension or
+                    any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in v) or
+                    sum(float(n) ** 2 for n in v) <= 0 for v in vectors):
+                raise ValueError()
+            return {"vectors": vectors, "dimensions": dimension, "usage": usage,
+                    "model": body.get("model") or config["model"]}
+        except httpx.HTTPError as exc:
+            raise ProviderError(provider, _network_code(exc)) from None
+        except (ValueError, TypeError, OverflowError):
+            raise ProviderError(provider, "invalid_embedding_response") from None
 
     async def stream_chat(self, config: dict, messages: list) -> AsyncIterator[dict]:
         provider = _provider(config)

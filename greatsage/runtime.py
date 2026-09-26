@@ -14,12 +14,15 @@ from pathlib import Path
 
 from . import __version__
 from .audio import AudioCaptureManager
+from .background import BackgroundState
+from .budget import TokenCounter
 from .echo import EchoGuard, decode_reference
 from .memory import MemoryStore
 from .providers import Providers
 from .segmentation import Segmenter
 from .settings import SettingsStore
 from .skills import SkillsManager
+from .semantic import chunks as embedding_chunks, fingerprint, text_hash
 
 
 def redact(value):
@@ -96,11 +99,13 @@ class Runtime:
         self.data_epoch = 0
         self.capture_generation = 0
         self.trace_times: dict[str, float] = {}
+        self.background = BackgroundState()
 
     async def start(self):
         self.consumer_task = asyncio.create_task(self._audio_consumer())
         self.housekeeping_task = asyncio.create_task(self._housekeeping())
         await self.emit("started", {"version": __version__, "session_id": self.session_id})
+        self._schedule_compression()
 
     async def close(self):
         await self.set_listening(False)
@@ -148,6 +153,9 @@ class Runtime:
         config = self.settings.get()
         return {"version": __version__, "state": self.state, "session_id": self.session_id,
                 "listening": self.listening,
+                "background": self.background.snapshot(),
+                "semantic_index": {**self.memory.vector_status(fingerprint(config["embedding"])),
+                                   "enabled": config["embedding"]["enabled"]},
                 "providers": {k: {"provider": config[k]["provider"], "model": config[k]["model"],
                                      "key_configured": config[k].get("key_configured", False)}
                               for k in ("llm", "asr", "tts")},
@@ -376,8 +384,7 @@ class Runtime:
 
     async def submit_message(self, message, speech_end):
         await self.interrupt("new_request")
-        if self.compression_task and not self.compression_task.done():
-            self.compression_task.cancel()
+        await self.pause_background()
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, False))
 
     async def _consider_proactive(self, message, speech_end):
@@ -400,6 +407,7 @@ class Runtime:
             self._schedule_compression()
             return
         self.last_proactive = time.time()
+        await self.pause_background()
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, True))
 
     async def interrupt(self, reason="user"):
@@ -417,9 +425,8 @@ class Runtime:
         await self.emit("interrupt", {"reason": reason}, persist=False)
         await self.set_state("listening" if self.listening else "idle")
 
-    def _build_context(self, message, config, proactive=False):
-        # Budget the final serialized input, including all wrappers. UTF-8 bytes
-        # are a conservative estimate, not a provider-specific tokenizer.
+    def _build_context(self, message, config, proactive=False, semantic=None):
+        counter = TokenCounter(config["llm"], self.data_dir)
         capacity = config["llm"].get("context_tokens", 8192)
         output = config["llm"].get("max_tokens", 768)
         budget = max(256, capacity - output - 128)
@@ -455,13 +462,13 @@ class Runtime:
             result.append({"role": "user", "content": current})
             return result
 
-        mandatory_size = request_bytes(compose())
+        mandatory_size = counter.count(compose())
         if mandatory_size > budget:
             raise ValueError("当前输入或全局指令超过模型上下文预算，请缩短内容或增大上下文配置。")
         available = budget - mandatory_size
         if available < 200:
             return compose(), source_ids, skill_audit
-        context = self.memory.context(message["text"], message["session_id"], max_chars=max(100, available * 2))
+        context = self.memory.context(message["text"], message["session_id"], max_chars=max(100, available * 2), semantic=semantic)
         # Preserve recent turns independently of metadata size and retrieval rank.
         context["recent"] = list(reversed(self.memory.history(13, message["session_id"])))
         selected = self.skills.select(message["text"], max_chars=min(3000, available // 4))
@@ -472,11 +479,11 @@ class Runtime:
                 body += f"\nReference {resource['path']}:\n{resource['text']}"
             original_length = len(body)
             skill_context.append(body)
-            while len(body) >= 64 and request_bytes(compose()) > skill_limit:
-                excess = request_bytes(compose()) - skill_limit
+            while len(body) >= 64 and counter.count(compose()) > skill_limit:
+                excess = counter.count(compose()) - skill_limit
                 body = body[:-max(1, excess // 3)]
                 skill_context[-1] = body + "\n[Skill text truncated by context budget]"
-            if len(body) < 64 or request_bytes(compose()) > skill_limit:
+            if len(body) < 64 or counter.count(compose()) > skill_limit:
                 skill_context.pop()
                 continue
             skill_audit.append({"id": skill["id"], "version": skill["version"],
@@ -492,33 +499,33 @@ class Runtime:
                      "source": record.get("source", group), "created_at": record["created_at"], "text": record["text"]}
             if record.get("truncated"):
                 entry["truncated"] = True
-            limit = min(budget, request_bytes(compose()) + allowance)
+            limit = min(budget, counter.count(compose()) + allowance)
             records[group].append(entry)
-            if request_bytes(compose()) > limit:
+            if counter.count(compose()) > limit:
                 original = entry["text"]
                 entry["truncated"] = True
                 low, high = 0, len(original)
                 while low < high:
                     middle = (low + high + 1) // 2
                     entry["text"] = original[:middle]
-                    if request_bytes(compose()) <= limit:
+                    if counter.count(compose()) <= limit:
                         low = middle
                     else:
                         high = middle - 1
                 entry["text"] = original[:low]
-                if low < min(24, len(original)) or request_bytes(compose()) > limit:
+                if low < min(24, len(original)) or counter.count(compose()) > limit:
                     records[group].pop()
                     return
             source_ids.append(record["id"])
 
-        remaining = budget - request_bytes(compose())
+        remaining = budget - counter.count(compose())
         for group, fraction in (("recent", .45), ("memories", .20), ("summaries", .15), ("retrieved", .20)):
-            group_limit = request_bytes(compose()) + int(remaining * fraction)
+            group_limit = counter.count(compose()) + int(remaining * fraction)
             for record in context.get(group, []):
-                take(group, record, group_limit - request_bytes(compose()))
+                take(group, record, group_limit - counter.count(compose()))
         for group in records:
             for record in context.get(group, []):
-                take(group, record, budget - request_bytes(compose()))
+                take(group, record, budget - counter.count(compose()))
         return compose(), source_ids, skill_audit
 
     async def _respond(self, message, speech_end, proactive):
@@ -535,11 +542,16 @@ class Runtime:
         voice_failed = False
         first_text = False
         try:
-            messages, source_ids, selected_skills = self._build_context(message, config, proactive)
+            semantic = await self._semantic_context(message, config)
+            if generation != self.generation or data_epoch != self.data_epoch:
+                raise asyncio.CancelledError()
+            messages, source_ids, selected_skills = self._build_context(message, config, proactive, semantic)
             await self.emit("context", {"source_ids": source_ids, "skills": selected_skills,
                                         "settings_version": self.settings.version(),
                                         "model": config["llm"]["model"], "proactive": proactive,
-                                        "input_bytes": request_bytes(messages)}, trace)
+                                        "input_bytes": request_bytes(messages),
+                                        "input_tokens_estimated": TokenCounter(config["llm"], self.data_dir).count(messages),
+                                        "budget_method": TokenCounter(config["llm"], self.data_dir).method}, trace)
             await self.emit("response_start", {}, trace, False)
             await self.set_state("thinking", trace)
             if config["voice_enabled"]:
@@ -699,10 +711,87 @@ class Runtime:
 
     def _schedule_compression(self):
         if not self.compression_task or self.compression_task.done():
-            self.compression_task = asyncio.create_task(self._compress())
+            self.compression_task = asyncio.create_task(self._background_cycle())
+
+    async def pause_background(self):
+        task = self.compression_task
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def _foreground_busy(self):
+        return self.mic_speaking or self.playing or (self.reply_task and not self.reply_task.done())
+
+    async def _background_cycle(self):
+        await self._compress()
+        if not self._foreground_busy():
+            await self._index_pending()
+
+    async def _index_pending(self):
+        config = self.settings.provider("embedding")
+        if not config["enabled"] or not self.background.ready("index"):
+            return
+        version, epoch = fingerprint(config), self.data_epoch
+        self.background.begin("index")
+        try:
+            for record in self.memory.pending_vectors(version, limit=4):
+                if self._foreground_busy():
+                    break
+                parts = embedding_chunks(record["text"])
+                vectors = []
+                for offset in range(0, len(parts), 16):
+                    started = time.monotonic()
+                    result = await self.providers.embed(config, parts[offset:offset + 16])
+                    if epoch != self.data_epoch or fingerprint(self.settings.raw()["embedding"]) != version or not self.settings.raw()["embedding"]["enabled"]:
+                        return
+                    vectors.extend(result["vectors"])
+                    await self.emit("usage", {"component": "embedding", "purpose": "index", "usage": result["usage"],
+                                              "source_ids": [record["id"]], "model": result["model"],
+                                              "latency_ms": round((time.monotonic() - started) * 1000)})
+                if self.memory.save_vectors(record["id"], version, text_hash(record["text"]), vectors):
+                    await self.emit("index_updated", {"source_ids": [record["id"]], "fingerprint": version, "chunks": len(vectors)})
+            self.background.success("index")
+        except asyncio.CancelledError:
+            await self.emit("usage", {"component": "embedding", "purpose": "index", "status": "cancelled", "remote_usage": "unknown"})
+            raise
+        except Exception as exc:
+            delay = self.background.failure("index")
+            await self.emit("error", {"component": "index", "message": str(exc), "retry_in_seconds": delay})
+        finally:
+            self.background.cancel("index")
+
+    async def _semantic_context(self, message, config):
+        version = fingerprint(config["embedding"])
+        if not config["embedding"]["enabled"] or not self.background.ready("retrieval") or not self.memory.vector_status(version)["indexed"]:
+            return []
+        provider = self.settings.provider("embedding")
+        if fingerprint(provider) != version:
+            return []
+        started = time.monotonic()
+        try:
+            # Additional memory enrichment has a strict foreground latency cap.
+            async with asyncio.timeout(provider.get("query_timeout_seconds", 1.5)):
+                result = await self.providers.embed(provider, [embedding_chunks(message["text"])[0]])
+                matches = await asyncio.to_thread(self.memory.semantic_search, result["vectors"][0], version, 24)
+            self.background.success("retrieval")
+            await self.emit("usage", {"component": "embedding", "purpose": "query", "usage": result["usage"],
+                                      "model": result["model"], "source_ids": [message["id"]]}, message["trace_id"])
+            await self.emit("retrieval", {"strategy": "hybrid", "source_ids": [item["id"] for item in matches],
+                                          "fingerprint": version, "latency_ms": round((time.monotonic() - started) * 1000)}, message["trace_id"])
+            return matches
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            delay = self.background.failure("retrieval")
+            await self.emit("retrieval", {"strategy": "lexical_fallback", "reason": type(exc).__name__,
+                                          "retry_in_seconds": delay, "remote_usage": "unknown"}, message["trace_id"])
+            return []
 
     async def _compress(self):
         epoch, session_id = self.epoch, self.session_id
+        if not self.background.ready("compression"):
+            return
         try:
             await asyncio.sleep(.3)
             if epoch != self.epoch or self.mic_speaking or (self.reply_task and not self.reply_task.done()):
@@ -731,6 +820,7 @@ class Runtime:
             if not selected:
                 return
             source_ids = [c["id"] for c in selected]
+            self.background.begin("compression")
             await self.emit("compression_start", {"source_ids": source_ids, "model": llm["model"],
                                                   "input_bytes": request_bytes(messages())})
             text = ""
@@ -743,11 +833,15 @@ class Runtime:
             summary = self.memory.save_summary(text, source_ids, model=llm["model"], prompt_version="v1")
             await self.emit("compression_done", {"summary_id": summary["id"], "source_ids": source_ids})
             await self.emit("memory_updated", {})
+            self.background.success("compression")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             if epoch == self.epoch:
-                await self.emit("error", {"message": str(exc), "component": "compression"})
+                delay = self.background.failure("compression")
+                await self.emit("error", {"message": str(exc), "component": "compression", "retry_in_seconds": delay})
+        finally:
+            self.background.cancel("compression")
 
     async def reset_session(self):
         await self._invalidate_audio()
@@ -780,14 +874,19 @@ class Runtime:
                 await self.compression_task
 
     async def _housekeeping(self):
+        next_cleanup = 0
         while True:
             config = self.settings.raw()
-            self.memory.cleanup(config.get("log_retention_days", 30))
-            cutoff = time.time() - config.get("recording_retention_days", 7)*86400
-            for path in (self.data_dir / "recordings").glob("*.wav"):
-                if path.stat().st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
             now = time.time()
-            self.audio_cache = {k: v for k, v in self.audio_cache.items() if now-v[0] < 180}
-            self.playback_references = {k: v for k, v in self.playback_references.items() if now-v[0] < 180}
-            await asyncio.sleep(60)
+            if now >= next_cleanup:
+                self.memory.cleanup(config.get("log_retention_days", 30))
+                cutoff = now - config.get("recording_retention_days", 7)*86400
+                for path in (self.data_dir / "recordings").glob("*.wav"):
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                self.audio_cache = {k: v for k, v in self.audio_cache.items() if now-v[0] < 180}
+                self.playback_references = {k: v for k, v in self.playback_references.items() if now-v[0] < 180}
+                next_cleanup = now + 60
+            if not self._foreground_busy():
+                self._schedule_compression()
+            await asyncio.sleep(5)

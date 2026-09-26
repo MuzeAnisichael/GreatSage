@@ -1,4 +1,5 @@
 import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } from './client.js';
+import { setupV02 } from './v02.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -14,6 +15,7 @@ let refreshChatWithMemory = false;
 let historySearchTimer;
 let historySearchEpoch = 0;
 let historySearchResults = null;
+let enhancements;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -87,6 +89,7 @@ function fillSettings(settings) {
   updateQuickSettings();
   refreshProviderControls();
   if (settings.tts?.provider === 'system') refreshVoiceList().catch(error => { $('#voice-catalog-note').textContent = error.message; });
+  enhancements?.refresh();
 }
 
 function updateQuickSettings() {
@@ -341,6 +344,7 @@ function onEvent(event) {
   if (state.resyncing && event.kind !== 'stream_reset') { state.pendingEvents.push(event); if (state.pendingEvents.length > 1000) state.pendingEvents.shift(); return; }
   if (event.id && state.seenEvents.has(event.id)) return;
   addEvent(event);
+  enhancements?.onEvent(event);
   const data = event.data || {};
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
@@ -700,6 +704,7 @@ async function loadInitial() {
   state.initialized = true;
 }
 
+enhancements = setupV02({ client, state, toast, busy });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });
