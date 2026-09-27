@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "greatsage"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "An auditable real-time desktop voice secretary"
 requires-python = ">=3.11,<3.14"
 dependencies = [

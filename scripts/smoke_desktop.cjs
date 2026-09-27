@@ -14,6 +14,12 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const live = process.argv.includes('--live');
 const parallelSources = process.argv.includes('--parallel-sources');
+const packaged = process.argv.includes('--packaged');
+const packageResources = path.resolve(__dirname, '..', 'release', 'win-unpacked', 'resources');
+if (packaged) {
+  Object.defineProperty(app, 'isPackaged', { value: true });
+  Object.defineProperty(process, 'resourcesPath', { value: packageResources });
+}
 const runDir = path.resolve(__dirname, '..', '.runtime', 'desktop-smoke', new Date().toISOString().replace(/[:.]/g, '-'));
 fs.mkdirSync(runDir, { recursive: true });
 app.setPath('userData', path.join(runDir, 'electron-profile'));
@@ -23,7 +29,7 @@ const children = [];
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function (...args) {
   const child = originalSpawn.apply(this, args);
-  if (Array.isArray(args[1]) && args[1].includes('greatsage')) children.push(child);
+  if (String(args[0]).endsWith('greatsage-backend.exe') || Array.isArray(args[1]) && args[1].includes('greatsage')) children.push(child);
   return child;
 };
 // Instrument only this test's Electron process; leave user apps untouched.
@@ -66,13 +72,13 @@ function redact(value) {
 app.on('will-quit', event => {
   const childrenStopped = children.length > 0 && children.every(child => child.exitCode !== null || child.signalCode !== null);
   reports.push({ check: 'Python child stopped on quit', passed: childrenStopped });
-  const result = { success: completed && reports.every(report => report.passed), live, parallelSources, reports };
+  const result = { success: completed && reports.every(report => report.passed), live, parallelSources, packaged, reports };
   fs.writeFileSync(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2));
   console.log(`${result.success ? 'PASS' : 'FAIL'}: ${path.join(runDir, 'result.json')}`);
   process.exitCode = result.success ? 0 : 1;
   if (!result.success) { event.preventDefault(); app.exit(1); }
 });
-require('../desktop/main.cjs');
+require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs') : '../desktop/main.cjs');
 
 (async () => {
   let main;
@@ -152,6 +158,17 @@ require('../desktop/main.cjs');
     await evaluate("document.querySelector('.audit-body').click()");
     await until(() => evaluate("document.querySelector('.audit-content').textContent.includes('SYNTHETIC PRIVATE REQUEST BODY')"), 'audit opt-in body');
     check(true, 'Saved request body can be viewed explicitly');
+    const exportPath = path.join(runDir, 'audit-metadata.json');
+    const downloaded = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Audit download timed out')), 15000);
+      main.webContents.session.once('will-download', (_event, item) => {
+        item.setSavePath(exportPath);
+        item.once('done', (_event, state) => { clearTimeout(timer); state === 'completed' ? resolve() : reject(new Error('Audit download ' + state)); });
+      });
+    });
+    await evaluate("document.querySelector('.audit-export').click()");
+    await downloaded;
+    check(!fs.readFileSync(exportPath, 'utf8').includes('SYNTHETIC PRIVATE REQUEST BODY'), 'Metadata export downloads JSON without archived body');
     await screenshot(main, 'audit-v02.png');
     await evaluate("document.querySelector('.audit-close').click();document.querySelector('[data-view=memory]').click()");
     await until(() => evaluate("[...document.querySelectorAll('.summary-card')].some(node=>node.textContent.includes('SYNTHETIC READ ONLY DESKTOP SUMMARY'))"), 'read-only summary card');
@@ -175,6 +192,11 @@ require('../desktop/main.cjs');
     check((await request(`/api/audit/${snapshot.id}?include_content=true`)).content === null, 'Source deletion invalidates archived request body');
 
     if (live) {
+      if (packaged) {
+        await request('/api/settings', 'PUT', { llm: { tokenizer: 'o200k_base' } });
+        const prepared = await request('/api/tokenizer/prepare', 'POST');
+        check((await request('/api/tokenizer')).ready === true, 'Packaged tokenizer downloads, verifies and loads its native encoding');
+      }
       await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_enabled]').checked=true;document.querySelector('[name=voice_language]').value='zh-CN';document.querySelector('[name=output_language]').value='zh-CN';document.querySelector('[name=\"tts.provider\"]').value='system';document.querySelector('[name=\"tts.provider\"]').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[name=\"tts.voice\"]').value='';document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
       await until(async () => (await request('/api/settings')).tts.provider === 'system', 'local speech settings');
       await until(() => evaluate("document.querySelector('#system-voice-select').options.length > 1"), 'system voice catalog');
