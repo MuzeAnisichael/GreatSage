@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import uuid
+import psutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from greatsage.providers import ProviderError, Providers
 from greatsage.runtime import Runtime
 from greatsage.segmentation import Segmenter
 from greatsage.settings import SettingsStore
+from greatsage.evaluation import recognition
 
 
 FIXTURE_TEXT = "请用一句话回答一加一等于几？"
@@ -161,6 +163,7 @@ def make_parser():
     parser.add_argument("--timeout-seconds", type=float, default=90)
     parser.add_argument("--max-tokens", type=int, default=128)
     parser.add_argument("--fixture-voice", default="")
+    parser.add_argument('--fixture-id', help='Use a licensed human clip ID from evals/speech.json instead of synthetic TTS')
     parser.add_argument("--partial-interval", type=float)
     parser.add_argument("--dry-run", action="store_true", help="Validate and write the plan without model, capture or speech calls")
     choices = {"asr": ("openai", "openrouter", "faster_whisper"),
@@ -221,10 +224,17 @@ def prepare(args):
 async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
     destination, run_dir, settings = prepare(args)
     config = settings.raw()
+    fixture = None
+    if args.fixture_id:
+        manifest = json.loads((PROJECT_ROOT / 'evals/speech.json').read_text(encoding='utf-8'))
+        fixture = next((row for row in manifest['cases'] if row['id'] == args.fixture_id), None)
+        if not fixture:
+            raise ValueError('Unknown licensed speech fixture ID')
+    fixture_text = fixture['text'] if fixture else FIXTURE_TEXT
     result = {
         "schema_version": 1, "status": "planned" if args.dry_run else "running",
         "started_at": datetime.now(timezone.utc).isoformat(), "run_directory": run_dir.name,
-        "fixture": {"text": FIXTURE_TEXT, "source": "Windows system TTS", "language": "zh-CN",
+        "fixture": {"text": fixture_text, "source": 'Google FLEURS human read speech (CC BY 4.0)' if fixture else "Windows system TTS", "language": "zh-CN",
                     "played_to_speakers": False},
         "configuration": {name: {"provider": config[name]["provider"], "model": config[name]["model"]}
                           for name in ("asr", "llm", "tts")},
@@ -234,8 +244,8 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
                        "configured_endpoint_silence_ms": config["endpoint_silence_ms"],
                        "effective_endpoint_silence_ms": math.ceil(config["endpoint_silence_ms"] / 30) * 30,
                        "timeout_seconds": args.timeout_seconds},
-        "scope": {"synthetic_input": True, "hardware_capture": False, "websocket_transport": False,
-                  "actual_playback_measured": False, "human_asr_accuracy_measured": False,
+        "scope": {"synthetic_input": fixture is None, "hardware_capture": False, "websocket_transport": False,
+                  "actual_playback_measured": False, "human_asr_accuracy_measured": fixture is not None,
                   "timing_origin": "last PCM frame classified as speech by VAD, using the monotonic feed clock",
                   "first_text_boundary": "first nonempty Runtime response_delta received by an in-process subscriber",
                   "audio_ready_boundary": "first Runtime audio event received; synthesis and reference decoding complete, no playback"},
@@ -250,17 +260,33 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
     observed = ObservedProviders(base)
     runtime = None
     monitor_task = None
+    resource_task = None
+    process = psutil.Process()
+    initial_cpu = sum(process.cpu_times()[:2])
+    peak_rss = process.memory_info().rss
+    async def resources():
+        nonlocal peak_rss
+        while True:
+            peak_rss = max(peak_rss, process.memory_info().rss)
+            await asyncio.sleep(.25)
+    resource_task = asyncio.create_task(resources())
     try:
         async with asyncio.timeout(args.timeout_seconds):
             preparation_start = time.perf_counter()
-            audio = await base.synthesize({"provider": "system", "voice": args.fixture_voice}, FIXTURE_TEXT, "zh-CN")
+            if fixture:
+                raw = (PROJECT_ROOT / 'evals' / fixture['path']).read_bytes()
+                if hashlib.sha256(raw).hexdigest() != fixture['sha256']:
+                    raise ValueError('Fixture hash changed')
+                audio = {'audio': raw, 'mime': 'audio/wav'}
+            else:
+                audio = await base.synthesize({"provider": "system", "voice": args.fixture_voice}, fixture_text, "zh-CN")
             fixture_pcm = decode_reference(audio["audio"], audio["mime"])
             if not fixture_pcm or len(fixture_pcm) > 32000 * 30:
-                raise ValueError("Synthetic fixture must contain up to 30 seconds of audio")
+                raise ValueError("Fixture must contain up to 30 seconds of audio")
             (run_dir / "fixture.wav").write_bytes(audio["audio"])
             result["fixture"].update(duration_seconds=round(len(fixture_pcm) / 32000, 4),
                                      pcm_sha256=hashlib.sha256(fixture_pcm).hexdigest(),
-                                     synthesis_ms=round((time.perf_counter() - preparation_start) * 1000, 2))
+                                     preparation_ms=round((time.perf_counter() - preparation_start) * 1000, 2))
             tail_ms = math.ceil(config["endpoint_silence_ms"] / 30) * 30 + 600
             capture = PacedCapture(fixture_pcm, args.packet_ms, tail_ms)
             runtime = Runtime(run_dir, providers=observed)
@@ -282,7 +308,8 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
                     if kind == "user_message":
                         record["speech_end_wall"] = data.get("metadata", {}).get("speech_end")
                         record["transcript"] = str(data.get("text", ""))[:500]
-                        record["transcript_normalized_match"] = normalized(data.get("text", "")) == normalized(FIXTURE_TEXT)
+                        record["transcript_normalized_match"] = normalized(data.get("text", "")) == normalized(fixture_text)
+                        record['recognition'] = recognition(fixture_text, data.get('text', ''))
                         record["transcript_ready_perf"] = at
                     elif kind == "response_delta" and data.get("text"):
                         record.setdefault("first_text_perf", at)
@@ -345,9 +372,11 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
                 metrics["final_asr_queue_ms"] = round((final_call["start_perf"] - target["detected_perf"]) * 1000, 2)
                 metrics["final_asr_provider_ms"] = round((final_call["end_perf"] - final_call["start_perf"]) * 1000, 2)
             if record:
+                joined = ''.join(row['transcript'] for row in sorted(traces.values(), key=lambda row: row.get('speech_end_wall') or 0) if 'transcript' in row)
                 result["recognition"] = {
-                    "transcript": record.get("transcript", ""),
-                    "punctuation_insensitive_match": record.get("transcript_normalized_match", False),
+                    "transcript": joined,
+                    **recognition(fixture_text, joined),
+                    "punctuation_insensitive_match": normalized(joined) == normalized(fixture_text),
                     "comparison_note": "Only punctuation and spacing are ignored; inspect script, numeral and lexical differences manually.",
                 }
                 for field, name in (("transcript_ready_perf", "speech_end_to_transcript_ms"),
@@ -364,6 +393,11 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
         result["status"] = "error"
         result["errors"].append(safe_error(error))
     finally:
+        if resource_task:
+            resource_task.cancel()
+            await asyncio.gather(resource_task, return_exceptions=True)
+        result['resources'] = {'peak_python_rss_mib': round(peak_rss / 1024**2, 2), 'python_cpu_seconds': round(sum(process.cpu_times()[:2]) - initial_cpu, 3),
+                               'scope': 'Only this Python benchmark process, sampled at 250 ms; excludes Electron and external model services.'}
         if monitor_task:
             monitor_task.cancel()
             await asyncio.gather(monitor_task, return_exceptions=True)

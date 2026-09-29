@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import anyio
 import audioop
 import contextlib
 import io
@@ -18,6 +19,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .runtime import Runtime, redact
 from .providers import ProviderError
+from .budget import prepare as prepare_tokenizer, TokenCounter
+from .semantic import fingerprint
 
 
 def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_dir=None):
@@ -90,11 +93,46 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         # Validate first, then stop/reconfigure the active pipeline.
         updated = runtime.settings.update(patch)
         await runtime.interrupt("settings_changed")
+        await runtime.pause_background()
+        runtime.background.retry()
         if was_listening:
             await runtime.set_listening(False)
             await runtime.set_listening(True)
         await runtime.emit("settings_updated", {"version": runtime.settings.version()})
+        runtime._schedule_compression()
         return updated
+
+    @app.get("/api/memory/index", dependencies=api)
+    async def index_status():
+        config = runtime.settings.raw()["embedding"]
+        return {**runtime.memory.vector_status(fingerprint(config)), "enabled": config["enabled"],
+                "background": runtime.background.snapshot()}
+
+    @app.post("/api/memory/reindex", dependencies=api)
+    async def reindex():
+        await runtime.pause_background()
+        runtime.memory.clear_vectors()
+        runtime.background.retry()
+        runtime._schedule_compression()
+        await runtime.emit("index_reset", {"reason": "user_requested"})
+        return {"ok": True}
+
+    @app.post("/api/background/retry", dependencies=api)
+    async def retry_background():
+        runtime.background.retry()
+        runtime._schedule_compression()
+        return {"ok": True}
+
+    @app.get("/api/tokenizer", dependencies=api)
+    async def tokenizer_status():
+        counter = TokenCounter(runtime.settings.raw()["llm"], runtime.data_dir)
+        return {"method": counter.method, "requested": counter.name, "ready": counter.encoder is not None}
+
+    @app.post("/api/tokenizer/prepare", dependencies=api)
+    async def tokenizer_prepare():
+        result = await prepare_tokenizer(runtime.settings.raw()["llm"], runtime.data_dir, runtime.providers._client)
+        await runtime.emit("tokenizer_prepared", result)
+        return result
 
     @app.get("/api/audio/sources", dependencies=api)
     async def sources():
@@ -158,6 +196,23 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def events(limit: int = 200):
         return redact(runtime.memory.events(min(max(limit, 1), 1000)))
 
+    @app.get('/api/audit', dependencies=api)
+    async def audit_list(trace_id: str | None = None, limit: int = 100):
+        return runtime.memory.snapshots(trace_id, limit)
+
+    @app.get('/api/audit/{snapshot_id}', dependencies=api)
+    async def audit_detail(snapshot_id: str, include_content: bool = False):
+        return runtime.memory.snapshot(snapshot_id, include_content)
+
+    @app.post('/api/audit/{snapshot_id}/export', dependencies=api)
+    async def audit_export(snapshot_id: str, body: dict):
+        if not isinstance(body.get('include_content', False), bool):
+            raise ValueError('include_content must be a boolean')
+        record = runtime.memory.snapshot(snapshot_id, body.get('include_content', False))
+        await runtime.emit('audit_export', {'snapshot_id': snapshot_id, 'include_content': body.get('include_content', False)}, record['trace_id'])
+        return JSONResponse({'format': 'greatsage-request-audit-v1', 'snapshot': record},
+                            headers={'Content-Disposition': f'attachment; filename="greatsage-audit-{snapshot_id}.json"'})
+
     @app.get("/api/memories", dependencies=api)
     async def memories():
         return runtime.memory.list_memories()
@@ -167,9 +222,30 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         text = body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > 12000:
             raise ValueError("记忆内容需要 1–12000 个字符。")
-        result = runtime.memory.add_memory(text.strip())
-        await runtime.emit("memory_updated", {"id": result["id"]})
+        await runtime.pause_background()
+        return await runtime.add_memory_checked(text.strip())
+
+    @app.get("/api/memory/conflicts", dependencies=api)
+    async def memory_conflicts():
+        return runtime.memory.conflicts()
+
+    @app.post("/api/memory/conflicts/{candidate_id}", dependencies=api)
+    async def resolve_conflict(candidate_id: str, body: dict):
+        if body.get("resolution") not in ("replace", "keep_existing", "keep_both"):
+            raise ValueError("请选择替换、保留旧记忆或同时保留。")
+        await runtime.before_delete()
+        result = runtime.memory.resolve_conflict(candidate_id, body["resolution"])
+        await runtime.emit("memory_updated", {**result, "action": "resolve_conflict"})
+        runtime._schedule_compression()
         return result
+
+    @app.get("/api/records/{record_id}", dependencies=api)
+    async def record_details(record_id: str):
+        return runtime.memory.record_details(record_id)
+
+    @app.get("/api/history/page", dependencies=api)
+    async def history_page(cursor: int | None = None, session_id: str | None = None, limit: int = 30):
+        return runtime.memory.history_page(cursor, session_id, limit)
 
     @app.get("/api/memory/search", dependencies=api)
     async def search(q: str):
@@ -261,7 +337,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     @app.post("/api/providers/test", dependencies=api)
     async def test_provider(body: dict):
         component = body.get("component")
-        if component not in ("llm", "asr", "tts"):
+        if component not in ("llm", "asr", "tts", "embedding"):
             raise ValueError("无效的服务类型。")
         started = time.time()
         config = runtime._provider(component)
@@ -272,6 +348,9 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                 async for item in runtime.providers.stream_chat(config, [{"role": "user", "content": "Reply only OK."}]):
                     answer += item.get("text", "")
                 detail = answer
+            elif component == "embedding":
+                result = await runtime.providers.embed(config, ["GreatSage 语义检索测试。"])
+                detail = f"已生成 {result['dimensions']} 维向量。"
             elif component == "tts":
                 result = await runtime.providers.synthesize(config, "Great Sage is ready.", "en")
                 detail = f"已生成 {len(result['audio'])} 字节语音（未自动播放）。"
@@ -287,6 +366,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                 result = await runtime.providers.transcribe({**config, "language": "en"}, pcm, sample_rate)
                 detail = result["text"]
             metrics = {"ok": True, "component": component, "detail": detail,
+                       "provider": config["provider"], "model": config["model"],
                        "latency_ms": round((time.time()-started)*1000)}
             await runtime.emit("provider_test", metrics)
             return metrics
@@ -321,13 +401,16 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
             pass
         finally:
             runtime.subscribers.discard(queue)
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Disconnect cancellation can race with sender shutdown. Finish
+            # draining both local tasks even under an ASGI cancellation scope.
+            with anyio.CancelScope(shield=True):
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     if ui_dir.is_dir():
         app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")

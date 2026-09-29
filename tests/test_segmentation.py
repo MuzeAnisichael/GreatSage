@@ -26,6 +26,19 @@ def test_speech_start_interrupt_signal_arrives_after_three_frames():
     assert [event.kind for event in events] == ["start"]
 
 
+def test_vad_state_receives_quiet_frames_before_speech():
+    class StatefulDetector:
+        def __init__(self): self.quiet = 0
+        def is_speech(self, frame, rate):
+            if frame == QUIET: self.quiet += 1
+            return frame == VOICE and self.quiet >= 10
+    detector = StatefulDetector()
+    segmenter = Segmenter(detector=detector)
+    events = feed_frames(segmenter, [QUIET]*10 + [VOICE]*9 + [QUIET]*19)
+    assert any(e.kind == 'final' for e in events)
+    assert detector.quiet == 29
+
+
 def test_short_noise_is_discarded_and_minimum_speech_is_not_rounded_down():
     segmenter = Segmenter(min_speech_ms=250, detector=Detector())
     events = feed_frames(segmenter, [VOICE] * 8 + [QUIET] * 19)

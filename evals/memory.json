@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "provenance": "Fictional project-authored cross-session retrieval scenarios, not user history.",
+  "records": [
+    {"id":"preference","text":"我读长篇解释容易分心，回答最好只保留最重要的三点。","kind":"memory"},
+    {"id":"deadline","text":"星河项目的验收日期是2026年11月12日，负责人是陈安。","kind":"message"},
+    {"id":"diet","text":"我对花生过敏，点餐时需要避开含花生成分的菜。","kind":"memory"},
+    {"id":"budget","text":"本次设备采购总预算为八千元，优先购买显示器。","kind":"message"},
+    {"id":"decision","text":"会议决定先在测试环境验证迁移，再安排正式上线。","kind":"message"},
+    {"id":"noise","text":"今天天气晴朗，公园里的树开始落叶。","kind":"message"}
+  ],
+  "queries": [
+    {"id":"style","text":"我偏好怎样的回复风格？","expected":["preference"]},
+    {"id":"owner","text":"星河项目由谁负责，何时验收？","expected":["deadline"]},
+    {"id":"food","text":"给我推荐午餐前要注意什么饮食禁忌？","expected":["diet"]},
+    {"id":"purchase","text":"买办公硬件最多可以花多少钱？","expected":["budget"]},
+    {"id":"release","text":"部署生产之前我们约定要先做哪一步？","expected":["decision"]}
+  ]
+}

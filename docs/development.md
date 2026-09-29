@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-09-04。用户已批准 v0.1 开发、使用本地测试服务以及建立 public GitHub 仓库；当前版本为 alpha。
+更新日期：2026-09-29。当前代码版本为 v0.2 alpha；[项目现状](project-status.md)区分已实现、已验证与尚未交付。用户已确认 v0.3 以资料检索、纪要／待办／文档产出和受控工具执行为主线；具体资料格式与工具权限仍需在实现前确认。
 
 ## 1. 开发环境
 
@@ -11,7 +11,7 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-npm.cmd install
+npm.cmd ci
 npm.cmd start
 ```
 
@@ -56,6 +56,7 @@ Electron 启动开发环境下的 Python 后端并管理本地连接。单独开
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 npm.cmd run check
+.\.venv\Scripts\python.exe scripts/check_repository.py
 ```
 
 单独验证某一高风险模块，例如：
@@ -96,7 +97,7 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 2. 新功能先说明使用场景和预期行为；涉及用户需求或操作权限的新边界，先明确范围。
 3. 围绕一个可审查的问题修改，实现与文档保持同步。
 4. 运行相关回归；仅为具体剩余风险扩大验证，不无边界重复测试。
-5. 提交前检查 `git status --short` 和 `git diff --cached`，确认没有运行数据、凭据或个人 Skills。
+5. 提交前检查 `git status --short`、`git diff --cached` 和仓库检查脚本，确认没有运行数据、凭据或个人 Skills。
 6. 提交说明写清问题、最终行为、验证和限制；开发期间持续推送有意义的里程碑。
 
 工程保持独立仓库，不把父工作区或其他项目加入提交。不得为了让测试通过删除真实用户数据，也不能用生产会话数据库作为测试 fixture。
@@ -108,11 +109,11 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 - 增加音源时保持来源身份、时间戳和代际失效机制，采集线程不能等待模型调用。
 - 增加记忆写入或新的派生数据时登记 source_ids，并验证删除与旧任务提交不能复活内容。
 - 变更 SQLite 或配置格式时写明版本和迁移行为，不静默丢弃用户历史。
-- Skill 脚本／工具执行不属于本版。未来新增时单独设计调用边界、审计和用户授权，而不是直接执行文档中的命令。
+- Skill 脚本／工具执行不属于 v0.2。v0.3 新增时单独设计调用边界、审计和用户授权；资料任务还要记录产物依赖的来源、版本及修正／删除后的失效方式。
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二者一致，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。已用 PyInstaller 和 Electron Builder 生成本机目录包；构建流程见 README，实际验证见 [validation.md](validation.md)。目录包不等于跨电脑验证过的安装器。
+Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二者一致，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。已用 PyInstaller 和 Electron Builder 生成本机目录包；构建流程见[README](../README.md)，实际验证见[v0.2 验证](validation-v0.2.md)。GitHub 尚无可下载的安装器发行资产；目录包也未做跨电脑安装验证。
 
 可重复的桌面 smoke test 使用独立运行目录：
 
@@ -124,11 +125,11 @@ Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二
 
 | 文档 | 更新时机 |
 | --- | --- |
-| README.md、usage.md | 安装、操作、默认值和已知限制变化 |
+| README.md、project-status.md、usage.md | 安装、操作、当前交付状态和已知限制变化 |
 | requirements.md | 用户确认的范围或验收条件变化 |
 | architecture.md | 模块、数据流、边界或调度变化 |
 | memory-design.md | 检索、压缩、来源和删除语义变化 |
-| roadmap.md | 阶段结束、优先级或范围变化 |
+| roadmap.md | 阶段结束、优先级或范围变化；标出已确认目标与仍待设计的细节 |
 | development.md | 依赖、贡献、测试和发布流程变化 |
 
 最终测试数量、云端模型名单和性能结论以实际验证记录为准，不在工作完成前预填。

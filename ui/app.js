@@ -1,4 +1,5 @@
 import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } from './client.js';
+import { setupV02 } from './v02.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -14,6 +15,7 @@ let refreshChatWithMemory = false;
 let historySearchTimer;
 let historySearchEpoch = 0;
 let historySearchResults = null;
+let enhancements;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -87,6 +89,7 @@ function fillSettings(settings) {
   updateQuickSettings();
   refreshProviderControls();
   if (settings.tts?.provider === 'system') refreshVoiceList().catch(error => { $('#voice-catalog-note').textContent = error.message; });
+  enhancements?.refresh();
 }
 
 function updateQuickSettings() {
@@ -341,6 +344,7 @@ function onEvent(event) {
   if (state.resyncing && event.kind !== 'stream_reset') { state.pendingEvents.push(event); if (state.pendingEvents.length > 1000) state.pendingEvents.shift(); return; }
   if (event.id && state.seenEvents.has(event.id)) return;
   addEvent(event);
+  enhancements?.onEvent(event);
   const data = event.data || {};
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
@@ -497,7 +501,7 @@ function renderMemories() {
         if (!id) continue;
         const link = element('button', 'source-link', `来源 ${String(id).slice(0, 8)} ↗`);
         link.type = 'button'; link.title = String(id); link.dataset.sourceId = id;
-        link.addEventListener('click', () => { $('#history-search').value = id; scheduleHistorySearch(); $('.history-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+        link.addEventListener('click', () => enhancements.showRecord(id));
         meta.append(link);
       }
     }
@@ -505,7 +509,7 @@ function renderMemories() {
     body.append(meta);
     if (memory.read_only_summary) {
       row.classList.add('summary-card');
-      body.append(element('small', 'summary-note', `只读摘要 · ${memory.model || '上下文压缩'} · 原文修正或删除后自动失效`));
+      body.append(element('small', 'summary-note', `第 ${memory.level || 1} 层摘要 · ${memory.model || '上下文压缩'} · 原文修正或删除后自动失效`));
       row.append(element('span', 'memory-icon', '▧'), body); list.append(row); continue;
     }
     const remove = element('button', 'delete-button', '删除');
@@ -700,6 +704,7 @@ async function loadInitial() {
   state.initialized = true;
 }
 
+enhancements = setupV02({ client, state, toast, busy, confirmAction, refreshMemory });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });
@@ -745,7 +750,7 @@ $('#new-session').addEventListener('click', () => busy($('#new-session'), async 
 
 $('#memory-search').addEventListener('input', renderMemories);
 $('#refresh-memory').addEventListener('click', () => busy($('#refresh-memory'), refreshMemory));
-$('#memory-form').addEventListener('submit', event => { event.preventDefault(); busy($('button', event.target), async () => { const text = $('#memory-input').value.trim(); if (!text) return; await client.request('/api/memories', { method: 'POST', body: { text } }); $('#memory-input').value = ''; await refreshMemory(); toast('已加入长期记忆。'); }); });
+$('#memory-form').addEventListener('submit', event => { event.preventDefault(); busy($('button', event.target), async () => { const text = $('#memory-input').value.trim(); if (!text) return; const result = await client.request('/api/memories', { method: 'POST', body: { text } }); $('#memory-input').value = ''; await refreshMemory(); toast(result.status === 'pending' ? '发现可能冲突，请在待确认记忆中选择。' : '已加入长期记忆。'); }); });
 $('#clear-history').addEventListener('click', () => busy($('#clear-history'), async () => {
   if (!await confirmAction('清空所有历史与关联记忆？', '将删除跨会话的对话原文，并清理关联记忆。此操作不可撤销。')) return;
   stopLocalResponse();

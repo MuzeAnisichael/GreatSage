@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "greatsage"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "An auditable real-time desktop voice secretary"
 requires-python = ">=3.11,<3.14"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
   "websockets>=13,<17", "numpy>=1.26,<3", "PyYAML>=6,<7",
   "PyAudioWPatch>=0.2.12.7; sys_platform == 'win32'", "psutil>=5.9,<8",
   "webrtcvad-wheels>=2.0.14", "python-multipart>=0.0.18", "av>=14,<19",
+  "tiktoken>=0.9,<1",
   "audioop-lts>=0.2.1; python_version >= '3.13'",
 ]
 

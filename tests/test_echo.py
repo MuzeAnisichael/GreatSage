@@ -122,13 +122,16 @@ def test_timestamp_gap_and_new_reference_reset_analysis_history():
     assert guard.last_decision["reason"] == "insufficient_history"
 
 
-def test_long_batched_input_is_not_muted_from_a_short_tail_match():
+def test_long_batched_reference_copy_is_gated_after_sufficient_evidence():
     reference = pcm(signal())
     guard = EchoGuard()
     guard.set_reference(reference, 100)
     frame = reference[:6400]
-    assert guard.filter(frame, 100.38) is frame
-    assert guard.last_decision["reason"] == "block_too_long"
+    output = guard.filter(frame, 100.38)
+    assert len(output) == len(frame)
+    assert output[:1280] == frame[:1280]  # No evidence for the first two frames.
+    assert output[1920:] == bytes(len(frame) - 1920)
+    assert guard.last_decision['suppressed_frames'] >= 7
 
 
 def test_100ms_batch_with_user_onset_outside_analysis_tail_is_preserved():
@@ -139,8 +142,10 @@ def test_100ms_batch_with_user_onset_outside_analysis_tail_is_preserved():
     frame = reference[1600:3200].copy()
     frame[:320] += signal(0.02, seed=77) * 0.2
     raw = pcm(frame)
-    assert guard.filter(raw, 100.38) is raw
-    assert not guard.last_suppressed
+    output = guard.filter(raw, 100.38)
+    assert output[:640] == raw[:640]  # Actual user onset is never silenced.
+    assert len(output) == len(raw)
+    assert guard.last_decision['suppressed_frames'] < guard.last_decision['frames']
 
 
 def test_alignment_never_leaves_part_of_the_current_block_unchecked():

@@ -46,7 +46,10 @@ class Segmenter:
             frame = bytes(self.pending[:self.FRAME_BYTES])
             del self.pending[:self.FRAME_BYTES]
             frame_time = timestamp - len(self.pending) / 32000
-            voice = audioop.rms(frame, 2) > 120 and self.vad.is_speech(frame, 16000)
+            # Feed every frame: WebRTC VAD updates its noise/speech history even
+            # during silence. Short-circuiting low RMS starves that state.
+            detected = self.vad.is_speech(frame, 16000)
+            voice = audioop.rms(frame, 2) > 120 and detected
             if not self.active:
                 self.preroll.append(frame)
                 self.start_hits = self.start_hits + 1 if voice else 0

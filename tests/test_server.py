@@ -103,3 +103,17 @@ def test_validation_and_unavailable_audio(client):
     assert session.get("/api/recordings/not-a-uuid").status_code == 404
     assert session.get("/api/audio/expired-audio").status_code == 404
     assert session.get("/api/settings", headers={"Content-Length": "2000001"}).status_code == 413
+
+
+def test_audit_export_requires_auth_and_explicit_body_and_respects_source_deletion(client):
+    session, runtime = client
+    source = runtime.memory.add_message('user', 'snapshot private body')
+    id = runtime.memory.save_snapshot('audit-trace', 'response', {}, [{'content': source['text']}], [source['id']], retain_content=True)
+    assert session.get('/api/audit', headers={'Authorization': ''}).status_code == 401
+    assert session.get('/api/audit?trace_id=audit-trace').json()[0]['id'] == id
+    assert 'snapshot private body' not in session.get(f'/api/audit/{id}').text
+    assert 'snapshot private body' in session.post(f'/api/audit/{id}/export', json={'include_content': True}).text
+    assert session.post(f'/api/audit/{id}/export', json={'include_content': 'true'}).status_code == 400
+    assert session.get(f'/api/records/{source["id"]}').json()['record']['text'] == source['text']
+    assert session.delete(f'/api/history/{source["id"]}').status_code == 200
+    assert 'snapshot private body' not in session.post(f'/api/audit/{id}/export', json={'include_content': True}).text

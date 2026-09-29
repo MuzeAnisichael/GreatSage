@@ -149,6 +149,18 @@ class EchoGuard:
             raise ValueError("Microphone block must contain aligned PCM16 samples")
         if not math.isfinite(timestamp):
             raise ValueError("Microphone timestamp must be finite")
+        if len(pcm) > 2560:
+            # Capture may deliver 100 ms batches. Decide each 20 ms frame using
+            # its own end timestamp, so a later user's onset stays untouched.
+            with self._lock:
+                output, suppressed = [], 0
+                for offset in range(0, len(pcm), 640):
+                    part = pcm[offset:offset + 640]
+                    output.append(self.filter(part, timestamp - (len(pcm) - offset - len(part)) / 32000))
+                    suppressed += int(self.last_suppressed)
+                self.last_suppressed = suppressed > 0
+                self.last_decision = {**self.last_decision, 'suppressed_frames': suppressed, 'frames': len(output)}
+                return b''.join(output)
         with self._lock:
             self.last_suppressed = False
             self.last_decision = {"reason": "no_reference"}
@@ -164,13 +176,6 @@ class EchoGuard:
                 return pcm
             samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
             duration = len(samples) / SAMPLE_RATE
-            if duration > 0.08:
-                # Long batched input would need per-frame output decisions. Keep
-                # it intact rather than mute possible speech outside our window.
-                self._history = np.empty(0, dtype=np.float32)
-                self._last_timestamp = timestamp
-                self.last_decision = {"reason": "block_too_long"}
-                return pcm
             if self._last_timestamp is not None and (
                     timestamp <= self._last_timestamp
                     or abs(timestamp - self._last_timestamp - duration) > 0.08):

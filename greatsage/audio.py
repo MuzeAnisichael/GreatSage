@@ -94,6 +94,7 @@ class AudioChunk:
     sample_rate: int = 16000
     channels: int = 1
     timestamp: float = field(default_factory=time.time)
+    sequence: int | None = None  # Total PCM samples emitted by this source.
 
 
 class _PCMConverter:
@@ -123,6 +124,7 @@ class AudioCaptureManager:
         self._queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=100)
         self._running = False
         self._last_overflow = 0.0
+        self.on_state = None
 
     def sources(self) -> dict:
         """Enumerate without starting capture; id values are current device IDs.
@@ -228,6 +230,16 @@ class AudioCaptureManager:
             self._last_overflow = 0.0
             stop = self._stop
             chunks = self._queue
+            sequences, started_sources = {}, set()
+            remaining_workers = int(microphone) + int(desktop != 'none')
+            state_callback = self.on_state
+
+            def state(kind, source):
+                if state_callback:
+                    try:
+                        state_callback({'kind': kind, 'source': source})
+                    except Exception:
+                        pass
 
             def report(message: str) -> None:
                 if on_error:
@@ -239,7 +251,11 @@ class AudioCaptureManager:
             def emit(source: str, pcm: bytes) -> None:
                 if not pcm or stop.is_set():
                     return
-                chunk = AudioChunk(source, pcm)
+                sequences[source] = sequences.get(source, 0) + len(pcm) // 2
+                chunk = AudioChunk(source, pcm, sequence=sequences[source])
+                if source not in started_sources:
+                    started_sources.add(source)
+                    state('source_started', source)
                 try:
                     chunks.put_nowait(chunk)
                 except queue.Full:
@@ -270,11 +286,20 @@ class AudioCaptureManager:
                             report(f"Audio consumer failed: {exc}")
 
             def run(label: str, target, *args) -> None:
+                nonlocal remaining_workers
                 try:
                     target(*args)
                 except Exception as exc:
                     if not stop.is_set():
                         report(f"{label}: {exc}")
+                finally:
+                    with self._lock:
+                        remaining_workers -= 1
+                        all_stopped = remaining_workers == 0
+                    if not stop.is_set():
+                        state('source_stopped', label)
+                        if all_stopped:
+                            state('all_sources_stopped', label)
 
             self._workers = []
             if microphone:

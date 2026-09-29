@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "provenance": "Google FLEURS, cmn_hans_cn validation, human read speech; complete clips converted from float WAV to PCM16 mono 16 kHz via PyAV, no cuts.",
+  "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+  "license": "CC-BY-4.0",
+  "source": "https://huggingface.co/datasets/google/fleurs",
+  "cases": [
+    {
+      "id": "fleurs-zh-0",
+      "path": "audio/fleurs-zh-validation-0.wav",
+      "sha256": "6935dd5d8522dedb62e7bf0f6255804fd07a05ffd25160f3abda37b5bfc80f44",
+      "source_sha256": "f3e12a114bedbc867e06bfb7aceb2721701aa729685b9e4be39f2b98305b72ab",
+      "text": "报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争、不断增长的暴力或走向混乱。",
+      "samples": 294080,
+      "dataset_id": 1579,
+      "row_index": 0,
+      "gender": 0
+    },
+    {
+      "id": "fleurs-zh-1",
+      "path": "audio/fleurs-zh-validation-1.wav",
+      "sha256": "1c5f3713cd43a9c23e178499d3165c56dfb5184a49a947388d2f55e578a7119e",
+      "source_sha256": "577a635c2261680c61dda5fecbc4f83bff6f37f453665b8d9d1a68f210f57c0a",
+      "text": "因为远离大陆，哺乳动物无法长途跋涉而来，使得巨龟成为科隆群岛主要的食草动物。",
+      "samples": 119040,
+      "dataset_id": 1605,
+      "row_index": 1,
+      "gender": 1
+    },
+    {
+      "id": "fleurs-zh-2",
+      "path": "audio/fleurs-zh-validation-2.wav",
+      "sha256": "9e27717706ae3ede47f59899ee76a7316433c070e8ec45f8c1568a72b4fbc90b",
+      "source_sha256": "8234c830aba9500be3c32dab1f91e72599b9bb03c36f962ae8b6bfc174ca13f0",
+      "text": "亚马逊河也是地球上最宽的河流，有些河段的宽度可达6英里。",
+      "samples": 120960,
+      "dataset_id": 1581,
+      "row_index": 2,
+      "gender": 0
+    }
+  ]
+}

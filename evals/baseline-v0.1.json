@@ -1,0 +1,184 @@
+{
+  "reports": {
+    "decisions": {
+      "schema_version": 1,
+      "suite": "decisions",
+      "version": "0.1.0a1",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
+      "configuration": {
+        "mode": "offline",
+        "model_calls": false
+      },
+      "cases": [
+        {
+          "id": "direct_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "question_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "request_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "uncertain_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "english",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "english_question",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "japanese",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "statement_zh",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "statement_en",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "negated",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "quiet_question",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "quiet_english",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "quoted_zh",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "quoted_en",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "reported_question",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "self_question",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "invocation_override",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "name_in_report",
+          "expected": false,
+          "actual": true
+        },
+        {
+          "id": "reminder_context",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "thanks",
+          "expected": false,
+          "actual": false
+        }
+      ],
+      "metrics": {
+        "cases": 20,
+        "true_positive": 9,
+        "false_positive": 7,
+        "false_negative": 0,
+        "true_negative": 4,
+        "accuracy": 0.65,
+        "precision": 0.5625,
+        "recall": 1.0
+      }
+    },
+    "memory": {
+      "schema_version": 1,
+      "suite": "memory",
+      "version": "0.1.0a1",
+      "corpus_sha256": "e984e3384664273c7211e8da2a93fb1c1ca1bfadc40b7b91924d5452111e312e",
+      "configuration": {
+        "mode": "offline",
+        "model_calls": false
+      },
+      "cases": [
+        {
+          "id": "style",
+          "retrieved": [],
+          "expected": [
+            "preference"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "owner",
+          "retrieved": [
+            "deadline"
+          ],
+          "expected": [
+            "deadline"
+          ],
+          "recall_at_3": 1.0
+        },
+        {
+          "id": "food",
+          "retrieved": [],
+          "expected": [
+            "diet"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "purchase",
+          "retrieved": [],
+          "expected": [
+            "budget"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "release",
+          "retrieved": [],
+          "expected": [
+            "decision"
+          ],
+          "recall_at_3": 0.0
+        }
+      ],
+      "metrics": {
+        "cases": 5,
+        "recall_at_3": 0.2
+      }
+    }
+  }
+}

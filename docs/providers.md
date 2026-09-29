@@ -2,6 +2,10 @@
 
 GreatSage 将 LLM、语音识别（ASR）和语音合成（TTS）分别配置。每个阶段只调用所选服务，失败时记录错误，不自动把音频或文本转交给另一个服务。
 
+v0.2 另有独立 embedding 设置，默认关闭。已在 2026-09-27 验证 OpenRouter `openai/text-embedding-3-small` 和本机 Ollama `bge-m3:latest`。云端可复用 OPENROUTER_API_KEY，本地默认地址 `http://127.0.0.1:11434`；不自动拉取模型。建索引单次网络超时 60 秒，前台检索默认最多 1.5 秒，可在 UI 调整；本机 bge-m3 普通查询约 2.3–2.6 秒，默认上限下可能回退关键词。
+
+旁听判断和记忆冲突使用当前 LLM 的结构化输出：API `response_format.json_schema`、Ollama `format`，温度为 0，且仍验证字段与允许的 ID。服务不支持格式、输出异常或超时会记录降级；不会静默改用另一家服务。真实 Gemini 2.5 Flash Lite 的固定 20 场景复测通过；本机 qwen3:4b 在 3 秒判断上限下有 6 次超时、2 个漏答。优先低延迟 API，或对本地配置关闭语义判断并使用明确叫名。详见 [验证](validation-v0.2.md)。
+
 ## 已验证的配置
 
 以下验证日期为 **2026-09-04**。模型目录会变化，安装时可运行 `scripts/probe_providers.py --catalog` 复核。

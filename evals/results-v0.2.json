@@ -1,0 +1,667 @@
+{
+  "reports": {
+    "decisions": {
+      "schema_version": 1,
+      "suite": "decisions",
+      "version": "0.2.0a1",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
+      "configuration": {
+        "mode": "offline",
+        "model_calls": false
+      },
+      "cases": [
+        {
+          "id": "direct_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "question_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "request_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "uncertain_zh",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "english",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "english_question",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "japanese",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "statement_zh",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "statement_en",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "negated",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "quiet_question",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "quiet_english",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "quoted_zh",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "quoted_en",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "reported_question",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "self_question",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "invocation_override",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "name_in_report",
+          "expected": false,
+          "actual": false
+        },
+        {
+          "id": "reminder_context",
+          "expected": true,
+          "actual": true
+        },
+        {
+          "id": "thanks",
+          "expected": false,
+          "actual": false
+        }
+      ],
+      "metrics": {
+        "cases": 20,
+        "true_positive": 9,
+        "false_positive": 0,
+        "false_negative": 0,
+        "true_negative": 11,
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0
+      }
+    },
+    "memory": {
+      "schema_version": 1,
+      "suite": "memory",
+      "version": "0.2.0a1",
+      "corpus_sha256": "e984e3384664273c7211e8da2a93fb1c1ca1bfadc40b7b91924d5452111e312e",
+      "configuration": {
+        "mode": "offline",
+        "model_calls": false
+      },
+      "cases": [
+        {
+          "id": "style",
+          "retrieved": [],
+          "expected": [
+            "preference"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "owner",
+          "retrieved": [
+            "deadline"
+          ],
+          "expected": [
+            "deadline"
+          ],
+          "recall_at_3": 1.0
+        },
+        {
+          "id": "food",
+          "retrieved": [],
+          "expected": [
+            "diet"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "purchase",
+          "retrieved": [],
+          "expected": [
+            "budget"
+          ],
+          "recall_at_3": 0.0
+        },
+        {
+          "id": "release",
+          "retrieved": [],
+          "expected": [
+            "decision"
+          ],
+          "recall_at_3": 0.0
+        }
+      ],
+      "metrics": {
+        "cases": 5,
+        "recall_at_3": 0.2
+      }
+    }
+  },
+  "comparison": {
+    "decisions": {
+      "suite": "decisions",
+      "baseline_version": "0.1.0a1",
+      "current_version": "0.2.0a1",
+      "metrics": {
+        "cases": {
+          "baseline": 20,
+          "current": 20,
+          "delta": 0
+        },
+        "true_positive": {
+          "baseline": 9,
+          "current": 9,
+          "delta": 0
+        },
+        "false_positive": {
+          "baseline": 7,
+          "current": 0,
+          "delta": -7
+        },
+        "false_negative": {
+          "baseline": 0,
+          "current": 0,
+          "delta": 0
+        },
+        "true_negative": {
+          "baseline": 4,
+          "current": 11,
+          "delta": 7
+        },
+        "accuracy": {
+          "baseline": 0.65,
+          "current": 1.0,
+          "delta": 0.35
+        },
+        "precision": {
+          "baseline": 0.5625,
+          "current": 1.0,
+          "delta": 0.4375
+        },
+        "recall": {
+          "baseline": 1.0,
+          "current": 1.0,
+          "delta": 0.0
+        }
+      },
+      "configuration_changed": false
+    },
+    "memory": {
+      "suite": "memory",
+      "baseline_version": "0.1.0a1",
+      "current_version": "0.2.0a1",
+      "metrics": {
+        "cases": {
+          "baseline": 5,
+          "current": 5,
+          "delta": 0
+        },
+        "recall_at_3": {
+          "baseline": 0.2,
+          "current": 0.2,
+          "delta": 0.0
+        }
+      },
+      "configuration_changed": false
+    }
+  },
+  "note": "The reports group is the final offline baseline. measurements are recorded development runs, with each original version string preserved; they are not a single aggregate test or performance guarantee.",
+  "measurements": {
+    "embedding_api": {
+      "schema_version": 1,
+      "suite": "memory",
+      "version": "0.1.0a1",
+      "corpus_sha256": "e984e3384664273c7211e8da2a93fb1c1ca1bfadc40b7b91924d5452111e312e",
+      "configuration": {
+        "mode": "live",
+        "provider": "openrouter",
+        "model": "openai/text-embedding-3-small",
+        "model_calls": true
+      },
+      "metrics": {
+        "cases": 5,
+        "recall_at_3": 1.0
+      },
+      "latency_ms": {
+        "count": 5,
+        "p50": 594.0,
+        "p95": 618.8
+      }
+    },
+    "embedding_ollama": {
+      "schema_version": 1,
+      "suite": "memory",
+      "version": "0.1.0a1",
+      "corpus_sha256": "e984e3384664273c7211e8da2a93fb1c1ca1bfadc40b7b91924d5452111e312e",
+      "configuration": {
+        "mode": "live",
+        "provider": "ollama",
+        "model": "bge-m3:latest",
+        "model_calls": true
+      },
+      "metrics": {
+        "cases": 5,
+        "recall_at_3": 1.0
+      },
+      "latency_ms": {
+        "count": 5,
+        "p50": 2328.0,
+        "p95": 2581.2
+      }
+    },
+    "decision_prompt_only": {
+      "schema_version": 1,
+      "suite": "decisions",
+      "version": "0.1.0a1",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
+      "configuration": {
+        "mode": "live",
+        "model_calls": true,
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash-lite",
+        "decision_timeout_seconds": 3
+      },
+      "metrics": {
+        "cases": 20,
+        "true_positive": 8,
+        "false_positive": 0,
+        "false_negative": 1,
+        "true_negative": 11,
+        "accuracy": 0.95,
+        "precision": 1.0,
+        "recall": 0.8888888888888888,
+        "semantic_failures": 2
+      },
+      "latency_ms": {
+        "count": 20,
+        "p50": 0.0,
+        "p95": 778.35
+      }
+    },
+    "decision_structured_api": {
+      "schema_version": 1,
+      "suite": "decisions",
+      "version": "0.1.0a1",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
+      "configuration": {
+        "mode": "live",
+        "model_calls": true,
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash-lite",
+        "decision_timeout_seconds": 3
+      },
+      "metrics": {
+        "cases": 20,
+        "true_positive": 9,
+        "false_positive": 0,
+        "false_negative": 0,
+        "true_negative": 11,
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "semantic_failures": 0
+      },
+      "latency_ms": {
+        "count": 20,
+        "p50": 0.0,
+        "p95": 745.75
+      }
+    },
+    "decision_ollama": {
+      "schema_version": 1,
+      "suite": "decisions",
+      "version": "0.1.0a1",
+      "corpus_sha256": "30b91dc8581ec6b996d80e9dd35fbba425cafd701c0cf963e7c8e770a28fb059",
+      "configuration": {
+        "mode": "live",
+        "model_calls": true,
+        "provider": "ollama",
+        "model": "qwen3:4b",
+        "decision_timeout_seconds": 3
+      },
+      "metrics": {
+        "cases": 20,
+        "true_positive": 7,
+        "false_positive": 0,
+        "false_negative": 2,
+        "true_negative": 11,
+        "accuracy": 0.9,
+        "precision": 1.0,
+        "recall": 0.7777777777777778,
+        "semantic_failures": 6
+      },
+      "latency_ms": {
+        "count": 20,
+        "p50": 0.0,
+        "p95": 3016.0
+      }
+    },
+    "human_asr": {
+      "schema_version": 1,
+      "suite": "speech",
+      "version": "0.1.0a1",
+      "corpus_sha256": "931987a8058b7fc2ab8cedf60eca1975d009c27c5756cacf4e36ca092ea21440",
+      "configuration": {
+        "mode": "live",
+        "repeats": 3,
+        "variant": "original",
+        "provider": "openrouter",
+        "model": "openai/whisper-large-v3-turbo"
+      },
+      "provenance": "Google FLEURS, cmn_hans_cn validation, human read speech; complete clips converted from float WAV to PCM16 mono 16 kHz via PyAV, no cuts.",
+      "metrics": {
+        "cases": 9,
+        "failures": 0,
+        "cancellations": 0,
+        "character_error_rate": 0.050793650793650794
+      },
+      "latency_ms": {
+        "count": 9,
+        "p50": 1500.0,
+        "p95": 2106.2
+      },
+      "echo": {
+        "scope": "Human source clips with digitally simulated 0.4 gain, 180 ms echo delay and independent 0.5-gain overlapping read speech. Not a room recording or full AEC.",
+        "cases": [
+          {
+            "scenario": "scaled_echo",
+            "packet_ms": 20,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 382,
+            "user_voice_frames": 0,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 919,
+              "p50": 0.012,
+              "p95": 0.155
+            }
+          },
+          {
+            "scenario": "double_talk",
+            "packet_ms": 20,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 26,
+            "user_voice_frames": 664,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 919,
+              "p50": 0.073,
+              "p95": 0.141
+            }
+          },
+          {
+            "scenario": "scaled_echo",
+            "packet_ms": 100,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 382,
+            "user_voice_frames": 0,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 184,
+              "p50": 0.126,
+              "p95": 0.705
+            }
+          },
+          {
+            "scenario": "double_talk",
+            "packet_ms": 100,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 26,
+            "user_voice_frames": 664,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 184,
+              "p50": 0.358,
+              "p95": 0.684
+            }
+          }
+        ]
+      }
+    },
+    "human_asr_quiet": {
+      "schema_version": 1,
+      "suite": "speech",
+      "version": "0.1.0a1",
+      "corpus_sha256": "931987a8058b7fc2ab8cedf60eca1975d009c27c5756cacf4e36ca092ea21440",
+      "configuration": {
+        "mode": "live",
+        "repeats": 1,
+        "variant": "quiet",
+        "provider": "openrouter",
+        "model": "openai/whisper-large-v3-turbo"
+      },
+      "provenance": "Google FLEURS, cmn_hans_cn validation, human read speech; complete clips converted from float WAV to PCM16 mono 16 kHz via PyAV, no cuts.",
+      "metrics": {
+        "cases": 3,
+        "failures": 0,
+        "cancellations": 0,
+        "character_error_rate": 0.047619047619047616
+      },
+      "latency_ms": {
+        "count": 3,
+        "p50": 1563.0,
+        "p95": 2364.0
+      },
+      "echo": {
+        "scope": "Human source clips with digitally simulated 0.4 gain, 180 ms echo delay and independent 0.5-gain overlapping read speech. Not a room recording or full AEC.",
+        "cases": [
+          {
+            "scenario": "scaled_echo",
+            "packet_ms": 20,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 382,
+            "user_voice_frames": 0,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 919,
+              "p50": 0.01,
+              "p95": 0.151
+            }
+          },
+          {
+            "scenario": "double_talk",
+            "packet_ms": 20,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 26,
+            "user_voice_frames": 664,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 919,
+              "p50": 0.072,
+              "p95": 0.135
+            }
+          },
+          {
+            "scenario": "scaled_echo",
+            "packet_ms": 100,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 382,
+            "user_voice_frames": 0,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 184,
+              "p50": 0.115,
+              "p95": 0.766
+            }
+          },
+          {
+            "scenario": "double_talk",
+            "packet_ms": 100,
+            "voice_frames": 382,
+            "echo_voice_frames_muted": 26,
+            "user_voice_frames": 664,
+            "user_voice_frames_muted": 0,
+            "filter_ms": {
+              "count": 184,
+              "p50": 0.366,
+              "p95": 0.702
+            }
+          }
+        ]
+      }
+    },
+    "human_pipeline": {
+      "schema_version": 1,
+      "suite": "pipeline",
+      "version": "0.1.0a1",
+      "corpus_sha256": "04195c9b24092e66e1f565d19495440c4f467922d6e9a8575a349e002cbba89f",
+      "configuration": {
+        "asr": {
+          "provider": "openrouter",
+          "model": "openai/whisper-large-v3-turbo"
+        },
+        "llm": {
+          "provider": "openrouter",
+          "model": "google/gemini-2.5-flash-lite"
+        },
+        "tts": {
+          "provider": "openrouter",
+          "model": "qwen/qwen-audio-3.0-tts-flash"
+        },
+        "parameters": {
+          "packet_ms": 30,
+          "max_tokens": 128,
+          "context_tokens": 8192,
+          "partial_interval_seconds": 2.5,
+          "configured_endpoint_silence_ms": 550,
+          "effective_endpoint_silence_ms": 570,
+          "timeout_seconds": 90
+        },
+        "fixture_id": "fleurs-zh-2"
+      },
+      "scope": {
+        "synthetic_input": false,
+        "hardware_capture": false,
+        "websocket_transport": false,
+        "actual_playback_measured": false,
+        "human_asr_accuracy_measured": true,
+        "timing_origin": "last PCM frame classified as speech by VAD, using the monotonic feed clock",
+        "first_text_boundary": "first nonempty Runtime response_delta received by an in-process subscriber",
+        "audio_ready_boundary": "first Runtime audio event received; synthesis and reference decoding complete, no playback"
+      },
+      "metrics": {
+        "cases": 3,
+        "failures": 0,
+        "asr_cancelled_requests": 3,
+        "endpoint_detection_ms_p50": 577.96,
+        "endpoint_detection_ms_p95": 578.374,
+        "speech_end_to_transcript_ms_p50": 2542.74,
+        "speech_end_to_transcript_ms_p95": 2742.378,
+        "speech_end_to_first_text_ms_p50": 3144.51,
+        "speech_end_to_first_text_ms_p95": 3253.608,
+        "speech_end_to_audio_ready_ms_p50": 4899.73,
+        "speech_end_to_audio_ready_ms_p95": 5009.215,
+        "peak_python_rss_mib": 76.88,
+        "mean_cer": 0.038461538461538464
+      },
+      "latencies": {
+        "endpoint_detection_ms": {
+          "count": 3,
+          "p50": 577.96,
+          "p95": 578.374
+        },
+        "speech_end_to_transcript_ms": {
+          "count": 3,
+          "p50": 2542.74,
+          "p95": 2742.378
+        },
+        "speech_end_to_first_text_ms": {
+          "count": 3,
+          "p50": 3144.51,
+          "p95": 3253.608
+        },
+        "speech_end_to_audio_ready_ms": {
+          "count": 3,
+          "p50": 4899.73,
+          "p95": 5009.215
+        }
+      }
+    },
+    "summary_before": {
+      "schema_version": 1,
+      "suite": "long_memory",
+      "version": "0.2.0a1",
+      "corpus_sha256": "fb0bd42d51e27ac9a217103b5d6554b558756285a0fe797e285eb47efcfbf721",
+      "configuration": {
+        "mode": "live",
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash-lite"
+      },
+      "provenance": "32 project-authored fictional sessions, 2 records each; literal code retention is a narrow fact-preservation metric.",
+      "metrics": {
+        "sessions": 32,
+        "summaries": 37,
+        "maximum_level": 3,
+        "literal_fact_survival": 0.34375,
+        "background_failures": 0,
+        "restart_preserved_top_summaries": 1,
+        "source_delete_invalidated_descendants": 1
+      }
+    },
+    "summary_after": {
+      "schema_version": 1,
+      "suite": "long_memory",
+      "version": "0.2.0a1",
+      "corpus_sha256": "fb0bd42d51e27ac9a217103b5d6554b558756285a0fe797e285eb47efcfbf721",
+      "configuration": {
+        "mode": "live",
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash-lite"
+      },
+      "provenance": "32 project-authored fictional sessions, 2 records each; literal code retention is a narrow fact-preservation metric.",
+      "metrics": {
+        "sessions": 32,
+        "summaries": 37,
+        "maximum_level": 3,
+        "literal_fact_survival": 1.0,
+        "background_failures": 0,
+        "restart_preserved_top_summaries": 1,
+        "source_delete_invalidated_descendants": 1
+      }
+    }
+  }
+}

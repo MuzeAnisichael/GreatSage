@@ -14,7 +14,7 @@ analysis = Analysis(
     [str(root / 'scripts' / 'backend_entry.py')], pathex=[str(root)],
     binaries=binaries, datas=data,
     hookspath=[str(root / 'scripts' / 'hooks')],
-    hiddenimports=['pyaudiowpatch', 'webrtcvad', 'win32com.client', 'pythoncom',
+    hiddenimports=['pyaudiowpatch', 'webrtcvad', 'win32com.client', 'pythoncom', 'tiktoken_ext.openai_public',
                    'pywintypes', 'faster_whisper', 'av', 'uvicorn.logging',
                    'uvicorn.loops.asyncio', 'uvicorn.protocols.http.h11_impl',
                    'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.lifespan.on'],

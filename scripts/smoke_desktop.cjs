@@ -14,15 +14,22 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const live = process.argv.includes('--live');
 const parallelSources = process.argv.includes('--parallel-sources');
+const packaged = process.argv.includes('--packaged');
+const packageResources = path.resolve(__dirname, '..', 'release', 'win-unpacked', 'resources');
+if (packaged) {
+  Object.defineProperty(app, 'isPackaged', { value: true });
+  Object.defineProperty(process, 'resourcesPath', { value: packageResources });
+}
 const runDir = path.resolve(__dirname, '..', '.runtime', 'desktop-smoke', new Date().toISOString().replace(/[:.]/g, '-'));
 fs.mkdirSync(runDir, { recursive: true });
+app.setPath('userData', path.join(runDir, 'electron-profile'));
 process.env.GREATSAGE_DATA_DIR = path.join(runDir, 'data');
 const reports = [];
 const children = [];
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function (...args) {
   const child = originalSpawn.apply(this, args);
-  if (Array.isArray(args[1]) && args[1].includes('greatsage')) children.push(child);
+  if (String(args[0]).endsWith('greatsage-backend.exe') || Array.isArray(args[1]) && args[1].includes('greatsage')) children.push(child);
   return child;
 };
 // Instrument only this test's Electron process; leave user apps untouched.
@@ -65,13 +72,13 @@ function redact(value) {
 app.on('will-quit', event => {
   const childrenStopped = children.length > 0 && children.every(child => child.exitCode !== null || child.signalCode !== null);
   reports.push({ check: 'Python child stopped on quit', passed: childrenStopped });
-  const result = { success: completed && reports.every(report => report.passed), live, parallelSources, reports };
+  const result = { success: completed && reports.every(report => report.passed), live, parallelSources, packaged, reports };
   fs.writeFileSync(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2));
   console.log(`${result.success ? 'PASS' : 'FAIL'}: ${path.join(runDir, 'result.json')}`);
   process.exitCode = result.success ? 0 : 1;
   if (!result.success) { event.preventDefault(); app.exit(1); }
 });
-require('../desktop/main.cjs');
+require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs') : '../desktop/main.cjs');
 
 (async () => {
   let main;
@@ -94,6 +101,7 @@ require('../desktop/main.cjs');
       return response.json();
     };
     originalSettings = await request('/api/settings');
+    if (!live) await request('/api/settings', 'PUT', { llm: { base_url: 'http://127.0.0.1:1/v1', api_key_env: '' }, embedding: { enabled: false } });
     check((await request('/api/status')).listening === false, 'Listening starts disabled');
     await until(() => evaluate("!document.querySelector('#refresh-sources').disabled"), 'initial audio device enumeration');
     check(await evaluate("document.querySelector('#quick-microphone-device').options.length >= 1 && document.querySelector('#quick-process').options.length >= 1 && !document.querySelector('.toast.error')"), 'Audio sources finish loading without errors');
@@ -105,7 +113,8 @@ require('../desktop/main.cjs');
     check(await evaluate('document.body.scrollWidth <= document.documentElement.clientWidth + 1'), 'Console has no horizontal overflow');
     const sessionId = (await request('/api/status')).session_id;
     const fixtureCode = `import json,sys\nfrom pathlib import Path\nfrom greatsage.memory import MemoryStore\ndata=json.load(sys.stdin)\nstore=MemoryStore(Path(data['directory']))\nolder_session=store.new_session()\nolder=store.add_message('user','SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH',session_id=older_session)\nsummary=store.save_summary('SYNTHETIC READ ONLY DESKTOP SUMMARY',[older['id']],model='smoke-fixture')\nfor index in range(115): store.add_message('observation','SYNTHETIC FILLER '+str(index),source='system',session_id=older_session)\nsource=store.add_message('user','SYNTHETIC CASCADE SOURCE',session_id=data['session'])\nstore.add_message('assistant','SYNTHETIC CASCADE DERIVED ANSWER',session_id=data['session'],metadata={'source_ids':[source['id']]})\nstore.close()\nprint(json.dumps({'older_id':older['id'],'summary_id':summary['id'],'source_id':source['id']}))`;
-    const fixture = childProcess.spawnSync(path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe'), ['-c', fixtureCode], { cwd: path.resolve(__dirname, '..'), input: JSON.stringify({ directory: process.env.GREATSAGE_DATA_DIR, session: sessionId }), encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const v02Fixture = fixtureCode.replace('store.close()', "old=store.add_memory('SYNTHETIC preference A')\nstore.add_memory('SYNTHETIC preference B',conflicts=[old['id']])\nstore.save_snapshot('fixture-audit-trace','fixture_audit',{'llm':{'model':'fixture'}},[{'role':'user','content':'SYNTHETIC PRIVATE REQUEST BODY'}],[source['id']],retain_content=True)\nstore.close()");
+    const fixture = childProcess.spawnSync(path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe'), ['-c', v02Fixture], { cwd: path.resolve(__dirname, '..'), input: JSON.stringify({ directory: process.env.GREATSAGE_DATA_DIR, session: sessionId }), encoding: 'utf8', windowsHide: true, timeout: 15000 });
     if (fixture.status !== 0) throw new Error(`Memory fixture failed: ${redact(fixture.stderr)}`);
     const fixtureIds = JSON.parse(fixture.stdout);
     await new Promise(resolve => { main.webContents.once('did-finish-load', resolve); main.webContents.reload(); });
@@ -136,11 +145,40 @@ require('../desktop/main.cjs');
     await evaluate("document.querySelector('#confirm-dialog button[value=confirm]').click()");
     await until(() => evaluate(`!(${card(revised)})`), 'fixture memory removal');
     check(true, 'Synthetic memory add, revise and delete through the UI');
+    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 1"), 'pending memory conflict');
+    await evaluate("document.querySelector('.conflict-card .panel-tools button:last-child').click()");
+    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 0"), 'resolve memory conflict');
+    check((await request('/api/memories')).filter(row => row.text.startsWith('SYNTHETIC preference')).length === 2, 'Conflict stays pending until explicit keep-both choice');
+    await screenshot(main, 'memory-v02.png');
+    await evaluate("document.querySelector('[data-view=logs]').click();document.querySelector('#audit-refresh').click()");
+    await until(() => evaluate("[...document.querySelectorAll('#audit-list button')].some(node=>node.textContent.includes('fixture_audit'))"), 'audit fixture');
+    await evaluate("[...document.querySelectorAll('#audit-list button')].find(node=>node.textContent.includes('fixture_audit')).click()");
+    await until(() => evaluate("document.querySelector('.audit-content').textContent.includes('request_sha256')"), 'audit metadata');
+    check(!await evaluate("document.querySelector('.audit-content').textContent.includes('SYNTHETIC PRIVATE REQUEST BODY')"), 'Audit opens metadata without request body');
+    await evaluate("document.querySelector('.audit-body').click()");
+    await until(() => evaluate("document.querySelector('.audit-content').textContent.includes('SYNTHETIC PRIVATE REQUEST BODY')"), 'audit opt-in body');
+    check(true, 'Saved request body can be viewed explicitly');
+    const exportPath = path.join(runDir, 'audit-metadata.json');
+    const downloaded = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Audit download timed out')), 15000);
+      main.webContents.session.once('will-download', (_event, item) => {
+        item.setSavePath(exportPath);
+        item.once('done', (_event, state) => { clearTimeout(timer); state === 'completed' ? resolve() : reject(new Error('Audit download ' + state)); });
+      });
+    });
+    await evaluate("document.querySelector('.audit-export').click()");
+    await downloaded;
+    check(!fs.readFileSync(exportPath, 'utf8').includes('SYNTHETIC PRIVATE REQUEST BODY'), 'Metadata export downloads JSON without archived body');
+    await screenshot(main, 'audit-v02.png');
+    await evaluate("document.querySelector('.audit-close').click();document.querySelector('[data-view=memory]').click()");
     await until(() => evaluate("[...document.querySelectorAll('.summary-card')].some(node=>node.textContent.includes('SYNTHETIC READ ONLY DESKTOP SUMMARY'))"), 'read-only summary card');
     check(await evaluate("[...document.querySelectorAll('.summary-card')].every(node=>!node.querySelector('.record-actions'))"), 'Summaries expose no memory mutation controls');
     await evaluate(`document.querySelector('.summary-card [data-source-id="${fixtureIds.older_id}"]').click()`);
-    await until(() => evaluate("document.querySelector('#history-list').textContent.includes('SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH')"), 'source lookup beyond recent 100 messages');
-    check(true, 'Summary source opens server-backed historical search');
+    await until(() => evaluate("document.querySelector('#record-dialog').open && document.querySelector('#record-detail').textContent.includes('SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH')"), 'source lookup beyond recent 100 messages');
+    check(true, 'Summary source opens a source detail dialog');
+    await evaluate("document.querySelector('#record-close').click();document.querySelector('.archive-panel').open=true");
+    await until(() => evaluate("document.querySelectorAll('.archive-record').length >= 20"), 'archived session pagination');
+    check(true, 'Old session originals can be paged');
     await evaluate("document.querySelector('#history-search').value='';document.querySelector('#history-search').dispatchEvent(new Event('input',{bubbles:true}))");
     check(await evaluate("!document.querySelector('#history-list').textContent.includes('SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH')"), 'Clearing search restores recent history');
     await evaluate(`document.querySelector('#history-search').value=${JSON.stringify(fixtureIds.source_id)};document.querySelector('#history-search').dispatchEvent(new Event('input',{bubbles:true}))`);
@@ -150,8 +188,15 @@ require('../desktop/main.cjs');
     await evaluate("document.querySelector('#confirm-dialog button[value=confirm]').click()");
     await until(() => evaluate("!document.querySelector('#chat-messages').textContent.includes('SYNTHETIC CASCADE DERIVED ANSWER')"), 'derived response removed from chat');
     check(true, 'Deleting a source removes derived chat content from the renderer');
+    const snapshot = (await request('/api/audit?trace_id=fixture-audit-trace'))[0];
+    check((await request(`/api/audit/${snapshot.id}?include_content=true`)).content === null, 'Source deletion invalidates archived request body');
 
     if (live) {
+      if (packaged) {
+        await request('/api/settings', 'PUT', { llm: { tokenizer: 'o200k_base' } });
+        const prepared = await request('/api/tokenizer/prepare', 'POST');
+        check((await request('/api/tokenizer')).ready === true, 'Packaged tokenizer downloads, verifies and loads its native encoding');
+      }
       await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_enabled]').checked=true;document.querySelector('[name=voice_language]').value='zh-CN';document.querySelector('[name=output_language]').value='zh-CN';document.querySelector('[name=\"tts.provider\"]').value='system';document.querySelector('[name=\"tts.provider\"]').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[name=\"tts.voice\"]').value='';document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
       await until(async () => (await request('/api/settings')).tts.provider === 'system', 'local speech settings');
       await until(() => evaluate("document.querySelector('#system-voice-select').options.length > 1"), 'system voice catalog');

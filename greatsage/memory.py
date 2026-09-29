@@ -11,6 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .semantic import VectorIndexMixin, fuse
+from .audit import AuditMixin
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
@@ -41,7 +44,7 @@ def _relevance(query: str, text: str) -> float:
                for term in _terms(query) if term in folded)
 
 
-class MemoryStore:
+class MemoryStore(VectorIndexMixin, AuditMixin):
     """One WAL database, serialized transactions, and immutable source IDs.
 
     A revision creates a new ID, invalidating all derived records first. This
@@ -87,7 +90,16 @@ class MemoryStore:
             CREATE INDEX IF NOT EXISTS event_time ON events(created_at);
             CREATE TABLE IF NOT EXISTS forgotten_memories (
                 id TEXT PRIMARY KEY, source_ids TEXT NOT NULL, deleted_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS memory_conflicts (
+                candidate_id TEXT PRIMARY KEY, existing_ids TEXT NOT NULL,
+                reason TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
+        for table, field, declaration in (("memories", "status", "TEXT NOT NULL DEFAULT 'active'"),
+                                           ("summaries", "level", "INTEGER NOT NULL DEFAULT 1")):
+            if field not in {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {field} {declaration}")
+        self._init_vectors()
+        self._init_audit()
         self._fts = True
         try:
             self._db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(id UNINDEXED,text,tokenize='unicode61')")
@@ -205,24 +217,90 @@ class MemoryStore:
             sources.append(source)
         return sources
 
-    def add_memory(self, text: str, source_ids: list[str] | None = None) -> dict:
+    def add_memory(self, text: str, source_ids: list[str] | None = None, conflicts: list[str] | None = None) -> dict:
         if not text.strip():
             raise ValueError("Memory text cannot be empty")
         source_ids = list(dict.fromkeys(source_ids or []))
         with self._lock, self._db:
             self._validate_sources(source_ids)
+            conflicts = list(dict.fromkeys(conflicts or []))
+            for id in conflicts:
+                if not self._db.execute("SELECT 1 FROM memories WHERE id=? AND status='active'", (id,)).fetchone():
+                    raise ValueError("Conflicting memory no longer exists")
             row = dict(id=_id(), text=text, source_ids=source_ids, created_at=_now(),
-                       version=1, origin="user_explicit", revision_of=None)
-            self._db.execute("INSERT INTO memories VALUES (?,?,?,?,?,?,?)",
-                             (row["id"], text, _json(source_ids), row["created_at"], 1, "user_explicit", None))
+                       version=1, origin="user_explicit", revision_of=None, status="pending" if conflicts else "active")
+            self._db.execute("INSERT INTO memories (id,text,source_ids,created_at,version,origin,revision_of,status) VALUES (?,?,?,?,?,?,?,?)",
+                             (row["id"], text, _json(source_ids), row["created_at"], 1, "user_explicit", None, row["status"]))
             self._db.executemany("INSERT INTO dependencies VALUES ('memory',?,?)", [(row["id"], sid) for sid in source_ids])
+            if conflicts:
+                self._db.execute("INSERT INTO memory_conflicts VALUES (?,?,?,?)", (row["id"], _json(conflicts), "possible_contradiction", row["created_at"]))
             return row
 
     def list_memories(self) -> list[dict]:
         with self._lock:
-            return [self._row(row) for row in self._db.execute("SELECT * FROM memories ORDER BY rowid DESC")]
+            return [self._row(row) for row in self._db.execute("SELECT * FROM memories WHERE status='active' ORDER BY rowid DESC")]
+
+    def memory_candidates(self, text: str, limit: int = 24) -> list[dict]:
+        return sorted(self.list_memories(), key=lambda item: (_relevance(text, item["text"]), item["created_at"]), reverse=True)[:limit]
+
+    def conflicts(self) -> list[dict]:
+        with self._lock:
+            result = []
+            for row in self._db.execute("SELECT * FROM memory_conflicts ORDER BY created_at DESC"):
+                candidate = self.record(row["candidate_id"])
+                if candidate:
+                    existing = [item for id in json.loads(row["existing_ids"]) if (item := self.record(id))]
+                    result.append({"candidate": candidate, "existing": existing, "reason": row["reason"]})
+            return result
+
+    def resolve_conflict(self, candidate_id: str, resolution: str) -> dict:
+        if resolution not in ("replace", "keep_existing", "keep_both"):
+            raise ValueError("Invalid memory conflict resolution")
+        with self._lock:
+            with self._db:
+                conflict = self._db.execute("SELECT * FROM memory_conflicts WHERE candidate_id=?", (candidate_id,)).fetchone()
+                if not conflict or not self.record(candidate_id):
+                    raise KeyError(candidate_id)
+                if resolution == "keep_existing":
+                    self._delete_record("memory", candidate_id)
+                else:
+                    if resolution == "replace":
+                        for id in json.loads(conflict["existing_ids"]):
+                            self._delete_record("memory", id)
+                    if not self.record(candidate_id):
+                        raise ValueError("Candidate depended on a replaced record")
+                    self._db.execute("UPDATE memories SET status='active' WHERE id=?", (candidate_id,))
+                self._db.execute("DELETE FROM memory_conflicts WHERE candidate_id=?", (candidate_id,))
+            self._checkpoint()
+            return {"candidate_id": candidate_id, "resolution": resolution}
+
+    def record_details(self, id: str) -> dict:
+        with self._lock:
+            record = self.record(id)
+            if not record:
+                raise KeyError(id)
+            sources = record.get("source_ids", record.get("metadata", {}).get("source_ids", []))
+            return {"record": record, "sources": [item for id in sources if (item := self.record(id))],
+                    "dependents": [dict(row) for row in self._db.execute("SELECT owner_type,owner_id FROM dependencies WHERE source_id=? LIMIT 100", (id,))]}
+
+    def history_page(self, cursor: int | None = None, session_id: str | None = None, limit: int = 30) -> dict:
+        limit = max(1, min(int(limit), 100))
+        with self._lock:
+            clauses, args = [], []
+            if cursor is not None:
+                clauses.append("rowid < ?"); args.append(int(cursor))
+            if session_id:
+                clauses.append("session_id=?"); args.append(session_id)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            rows = self._db.execute("SELECT rowid AS cursor,* FROM messages" + where + " ORDER BY rowid DESC LIMIT ?", [*args, limit + 1]).fetchall()
+            items = [self._row(row) for row in rows[:limit]]
+            next_cursor = items[-1]["cursor"] if len(rows) > limit else None
+            for item in items:
+                item.pop("cursor")
+            return {"items": items, "next_cursor": next_cursor}
 
     def _redact_events(self, ids: set[str], texts: set[str], traces: set[str]) -> None:
+        self._redact_snapshots(ids, texts, traces)
         # Audit data is normally references, but callers may have logged bodies.
         # Redact the whole event if any deleted source is present anywhere in it.
         for row in self._db.execute("SELECT id,data,trace_id FROM events").fetchall():
@@ -251,6 +329,9 @@ class MemoryStore:
                     self._db.execute("DELETE FROM message_fts WHERE id=?", (owner,))
         for source_id in all_ids:
             self._db.execute("DELETE FROM dependencies WHERE source_id=? OR owner_id=?", (source_id, source_id))
+        self._drop_vectors(all_ids)
+        for id in all_ids:
+            self._db.execute("DELETE FROM memory_conflicts WHERE candidate_id=?", (id,))
         return all_ids
 
     def _checkpoint(self) -> None:
@@ -314,9 +395,9 @@ class MemoryStore:
                 self._validate_sources(old["source_ids"])
                 self._delete_record("memory", id)
                 row = dict(id=_id(), text=text, source_ids=old["source_ids"], created_at=_now(),
-                           version=old["version"] + 1, origin="user_explicit", revision_of=id)
-                self._db.execute("INSERT INTO memories VALUES (?,?,?,?,?,?,?)",
-                                 (row["id"], text, _json(row["source_ids"]), row["created_at"], row["version"], row["origin"], id))
+                           version=old["version"] + 1, origin="user_explicit", revision_of=id, status="active")
+                self._db.execute("INSERT INTO memories (id,text,source_ids,created_at,version,origin,revision_of,status) VALUES (?,?,?,?,?,?,?,?)",
+                                 (row["id"], text, _json(row["source_ids"]), row["created_at"], row["version"], row["origin"], id, "active"))
                 self._db.executemany("INSERT INTO dependencies VALUES ('memory',?,?)", [(row["id"], sid) for sid in row["source_ids"]])
             self._checkpoint()
             return row
@@ -325,8 +406,11 @@ class MemoryStore:
         with self._lock:
             with self._db:
                 self._db.execute("DELETE FROM memories WHERE source_ids != '[]'")
-                for table in ("messages", "summaries", "sessions", "events", "dependencies", "forgotten_memories"):
+                for table in ("messages", "summaries", "sessions", "events", "dependencies", "forgotten_memories", "request_snapshots"):
                     self._db.execute(f"DELETE FROM {table}")
+                self._db.execute("DELETE FROM memory_conflicts WHERE candidate_id NOT IN (SELECT id FROM memories)")
+                self._db.execute("DELETE FROM vectors WHERE record_id NOT IN (SELECT id FROM memories)")
+                self._db.execute("DELETE FROM vector_records WHERE record_id NOT IN (SELECT id FROM memories)")
                 if self._fts:
                     self._db.execute("DELETE FROM message_fts")
             self._checkpoint()
@@ -355,19 +439,38 @@ class MemoryStore:
         with self._lock, self._db:
             sources = self._validate_sources(source_ids)
             session_ids = {source["session_id"] for source in sources}
-            if len(session_ids) != 1:
+            level = 1 + max(source.get("level", 0) for source in sources)
+            if len(session_ids) != 1 and any("level" not in source for source in sources):
                 raise ValueError("A segment summary must belong to one session")
             # Repeated jobs for the same segment return the committed record.
             for existing in self._db.execute("SELECT * FROM summaries WHERE source_ids=?", (_json(source_ids),)):
                 return self._row(existing)
             row = dict(id=_id(), text=text, source_ids=source_ids, created_at=_now(), model=model,
-                       prompt_version=prompt_version, version=1, session_id=next(iter(session_ids)),
+                       prompt_version=prompt_version, version=1, session_id=next(iter(session_ids)) if len(session_ids) == 1 else "*",
                        source_chars=sum(len(source["text"]) for source in sources), summary_chars=len(text),
                        time_start=min(source.get("time_start", source["created_at"]) for source in sources),
-                       time_end=max(source.get("time_end", source["created_at"]) for source in sources))
-            self._db.execute("INSERT INTO summaries VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", tuple(_json(value) if key == "source_ids" else value for key, value in row.items()))
+                       time_end=max(source.get("time_end", source["created_at"]) for source in sources), level=level)
+            self._db.execute("INSERT INTO summaries (id,text,source_ids,created_at,model,prompt_version,version,session_id,source_chars,summary_chars,time_start,time_end,level) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(_json(value) if key == "source_ids" else value for key, value in row.items()))
             self._db.executemany("INSERT INTO dependencies VALUES ('summary',?,?)", [(row["id"], sid) for sid in source_ids])
             return row
+
+    def compression_batch(self, active_session: str) -> list[dict]:
+        """Resume old sessions first, then consolidate unparented summaries up to level 3."""
+        with self._lock:
+            for session in reversed(self.sessions()):
+                current = session["id"] == active_session
+                candidates = self.compression_candidates(session["id"], keep_recent=8 if current else 0)
+                if len(candidates) >= (6 if current else 2):
+                    return candidates[:16]
+            for level in (1, 2):
+                rows = [self._row(row) for row in self._db.execute("""
+                    SELECT s.* FROM summaries s WHERE level=? AND NOT EXISTS (
+                        SELECT 1 FROM dependencies d WHERE d.owner_type='summary' AND d.source_id=s.id)
+                    ORDER BY time_start LIMIT 8
+                """, (level,))]
+                if len(rows) >= 4:
+                    return rows
+            return []
 
     def summaries(self, limit: int = 8) -> list[dict]:
         with self._lock:
@@ -387,7 +490,7 @@ class MemoryStore:
                 leaves.add(source_id)
         return leaves
 
-    def context(self, query: str, session_id: str, max_chars: int = 16000) -> dict:
+    def context(self, query: str, session_id: str, max_chars: int = 16000, semantic: list[dict] | None = None) -> dict:
         if max_chars < 100:
             raise ValueError("Context budget must be at least 100 characters")
         with self._lock:
@@ -417,11 +520,16 @@ class MemoryStore:
             result["recent"].reverse()
             used_ids = {item["id"] for item in result["recent"]}
             memories = sorted(self.list_memories(), key=lambda item: (_relevance(query, item["text"]), item["created_at"]), reverse=True)
+            semantic = semantic or []
+            memories = fuse(memories, [item for item in semantic if item["kind"] == "memory"])
             take("memories", memories, int(max_chars * .20))
-            take("retrieved", [item for item in self.search(query, 12) if item["id"] not in used_ids], int(max_chars * .15))
+            retrieved = fuse(self.search(query, 12), [item for item in semantic if item["kind"] == "message"])
+            take("retrieved", [item for item in retrieved if item["id"] not in used_ids], int(max_chars * .15))
             used_ids.update(item["id"] for item in result["retrieved"])
             summaries = [item for item in self.summaries(100) if not used_ids.intersection(self._leaf_sources(item["source_ids"]))]
             summaries.sort(key=lambda item: (_relevance(query, item["text"]) + (2 if item["session_id"] == session_id else 0), item["created_at"]), reverse=True)
+            eligible = {item["id"] for item in summaries}
+            summaries = fuse(summaries, [item for item in semantic if item["id"] in eligible])
             for summary in summaries:
                 leaves = self._leaf_sources(summary["source_ids"])
                 if not used_ids.intersection(leaves):
@@ -436,6 +544,7 @@ class MemoryStore:
         with self._lock:
             with self._db:
                 self._db.execute("DELETE FROM events WHERE created_at<?", (cutoff,))
+                self._db.execute("DELETE FROM request_snapshots WHERE created_at<?", (cutoff,))
             self._checkpoint()
 
     def close(self) -> None:

@@ -1,6 +1,6 @@
 {
   "name": "greatsage",
-  "version": "0.1.0-alpha.1",
+  "version": "0.2.0-alpha.1",
   "private": true,
   "author": "GreatSage contributors",
   "license": "MIT",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "check": "node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check ui/app.js && node --check ui/client.js && node --check ui/pet.js",
+    "check": "node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check ui/app.js && node --check ui/client.js && node --check ui/pet.js && node --check ui/v02.js && node --check ui/audit.js",
     "package": "powershell -NoProfile -File scripts/build.ps1"
   },
   "devDependencies": { "electron": "^40.0.0", "electron-builder": "^26.0.0" },
