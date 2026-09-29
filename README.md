@@ -4,7 +4,9 @@
 
 名称致敬《关于我转生变成史莱姆这档事》中的“大贤者（Great Sage）”能力；项目采用自己的界面与桌宠实现。[名称参考](https://www.crunchyroll.com/news/features/2019/5/3/explore-rimurus-growth-in-this-official-skill-tree) · [项目仓库](https://github.com/MuzeAnisichael/GreatSage)
 
-**当前为 v0.2 alpha，以 Windows 11、本机 Python 3.11 环境为开发基准。** 本版增加语义记忆、冲突裁决、分层摘要、请求审计与语音质量评测。真人朗读经过完整 API 链路的三轮测试中，首字 P50 约 3.14 秒、音频就绪约 4.90 秒；原定首字 1–2 秒、语音起播 2–3 秒目标尚未达到。详见 [v0.2 验证记录](docs/validation-v0.2.md)。
+**当前代码为 v0.2 alpha，以 Windows 11、本机 Python 3.11 环境为开发基准。** 已实现语义记忆、冲突裁决、分层摘要、请求审计与语音质量评测。用户已确认 v0.3 以资料检索、纪要／待办／文档产出和受控工具执行为主线；这些任务能力尚未交付。第一次进入仓库可先看[项目现状](docs/project-status.md)与[路线图](docs/roadmap.md)。
+
+真人朗读经过完整 API 链路的三轮测试中，首字 P50 约 3.14 秒、音频就绪约 4.90 秒；原定首字 1–2 秒、语音起播 2–3 秒目标尚未达到。音频就绪不等于实际播放。样本与未验收项见[v0.2 验证记录](docs/validation-v0.2.md)。
 
 ## 当前能力
 
@@ -17,7 +19,9 @@
 - 独立桌宠、摸摸互动、气泡、状态动画、托盘与主控制台。
 - 动态事件日志、交互 trace ID、受控请求快照及导出、配置与实际 Skill 版本、阶段耗时和服务返回的用量信息。
 
-首版只理解人的语音内容。**不包含定时提醒、打开软件、修改文件、命令执行或 Skill 工具执行。** “提醒”指对当前内容作出解释或提醒，不会创建闹钟和日程。
+当前音频能力只识别人的语音内容。**不包含定时提醒、打开软件、修改文件、命令执行、外部资料库或纪要／待办／文档任务流程。** Skill 目前只读引用，不执行脚本或工具。“提醒”指对当前内容作出解释或提醒，不会创建闹钟和日程。
+
+后续 v0.3 将以“文字／语音和资料→带出处纪要→可编辑待办→文档”为首个完整任务，并加入受控工具、任务取消／恢复和 Windows 安装验收。待办首先是可编辑清单，具体格式与工具权限会在该阶段确定。v0.4 再扩展屏幕、窗口等输入和更多平台。
 
 ## 从源码启动
 
@@ -26,7 +30,7 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-npm.cmd install
+npm.cmd ci
 npm.cmd start
 ```
 
@@ -49,7 +53,7 @@ API 密钥可使用已有环境变量，或在设置中输入后由 Windows DPAP
 npm.cmd run package
 ```
 
-构建结果为 `release/win-unpacked/GreatSage.exe`，需要保留同目录的全部文件。这是 Windows x64 目录包，尚未制作安装器或配置发行代码签名。双击后默认使用 Electron 的用户数据目录；可通过 `GREATSAGE_DATA_DIR` 指定独立数据目录。API 默认配置见[服务说明](docs/providers.md)。
+构建结果为 `release/win-unpacked/GreatSage.exe`，需要保留同目录的全部文件。这是 Windows x64 目录包，尚未制作安装器、提供 GitHub Release 安装包或配置发行代码签名；fork 后可按上面的命令在本机构建。双击后默认使用 Electron 的用户数据目录；可通过 `GREATSAGE_DATA_DIR` 指定独立数据目录。API 默认配置见[服务说明](docs/providers.md)。
 
 ## 使用与数据
 
@@ -80,17 +84,18 @@ npm.cmd run package
 
 | 文档 | 内容 |
 | --- | --- |
+| [项目现状](docs/project-status.md) | 已实现、已验证、仍待验收和未来目标的快速索引 |
 | [使用说明](docs/usage.md) | 音源、预设、跨会话记忆、删除与 Skills 操作 |
 | [v0.2 验证与评测](docs/validation-v0.2.md) | 六项交付、真人录音、召回、延迟和资源证据 |
 | [可重复评测](docs/evaluation.md) | 离线／真实服务命令与版本比较口径 |
 | [服务配置](docs/providers.md) | 已验证的本地／云端模型、音色与代理行为 |
-| [验证记录](docs/validation.md) | 自动化、真实桌面、采集及本机打包验证 |
-| [性能基线](docs/performance-baseline.md) | 可重复的完整语音管线测量和已知误差 |
+| [v0.1 验证历史](docs/validation.md) | 首版自动化、真实桌面、采集及本机打包验证 |
+| [v0.1 性能基线](docs/performance-baseline.md) | 首版完整语音管线测量和已知误差 |
 | [实现架构](docs/architecture.md) | 模块、实时管线、事件、接口与数据边界 |
 | [需求与验收](docs/requirements.md) | 已确认范围、实现状态、尚待完成的验收 |
 | [记忆与压缩](docs/memory-design.md) | 数据结构、检索、上下文预算、修正和删除语义 |
 | [路线图](docs/roadmap.md) | alpha 收敛与后续能力规划 |
 | [贡献与开发](docs/development.md) | 环境、验证、凭据、提交和发布流程 |
+| [变更记录](CHANGELOG.md) | 已交付的版本行为与版本边界 |
 | [方案确认记录](docs/v0.1-plan.md) | 用户批准开发前的整体方案 |
-
-后续版本将扩展工具与电脑操作，并继续优化语音质量、实时性、审计和平台兼容。
+| [v0.2 历史方案](docs/v0.2-plan.md) | 已交付里程碑的原始范围和验收约定 |

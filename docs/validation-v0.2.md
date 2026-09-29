@@ -23,9 +23,9 @@
 - Google FLEURS CC BY 4.0 中文 validation 的 3 段真人朗读（18.38/7.44/7.56 秒），重复 3 轮共 9 次识别，字符错误率 5.079%，请求到识别完成 P50=1500 ms、P95=2106.2 ms，失败 0。原始文本及授权信息在 `evals/speech.json`、`evals/audio/ATTRIBUTION.md`。不是自发交谈样本。
 - 同一组录音降为 15% 幅度，单轮 3 次 CER=4.762%，P50=1563 ms、P95=2364 ms；仅验证 ASR 接口，没有经过真实麦克风或 VAD。
 - 使用真人录音进行数字模拟：0.4 倍参考声、180 ms 延迟、另一段 0.5 倍人声重叠。20/100 ms 音频批次中，纯回声的 382 个有效语音帧被抑制，重叠情况下 664 个独立人声帧没有被静音。100 ms 批次滤波 P95 约 0.7 ms。这不是房间回声实测或完整 AEC。
-- 全套最终回归 187 passed、4 skipped，`npm run check` 通过。跳过项为显式启用的真实设备枚举/麦克风/SAPI 检查，以及当前 Windows 权限不足的符号链接创建测试；并非相关功能全部通过。功能里程碑 eaa9ca6 的 GitHub Windows CI 成功。
+- 全套最终回归 187 passed、4 skipped，`npm run check` 通过。跳过项为显式启用的真实设备枚举/麦克风/SAPI 检查，以及当前 Windows 权限不足的符号链接创建测试；并非相关功能全部通过。最终 v0.2 提交 e1a249a 的 GitHub Windows CI 成功。
 - 源码 Electron 桌面 23 项检查通过，覆盖设置保存、Skills、记忆增改删、冲突共存裁决、源文详情/分页、审计默认隐藏正文及显式查看、删除来源清除正文、日志、桌宠和子进程退出。测试数据隔离且未开启麦克风。执行环境的沙箱最初阻止进程通信，使用正常权限复测通过；没有关闭 Electron 自身的沙箱。
-- PyInstaller 与 electron-builder 已构建 `release/win-unpacked/GreatSage.exe`（版本 0.2.0.0）。Electron 测试宿主加载包内 `app.asar`、包内页面和冻结 Python 后端，`--packaged --live --parallel-sources` 的 29 项检查全部通过，新增覆盖真实 API 流式回答、静音 Windows 系统语音播放/取消、并发音源枚举、元数据文件下载以及包内 o200k 编码下载/校验/加载。未开启麦克风。该目录包尚未发行签名（NotSigned），需保留整个目录，尚未在另一台电脑验证。
+- PyInstaller 与 electron-builder 已构建 `release/win-unpacked/GreatSage.exe`（版本 0.2.0-alpha.1）。Electron 测试宿主加载包内 `app.asar`、包内页面和冻结 Python 后端，`--packaged --live --parallel-sources` 的 29 项检查全部通过，新增覆盖真实 API 流式回答、静音 Windows 系统语音播放/取消、并发音源枚举、元数据文件下载以及包内 o200k 编码下载/校验/加载。未开启麦克风。该目录包尚未发行签名（NotSigned），需保留整个目录，尚未在另一台电脑验证。
 
 ## 完整管线与长期摘要
 
