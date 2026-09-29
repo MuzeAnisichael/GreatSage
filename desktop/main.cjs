@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog, shell, session } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, nativeTheme, ipcMain, dialog, shell, session } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const net = require('node:net');
@@ -56,7 +56,7 @@ function windowOptions(extra = {}) {
   return {
     show: false,
     title: 'GreatSage · 大贤者',
-    backgroundColor: '#0c1021',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#131416' : '#f6f6f4',
     icon: makeIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -129,17 +129,30 @@ function hidePet() {
 }
 
 function makeIcon() {
-  const width = 32;
-  const bitmap = Buffer.alloc(width * width * 4);
-  for (let y = 0; y < width; y++) for (let x = 0; x < width; x++) {
-    const dx = x - 15.5; const dy = y - 15.5;
-    const radius = Math.sqrt(dx * dx + dy * dy);
-    const star = Math.abs(dx) + Math.abs(dy) < 10 && (Math.abs(dx) < 4 || Math.abs(dy) < 4);
-    const offset = (y * width + x) * 4;
-    const rgb = star ? [134, 230, 209] : [25, 46, 61];
-    bitmap[offset] = rgb[2]; bitmap[offset + 1] = rgb[1]; bitmap[offset + 2] = rgb[0]; bitmap[offset + 3] = radius < 15.5 ? 255 : 0;
+  // The owl mark from ui/mark.svg, rasterized with 4x4 supersampling for smooth edges.
+  const size = 32; const samples = 4;
+  const circle = (cx, cy, r) => (x, y) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
+  const pair = (left, right) => (x, y) => left(x, y) || right(x, y);
+  const layers = [
+    [[62, 80, 100], (x, y) => Math.max(8 - x, 0, x - 24) ** 2 + Math.max(8 - y, 0, y - 24) ** 2 <= 64],
+    [[244, 239, 230], pair(circle(11.5, 15, 6), circle(20.5, 15, 6))],
+    [[31, 35, 41], pair(circle(11.5, 15, 2.8), circle(20.5, 15, 2.8))],
+    [[255, 255, 255], pair(circle(12.6, 13.8, 0.9), circle(21.6, 13.8, 0.9))],
+    [[230, 162, 60], (x, y) => Math.abs(x - 16) / 1.9 + Math.abs(y - 19.5) / 2.1 <= 1],
+  ];
+  const bitmap = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const total = [0, 0, 0, 0];
+    for (let sy = 0; sy < samples; sy++) for (let sx = 0; sx < samples; sx++) {
+      const layer = layers.findLast(([, inside]) => inside(x + (sx + .5) / samples, y + (sy + .5) / samples));
+      if (layer) { total[0] += layer[0][0]; total[1] += layer[0][1]; total[2] += layer[0][2]; total[3] += 255; }
+    }
+    // Premultiplied BGRA, as expected by createFromBitmap on Windows.
+    const offset = (y * size + x) * 4; const count = samples * samples;
+    bitmap[offset] = Math.round(total[2] / count); bitmap[offset + 1] = Math.round(total[1] / count);
+    bitmap[offset + 2] = Math.round(total[0] / count); bitmap[offset + 3] = Math.round(total[3] / count);
   }
-  return nativeImage.createFromBitmap(bitmap, { width, height: width, scaleFactor: 1 });
+  return nativeImage.createFromBitmap(bitmap, { width: size, height: size, scaleFactor: 1 });
 }
 
 function updateTray() {
@@ -234,10 +247,12 @@ async function startBackend() {
 
 function showStartupPage(error) {
   const window = makeMainWindow();
-  const title = error ? '大贤者暂时无法启动' : '正在唤醒你的大贤者';
-  const message = error ? redact(error.message) : '正在启动本地服务，即将进入你的工作空间。';
-  const details = error ? `<p class="path">排查记录：${escapeHtml(path.join(dataDir, 'backend.log'))}</p><p>完成修复后重新打开应用。可通过系统托盘或菜单退出。</p>` : '<div class="dots"><i></i><i></i><i></i></div>';
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>GreatSage</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0c1021;color:#e6e9f5;font-family:'Segoe UI','Microsoft YaHei UI',sans-serif}.card{max-width:660px;text-align:center;padding:48px}.mark{font-size:65px;color:#86e6d1;margin-bottom:25px}h1{font-size:25px;font-weight:550;letter-spacing:-.5px}p{font-size:13px;color:#99abc5;line-height:1.9;overflow-wrap:anywhere}.path{padding:13px;background:#1b2540;border:1px solid #354564;border-radius:10px;font-size:11px;margin-top:25px}.dots{display:flex;gap:8px;justify-content:center;margin:26px}.dots i{width:5px;height:5px;border-radius:50%;background:#86e6d1;animation:pulse 1s infinite}.dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}@keyframes pulse{50%{opacity:.25}}</style></head><body><div class="card"><div class="mark">✦</div><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${details}</div></body></html>`;
+  const title = error ? 'GreatSage 暂时无法启动' : '正在启动 GreatSage';
+  const message = error ? redact(error.message) : '正在启动本地服务，稍后进入控制台。';
+  const details = error ? `<p class="path">排查记录：${escapeHtml(path.join(dataDir, 'backend.log'))}</p><p class="hint">完成修复后重新打开应用。可通过系统托盘或菜单退出。</p>` : '<div class="dots"><i></i><i></i><i></i></div>';
+  // Same owl mark as ui/mark.svg, inline because this page's CSP loads no resources.
+  const mark = '<svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#3E5064"/><g fill="#F4EFE6"><circle cx="11.5" cy="15" r="6"/><circle cx="20.5" cy="15" r="6"/></g><g fill="#1F2329"><circle cx="11.5" cy="15" r="2.8"/><circle cx="20.5" cy="15" r="2.8"/></g><g fill="#fff"><circle cx="12.6" cy="13.8" r=".9"/><circle cx="21.6" cy="13.8" r=".9"/></g><path d="m16 17.6 1.9 1.7-1.9 2.4-1.9-2.4Z" fill="#E6A23C"/></svg>';
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><meta name="color-scheme" content="light dark"><title>GreatSage</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f6f4;color:#1d1f22;font:14px/1.7 'Segoe UI Variable Text','Segoe UI','Microsoft YaHei UI',sans-serif}.card{max-width:560px;padding:40px;text-align:center}.mark{display:block;width:52px;height:52px;margin:0 auto 20px}h1{margin:0 0 6px;font-size:20px;font-weight:600}p{margin:0;color:#5c6067;overflow-wrap:anywhere}.path{margin-top:20px;padding:10px 12px;border:1px solid #e3e3de;border-radius:10px;background:#fff;font-size:12px;text-align:left}.hint{margin-top:12px;font-size:13px}.dots{display:flex;gap:6px;justify-content:center;margin-top:22px}.dots i{width:6px;height:6px;border-radius:50%;background:#8b8f96;animation:pulse 1s infinite}.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}@keyframes pulse{50%{opacity:.25}}@media(prefers-color-scheme:dark){body{background:#131416;color:#ecedef}p{color:#a7abb2}.path{border-color:#2c2e33;background:#1b1c1f}}</style></head><body><div class="card">${mark}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${details}</div></body></html>`;
   window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(error => writeLog(error.message));
   window.show();
 }

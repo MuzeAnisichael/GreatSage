@@ -6,7 +6,7 @@ export function setupV02({ client, state, toast, busy, confirmAction, refreshMem
   const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const settings = document.createElement('section');
   settings.className = 'panel settings-section wide';
-  settings.innerHTML = `<div class="panel-heading"><h2>语义记忆与审计</h2><span class="tag">v0.2</span></div>
+  settings.innerHTML = `<div class="panel-heading"><h2>语义记忆与审计</h2></div>
     <div class="panel-body form-grid">
       <label class="switch-row full-span"><span><strong>语义检索</strong><small>开启后建立历史文本索引；使用云端时文本会发送到所选嵌入服务</small></span><input type="checkbox" role="switch" name="embedding.enabled" /></label>
       <label class="field"><span>嵌入服务</span><select name="embedding.provider"><option value="openrouter">OpenRouter</option><option value="openai">OpenAI 兼容 API</option><option value="ollama">本地 Ollama</option></select></label>
@@ -15,7 +15,7 @@ export function setupV02({ client, state, toast, busy, confirmAction, refreshMem
       <label class="field"><span>密钥环境变量</span><input name="embedding.api_key_env" autocomplete="off" /></label>
       <label class="field"><span>设置新的 API 密钥</span><input name="embedding.api_key" type="password" autocomplete="new-password" placeholder="留空保留已配置的密钥" /></label>
       <label class="field"><span>回答前检索最多等待 / 秒</span><input name="embedding.query_timeout_seconds" type="number" min="0.2" max="10" step="0.1" /><small>超时后使用关键词检索；本地模型可能需要更长时间。</small></label>
-      <div class="field"><span>保存后测试嵌入服务</span><button type="button" class="button ghost test-provider" data-component="embedding">测试连接 ↗</button><div class="provider-result" id="test-embedding" role="status"></div></div>
+      <div class="field"><span>保存后测试嵌入服务</span><button type="button" class="button ghost test-provider" data-component="embedding">测试连接</button><div class="provider-result" id="test-embedding" role="status"></div></div>
       <label class="switch-row full-span"><span><strong>旁听语义判断</strong><small>对含糊的提问交给语言模型判断；明确叫名直接回应，增加的调用会记入日志</small></span><input type="checkbox" role="switch" name="semantic_decisions" /></label>
       <label class="switch-row full-span"><span><strong>保存完整请求快照</strong><small>在本机保存实际模型输入和注入的 Skill 正文，便于审计；默认仅记元数据</small></span><input type="checkbox" role="switch" name="audit_content" /></label>
     </div>`;
@@ -27,14 +27,13 @@ export function setupV02({ client, state, toast, busy, confirmAction, refreshMem
   const index = document.createElement('section');
   index.className = 'panel index-panel';
   index.innerHTML = `<div class="panel-heading"><h2>语义索引与后台任务</h2><button class="button small subtle" id="refresh-index">刷新状态</button></div><div class="panel-body"><p id="index-status" role="status">正在读取索引状态…</p><p class="source-note" id="background-status"></p><div class="panel-tools"><button class="button ghost small" id="rebuild-index">重建语义索引</button><button class="button subtle small" id="retry-background">立即重试后台任务</button></div><p class="source-note">原文保持在本机。后台在对话空闲时建立索引，服务不可用时仍可按关键词检索。</p></div>`;
-  $('#view-memory .info-card').after(index);
   const conflicts = document.createElement('section');
   conflicts.className = 'panel conflict-panel'; conflicts.hidden = true;
   conflicts.innerHTML = '<div class="panel-heading"><h2>待确认的记忆</h2><span class="tag">保留你的决定</span></div><p class="panel-hint">新内容可能与已有记忆矛盾。在你选择之前，新候选不参与长期记忆检索。识别只是建议，请结合原文判断。</p><div id="memory-conflicts"></div>';
-  index.after(conflicts);
+  $('#view-memory .view-header').after(conflicts);
   const details = document.createElement('dialog');
   details.className = 'record-dialog'; details.id = 'record-dialog';
-  details.innerHTML = '<div class="dialog-actions"><button type="button" class="button small ghost" id="record-back">← 上一级</button><button type="button" class="button small ghost" id="record-close">关闭</button></div><h2>记录与来源</h2><div id="record-detail"></div>';
+  details.innerHTML = '<div class="dialog-actions"><button type="button" class="button small ghost" id="record-back">返回上一级</button><button type="button" class="button small ghost" id="record-close">关闭</button></div><h2>记录与来源</h2><div id="record-detail"></div>';
   document.body.append(details);
   let recordStack = [], recordEpoch = 0;
   async function showRecord(id, back = false) {
@@ -62,7 +61,7 @@ export function setupV02({ client, state, toast, busy, confirmAction, refreshMem
 
   const archive = document.createElement('details'); archive.className = 'panel archive-panel';
   archive.innerHTML = '<summary class="panel-heading">浏览更早的会话原文</summary><div class="panel-body"><label class="field"><span>会话</span><select id="archive-session"><option value="">所有会话</option></select></label><div id="archive-records"></div><button class="button ghost full" id="archive-more">加载原文</button></div>';
-  $('#view-memory').append(archive);
+  $('#view-memory').append(archive, index);
   let archiveCursor = null, archiveEpoch = 0, archiveLoaded = false;
   async function loadArchive(reset = false) {
     if (reset) { archiveCursor = null; archiveEpoch++; $('#archive-records').replaceChildren(); }

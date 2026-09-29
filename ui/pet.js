@@ -15,7 +15,7 @@ if (!window.greatsage) document.body.classList.add('browser-mode');
 $('#pet-through').hidden = !window.greatsage?.setClickThrough;
 $('#pet-console').hidden = !window.greatsage?.showConsole;
 
-function setMessage(text, eyebrow = 'GREAT SAGE', streaming = false) {
+function setMessage(text, eyebrow = '大贤者', streaming = false) {
   if (touching) return;
   $('#pet-message').textContent = redact(String(text || ''));
   $('#bubble-eyebrow').textContent = eyebrow;
@@ -30,6 +30,8 @@ function setState(state) {
   $('.pet-status').className = `pet-status ${visual}`;
   $('#pet-character').classList.toggle('speaking', visual === 'speaking');
   $('#pet-character').classList.toggle('thinking', visual === 'thinking');
+  $('#pet-character').classList.toggle('listening', visual === 'listening');
+  $('#pet-character').classList.toggle('error', visual === 'error');
   $('#pet-character').classList.toggle('disconnected', visual === 'offline');
 }
 
@@ -39,13 +41,13 @@ $('#pet-character').addEventListener('click', () => {
   $('#pet-character').classList.remove('petted');
   void $('#pet-character').offsetWidth;
   $('#pet-character').classList.add('petted');
-  $('#bubble-eyebrow').textContent = 'A LITTLE MOMENT';
+  $('#bubble-eyebrow').textContent = '摸摸';
   $('#pet-message').textContent = '摸摸已收到 ♡';
   $('#pet-message').classList.remove('streaming');
   touchTimer = setTimeout(() => {
     touching = false;
     $('#pet-character').classList.remove('petted');
-    setMessage(currentText || lastText, currentText ? '正在回应' : 'GREAT SAGE', Boolean(currentText));
+    setMessage(currentText || lastText, currentText ? '正在回应' : '大贤者', Boolean(currentText));
   }, 2100);
 });
 
@@ -93,7 +95,7 @@ client.addEventListener('event', event => {
     case 'response_done':
       streamGap = false;
       lastText = data.text || currentText || lastText; currentText = ''; currentTrace = null;
-      setMessage(lastText, 'GREAT SAGE');
+      setMessage(lastText, '大贤者');
       break;
     case 'interrupt': currentText = ''; currentTrace = null; setMessage('我在听，你说。', '已停止回应'); setState('listening'); break;
     case 'error': setMessage(data.message || data.error || '遇到一点问题，请查看控制台运行日志。', '需要处理'); setState('error'); break;

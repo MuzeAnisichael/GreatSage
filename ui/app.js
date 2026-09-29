@@ -69,7 +69,8 @@ function updateState(name, listening) {
   pill.className = `status-pill ${current === 'transcribing' ? 'listening' : current === 'responding' ? 'thinking' : current}`;
   $('span', pill).textContent = current === 'offline' ? '未连接' : stateLabels[current] || current;
   $('#capture-tag').textContent = state.listening ? '监听中' : '未监听';
-  $('#toggle-listening').textContent = state.listening ? '■ 暂停聆听' : '▶ 开始聆听';
+  $('#toggle-listening').textContent = state.listening ? '暂停聆听' : '开始聆听';
+  $('#toggle-listening').classList.toggle('is-listening', state.listening);
   $('#transcript-wave').classList.toggle('active', state.listening);
   for (const selector of ['#quick-microphone', '#quick-desktop-source', '#quick-process']) $(selector).disabled = state.listening;
   $('#quick-microphone-device').disabled = state.listening || !$('#quick-microphone').checked;
@@ -135,7 +136,7 @@ async function saveSettings() {
 function setupProviderExtras() {
   const localAsr = element('div', 'local-provider-tools');
   localAsr.id = 'local-asr-tools';
-  const prepare = element('button', 'button ghost full', '↓ 准备本地模型');
+  const prepare = element('button', 'button ghost full', '准备本地模型');
   prepare.id = 'prepare-asr'; prepare.type = 'button';
   const note = element('p', 'source-note', '先保存本地识别配置，再手动准备模型。首次准备可能下载模型文件；开启监听不会自动下载。');
   localAsr.append(prepare, note);
@@ -155,7 +156,7 @@ function setupProviderExtras() {
   const select = element('select'); select.id = 'system-voice-select'; select.setAttribute('aria-label', '已安装的系统音色'); select.add(new Option('按语音语言自动选择', ''));
   field.append(element('span', '', '已安装的系统音色'), select);
   const voiceNote = element('small', '', '选择系统语音并保存设置后，可以读取已安装的音色。'); voiceNote.id = 'voice-catalog-note'; field.append(voiceNote);
-  const refresh = element('button', 'button small subtle', '↻ 刷新系统音色'); refresh.id = 'refresh-voices'; refresh.type = 'button';
+  const refresh = element('button', 'button small subtle', '刷新系统音色'); refresh.id = 'refresh-voices'; refresh.type = 'button';
   const wrapper = element('div', 'system-voice-tools'); wrapper.id = 'system-voice-tools'; wrapper.append(field, refresh);
   $('[name="tts.voice"]').closest('label').after(wrapper);
   select.addEventListener('change', () => { $('[name="tts.voice"]').value = select.value; renderVoiceOptions(); });
@@ -274,7 +275,8 @@ function messageNode(message) {
   const node = element('article', `chat-message ${message.role === 'user' ? 'user' : 'assistant'}`);
   node.dataset.id = message.id || '';
   node.dataset.trace = message.trace_id || '';
-  const avatar = element('div', 'chat-avatar', message.role === 'user' ? '你' : '✦');
+  const avatar = element('div', 'chat-avatar');
+  avatar.setAttribute('aria-hidden', 'true');
   const body = element('div', 'chat-message-body');
   const meta = element('div', 'chat-meta');
   meta.append(element('strong', '', message.role === 'user' ? '你' : 'GreatSage'), element('time', '', timeLabel(message.created_at)));
@@ -289,7 +291,7 @@ function messageNode(message) {
 
 function attachTrace(node, trace) {
   if ($('.trace-button', node)) return;
-  const button = element('button', 'trace-button', `追踪 ${String(trace).slice(0, 12)} ↗`);
+  const button = element('button', 'trace-button', `追踪 ${String(trace).slice(0, 8)}`);
   button.type = 'button';
   button.addEventListener('click', () => { $('#log-search').value = trace; showView('logs'); });
   $('.chat-message-body', node).append(button);
@@ -499,7 +501,7 @@ function renderMemories() {
       for (const source of sources) {
         const id = typeof source === 'object' ? source.id || source.message_id : source;
         if (!id) continue;
-        const link = element('button', 'source-link', `来源 ${String(id).slice(0, 8)} ↗`);
+        const link = element('button', 'source-link', `来源 ${String(id).slice(0, 8)}`);
         link.type = 'button'; link.title = String(id); link.dataset.sourceId = id;
         link.addEventListener('click', () => enhancements.showRecord(id));
         meta.append(link);
@@ -510,7 +512,7 @@ function renderMemories() {
     if (memory.read_only_summary) {
       row.classList.add('summary-card');
       body.append(element('small', 'summary-note', `第 ${memory.level || 1} 层摘要 · ${memory.model || '上下文压缩'} · 原文修正或删除后自动失效`));
-      row.append(element('span', 'memory-icon', '▧'), body); list.append(row); continue;
+      row.append(body); list.append(row); continue;
     }
     const remove = element('button', 'delete-button', '删除');
     remove.type = 'button';
@@ -528,7 +530,7 @@ function renderMemories() {
       await refreshMemory({ refreshChat: true }); toast('记忆已修正，旧版本不再用于检索。');
     }));
     const actions = element('div', 'record-actions'); actions.append(revise, remove);
-    row.append(element('span', 'memory-icon', '◈'), body, actions);
+    row.append(body, actions);
     list.append(row);
   }
 }
