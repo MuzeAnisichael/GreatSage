@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — repository presentation (2026-10-01)
+
+- 重写 README，新增英文版 `README.en.md`。内容包括：
+  - 居中标志与徽章，以及跟随浅色／深色模式的主截图。
+  - 功能概览、界面截图、快速开始和工作方式图。
+  - 数据与隐私、已知限制和路线图。
+- 新增 `scripts/capture_screenshots.cjs`：用虚构数据和本地演示模型生成 README 截图和社交预览图，不需要密钥和网络。
+- 新增贡献指南、安全策略、Issue 模板和 Pull Request 模板。
+- 文档中 v0.3 的状态改为“已合入 main，尚未发版”，并记录 GitHub Windows CI 结果：211 passed、3 skipped。
+- 本段不改变运行时行为。
+
 ## Unreleased — v0.3 task workflow (2026-09-30)
 
 **资料与产物**
@@ -39,7 +50,7 @@
 **验证**
 
 - `pytest` 209 passed、5 skipped；`npm run check` 通过；源码桌面 `smoke_desktop.cjs --parallel-sources` 28/28 通过。
-- 本机无法创建符号链接，工作目录的符号链接逃逸检查被跳过。
+- 本机无法创建符号链接，工作目录的符号链接逃逸检查被跳过；GitHub Windows CI 为 211 passed、3 skipped，这两项在 CI 上运行并通过。
 - 真实会议质量、真实桌面上的打开和命令操作、语音确认误识别、长时间运行、安装器和 MCP 尚未验证或实现。详见 [v0.3 验证](docs/validation-v0.3.md)。
 
 ## Unreleased — interface (2026-09-30)

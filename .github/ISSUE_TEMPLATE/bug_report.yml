@@ -1,0 +1,64 @@
+name: 问题反馈 / Bug report
+description: 报告可以复现的错误或异常行为
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请确认：
+        - 不要粘贴 API 密钥、`connection.json`、录音或未处理的私人转写。
+        - 安全问题请按 [安全策略](https://github.com/MuzeAnisichael/GreatSage/blob/main/SECURITY.md) 私下报告。
+        - 已知限制见 [项目现状](https://github.com/MuzeAnisichael/GreatSage/blob/main/docs/project-status.md)。
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: 控制台左下角的版本号，或 `git rev-parse --short HEAD` 的输出。
+      placeholder: v0.2.0a1 / 209f353
+    validations:
+      required: true
+  - type: dropdown
+    id: launch
+    attributes:
+      label: 运行方式
+      options:
+        - 源码启动（npm start）
+        - 本机目录包（GreatSage.exe）
+        - 独立 Python 服务
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: providers
+    attributes:
+      label: 服务配置
+      description: 语音识别、语言模型、语音合成分别使用的服务和模型。不要包含密钥。
+      placeholder: |
+        识别：OpenRouter / openai/whisper-large-v3-turbo
+        语言模型：OpenRouter / google/gemini-2.5-flash-lite
+        语音合成：Windows 系统语音
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 期望结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: trace ID 与相关日志
+      description: “运行日志”中对应的 trace ID 和错误事件。请先删去私人内容。
+      render: text

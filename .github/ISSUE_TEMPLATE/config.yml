@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用说明
+    url: https://github.com/MuzeAnisichael/GreatSage/blob/main/docs/usage.md
+    about: 音源、预设、记忆、资料、任务和工具授权的使用方法
+  - name: 项目现状与已知限制
+    url: https://github.com/MuzeAnisichael/GreatSage/blob/main/docs/project-status.md
+    about: 哪些功能已经实现、哪些还没有验证
