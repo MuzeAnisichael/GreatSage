@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld('greatsage', Object.freeze({
   minimize: () => ipcRenderer.invoke('greatsage:minimize'),
   openExternal: (url) => ipcRenderer.invoke('greatsage:open-external', String(url)),
   chooseSkillDirectory: () => ipcRenderer.invoke('greatsage:choose-skill-directory'),
+  chooseMaterialPath: (kind) => ipcRenderer.invoke('greatsage:choose-material-path', kind === 'folder' ? 'folder' : 'file'),
+  openWorkspace: () => ipcRenderer.invoke('greatsage:open-workspace'),
 }));

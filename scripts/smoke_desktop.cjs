@@ -131,6 +131,21 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     await until(() => evaluate("[...document.querySelectorAll('.skill-card')].some(node=>node.textContent.includes('desktop-smoke-fixture'))"), 'fixture Skill import');
     check(true, 'Fixture SKILL.md imports and renders');
 
+    const materialDir = path.join(runDir, 'fixture-materials');
+    fs.mkdirSync(materialDir);
+    fs.writeFileSync(path.join(materialDir, 'plan.md'), '# 发布计划\n\n## 时间\nSYNTHETIC 发布时间需要在周五前确认。\n');
+    await evaluate(`document.querySelector('[data-view=materials]').click();document.querySelector('#material-path').value=${JSON.stringify(materialDir)};document.querySelector('#material-form').requestSubmit()`);
+    await until(() => evaluate("[...document.querySelectorAll('.material-row')].some(node=>node.textContent.includes('plan.md') && node.textContent.includes('v1'))"), 'fixture material import');
+    check(true, 'Fixture Markdown material imports with version and chunks');
+    await evaluate("document.querySelector('[data-view=tasks]').click();document.querySelector('#new-task').click()");
+    await until(() => evaluate("document.querySelector('.task-dialog').open && document.querySelectorAll('.task-dialog [name=material]').length === 1"), 'new task dialog');
+    await evaluate("document.querySelector('.task-dialog button[value=cancel]').click()");
+    check(true, 'New task dialog lists imported materials');
+    await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_approval]').click()");
+    await until(() => evaluate("document.querySelector('#confirm-dialog').open && document.querySelector('#confirm-title').textContent.includes('语音确认')"), 'voice approval warning');
+    await evaluate("document.querySelector('#confirm-dialog button[value=cancel]').click()");
+    check(!(await evaluate("document.querySelector('[name=voice_approval]').checked")), 'Voice approval stays off unless its warning is accepted');
+
     const marker = 'SYNTHETIC DESKTOP SMOKE: disposable test memory.';
     const revised = 'SYNTHETIC DESKTOP SMOKE: revised disposable test memory.';
     const card = value => `[...document.querySelectorAll('.memory-card')].find(node=>node.querySelector('.memory-text').textContent===${JSON.stringify(value)})`;

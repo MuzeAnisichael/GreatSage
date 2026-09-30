@@ -105,6 +105,38 @@ def test_validation_and_unavailable_audio(client):
     assert session.get("/api/settings", headers={"Content-Length": "2000001"}).status_code == 413
 
 
+def test_materials_tasks_approvals_and_artifact_endpoints(client, tmp_path):
+    session, runtime = client
+    note = tmp_path / "import" / "会议.md"
+    note.parent.mkdir()
+    note.write_text("# 周会\n周五发布。\n", encoding="utf-8")
+    assert session.post("/api/materials/import", json={"path": "relative.md"}).status_code == 400
+    assert session.post("/api/materials/import", json={"path": str(note)}, headers={"Authorization": ""}).status_code == 401
+    material_id = session.post("/api/materials/import", json={"path": str(note)}).json()["materials"][0]["id"]
+    chunk = session.get(f"/api/materials/{material_id}").json()["chunks"][0]
+    assert chunk["heading"] == "周会" and chunk["line_start"] == 1
+    assert session.get("/api/materials/search", params={"q": "周五发布"}).json()[0]["material_id"] == material_id
+    for body in ({"kind": "shell"}, {"document": "yes"}, {"material_ids": ["missing"]}, {"title": "x" * 81}):
+        assert session.post("/api/tasks", json=body).status_code == 400
+    artifact = runtime.memory.create_artifact("minutes", "周会纪要", "- 周五发布 [S1]\n",
+                                              {"S1": {"kind": "chunk", "id": chunk["id"], "label": "会议.md", "excerpt": "周五发布"}})
+    exported = session.get(f"/api/artifacts/{artifact['id']}/export")
+    assert exported.headers["content-type"].startswith("text/markdown")
+    assert "filename*=UTF-8''" in exported.headers["content-disposition"] and "## 来源" in exported.text
+    assert session.put(f"/api/artifacts/{artifact['id']}", json={"content": " "}).status_code == 400
+    assert session.put(f"/api/artifacts/{artifact['id']}", json={"content": "- 周五发布 [S1]\n补充\n"}).json()["version"] == 2
+    assert session.get("/api/approvals").json() == []
+    assert session.post("/api/tool-calls/missing/approve", json={}).status_code == 400
+    assert session.post("/api/tool-calls/missing/approve", json={"scope": "forever"}).status_code == 400
+    tools = {tool["name"]: tool for tool in session.get("/api/tools").json()["tools"]}
+    assert not tools["delete_file"]["standing_allow"] and not tools["run_command"]["voice"]
+    assert session.put("/api/settings", json={"tool_rules": [{"tool": "run_command", "match": "*", "action": "allow"}]}).status_code == 400
+    assert session.delete(f"/api/materials/{material_id}").status_code == 200
+    assert session.get(f"/api/artifacts/{artifact['id']}").json()["status"] == "stale"
+    assert session.delete(f"/api/artifacts/{artifact['id']}").status_code == 200
+    assert session.get(f"/api/artifacts/{artifact['id']}").status_code == 404
+
+
 def test_audit_export_requires_auth_and_explicit_body_and_respects_source_deletion(client):
     session, runtime = client
     source = runtime.memory.add_message('user', 'snapshot private body')

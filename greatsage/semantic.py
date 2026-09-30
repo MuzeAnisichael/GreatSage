@@ -58,7 +58,9 @@ class VectorIndexMixin:
                 row = self._row(self._db.execute(f"SELECT * FROM {table} WHERE id=?", (id,)).fetchone())
                 if row:
                     return {**row, "kind": kind}
-            return None
+            row = self._db.execute("""SELECT c.*,m.name,m.path FROM material_chunks c
+                                      JOIN materials m ON m.id=c.material_id WHERE c.id=?""", (id,)).fetchone()
+            return {**dict(row), "kind": "chunk"} if row else None
 
     def pending_vectors(self, version: str, limit: int = 4) -> list[dict]:
         with self._lock:
@@ -67,6 +69,7 @@ class VectorIndexMixin:
                   SELECT id,text,'memory' AS kind,created_at FROM memories WHERE status='active'
                   UNION ALL SELECT id,text,'message',created_at FROM messages
                   UNION ALL SELECT id,text,'summary',created_at FROM summaries
+                  UNION ALL SELECT id,text,'chunk',created_at FROM material_chunks
                 ) r WHERE NOT EXISTS (SELECT 1 FROM vector_records v WHERE v.record_id=r.id AND v.fingerprint=?)
                 ORDER BY created_at LIMIT ?
             """, (version, max(1, min(limit, 32)))).fetchall()
@@ -120,7 +123,8 @@ class VectorIndexMixin:
 
     def vector_status(self, version: str) -> dict:
         with self._lock:
-            total = sum(self._db.execute(f"SELECT count(*) FROM {table}" + (" WHERE status='active'" if table == "memories" else "")).fetchone()[0] for table in ("messages", "memories", "summaries"))
+            total = sum(self._db.execute(f"SELECT count(*) FROM {table}" + (" WHERE status='active'" if table == "memories" else "")).fetchone()[0]
+                        for table in ("messages", "memories", "summaries", "material_chunks"))
             indexed = self._db.execute("SELECT count(*) FROM vector_records WHERE fingerprint=?", (version,)).fetchone()[0]
             parts = self._db.execute("SELECT count(*) FROM vectors WHERE fingerprint=?", (version,)).fetchone()[0]
             return {"total": total, "indexed": indexed, "pending": max(0, total - indexed), "chunks": parts,

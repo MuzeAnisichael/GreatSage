@@ -73,10 +73,27 @@ client.addEventListener('connection', event => {
     if (!currentText) setMessage(lastText);
   } else if (event.detail.state === 'error') { setState('offline'); setMessage('连接暂时断开，正在等待本地服务恢复。', '连接提示'); }
 });
+// The pet shows only a one-line version of task progress; details live in the console.
+function taskMessage(task) {
+  if (currentText) return;
+  if (task.status === 'waiting_approval') setMessage('有操作等你确认，请在控制台处理。', '需要确认');
+  else if (['queued', 'running'].includes(task.status)) {
+    setMessage(`${task.title} · ${task.steps_done}/${task.steps_total}${task.current_step ? ` · ${task.current_step}` : ''}`, '任务进行中');
+  }
+}
+
 client.addEventListener('event', event => {
   const item = event.detail;
   const data = item.data || {};
   switch (item.kind) {
+    case 'task_updated': taskMessage(data); break;
+    case 'approval_requested':
+      if (!currentText) setMessage(`${data.title}：${data.target || '等待确认'}\n${data.voice ? '可以说“确认执行”，或在控制台点击确认。' : '请在控制台点击确认。'}`, '需要确认');
+      break;
+    case 'approval_hint': setMessage(data.message, '需要确认'); break;
+    case 'task_finished':
+      if (!currentText) setMessage(data.status === 'succeeded' ? '任务完成了，可以在控制台查看产物。' : data.status === 'failed' ? '任务没有完成，原因见控制台。' : '任务已停止。', '任务');
+      break;
     case 'state': setState(data.state); break;
     case 'memory_updated':
       if (data.deleted_id || data.cleared || ['revise', 'delete', 'clear'].includes(data.action)) {
