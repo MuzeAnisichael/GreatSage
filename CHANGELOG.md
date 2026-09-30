@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — interface (2026-09-30)
+
+- 重新设计控制台：中性配色加单一强调色、系统字体，正文字号不小于 12 px；页面标题、运行状态和会话操作集中在顶栏；浅色／深色跟随 Windows 设置。
+- 更换为原创 Q 版猫头鹰桌宠（`ui/sage.svg`）和标志（`ui/mark.svg`）；聆听、思考、说话、摸摸各有对应动作。托盘图标和启动页使用同一标志。
+- 去掉装饰符号、英文眉题和渐变。元素 ID、接口调用和交互流程不变，本段不新增运行时功能。
+- 验证：`pytest` 187 passed、4 skipped；`npm run check` 与仓库检查通过；源码桌面 `smoke_desktop.cjs --parallel-sources` 25/25 通过（未开启麦克风，未调用模型）。
+
 ## Unreleased — documentation (2026-09-29)
 
 - 统一 README、项目现状、需求和路线图对 v0.2 alpha 的已交付能力、测量边界与未完成验收的描述。

@@ -1,7 +1,7 @@
 export function setupAudit({ client, busy, toast, confirmAction }) {
   const panel = document.createElement('section'); panel.className = 'panel audit-panel';
   panel.innerHTML = '<div class="panel-heading"><h2>请求审计快照</h2><button class="button ghost small" id="audit-refresh">刷新</button></div><p class="panel-hint">默认保存配置、Skill 版本和请求摘要哈希。只有事先开启全文快照，才会保留实际输入；删除来源后相关正文失效。外部模型结果可能无法完全复现。</p><div class="panel-body"><label class="field"><span>按 trace 查找</span><input id="audit-trace" placeholder="留空查看最近 100 个请求" /></label><div id="audit-list"></div></div>';
-  document.querySelector('#view-logs').prepend(panel);
+  document.querySelector('#view-logs').append(panel);
   const dialog = document.createElement('dialog'); dialog.className = 'record-dialog';
   dialog.innerHTML = '<div class="dialog-actions"><button class="button ghost small audit-close">关闭</button></div><h2>实际请求证据</h2><p class="source-note">正文仅在开启归档时可用；展示前已移除应用凭据。</p><pre class="audit-content"></pre><div class="panel-tools"><button class="button ghost audit-body">查看正文</button><button class="button ghost audit-export">导出元数据</button><button class="button ghost audit-export-body">导出含正文副本</button></div>';
   document.body.append(dialog);
