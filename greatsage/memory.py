@@ -13,6 +13,9 @@ from typing import Any
 
 from .semantic import VectorIndexMixin, fuse
 from .audit import AuditMixin
+from .artifacts import ArtifactsMixin
+from .materials import MaterialsMixin, chunk_label
+from .tasks import TaskStoreMixin
 
 
 def _now() -> str:
@@ -44,7 +47,7 @@ def _relevance(query: str, text: str) -> float:
                for term in _terms(query) if term in folded)
 
 
-class MemoryStore(VectorIndexMixin, AuditMixin):
+class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, TaskStoreMixin):
     """One WAL database, serialized transactions, and immutable source IDs.
 
     A revision creates a new ID, invalidating all derived records first. This
@@ -109,6 +112,9 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
             # Rebuild from canonical rows, so even recovery cannot resurrect data.
             self._db.execute("DELETE FROM message_fts")
             self._db.execute("INSERT INTO message_fts(id,text) SELECT id,text FROM messages")
+        self._init_materials()
+        self._init_artifacts()
+        self._init_tasks()
         self._db.commit()
 
     @staticmethod
@@ -213,6 +219,8 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
             if source is None and allow_memories:
                 source = self._row(self._db.execute("SELECT * FROM memories WHERE id=?", (source_id,)).fetchone())
             if source is None:
+                source = self._row(self._db.execute("SELECT * FROM material_chunks WHERE id=?", (source_id,)).fetchone())
+            if source is None:
                 raise ValueError(f"Source no longer exists or has been revised: {source_id}")
             sources.append(source)
         return sources
@@ -303,9 +311,12 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
         self._redact_snapshots(ids, texts, traces)
         # Audit data is normally references, but callers may have logged bodies.
         # Redact the whole event if any deleted source is present anywhere in it.
+        needles = [_json(text)[1:-1] for text in texts if text]
         for row in self._db.execute("SELECT id,data,trace_id FROM events").fetchall():
             serialized = row["data"]
-            if row["trace_id"] in traces or any(_json(value)[1:-1] in serialized for value in ids | texts if value):
+            # IDs are 32-hex tokens: one scan per event instead of one per deleted ID.
+            if (row["trace_id"] in traces or ids.intersection(re.findall(r"[0-9a-f]{32}", serialized))
+                    or any(needle in serialized for needle in needles)):
                 self._db.execute("UPDATE events SET data=? WHERE id=?", (_json({"redacted": True, "reason": "source_deleted"}), row["id"]))
 
     def _delete_derived(self, source_ids: set[str], texts: set[str], traces: set[str]) -> set[str]:
@@ -314,6 +325,10 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
             source = queue.pop()
             for dep in self._db.execute("SELECT owner_type,owner_id FROM dependencies WHERE source_id=?", (source,)).fetchall():
                 owner = dep["owner_id"]
+                if dep["owner_type"] == "artifact":
+                    # Artifacts are user work products: keep the text, fail the citation visibly.
+                    self._stale_artifact(owner, {source})
+                    continue
                 if owner in all_ids:
                     continue
                 all_ids.add(owner)
@@ -406,11 +421,17 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
         with self._lock:
             with self._db:
                 self._db.execute("DELETE FROM memories WHERE source_ids != '[]'")
-                for table in ("messages", "summaries", "sessions", "events", "dependencies", "forgotten_memories", "request_snapshots"):
+                for table in ("messages", "summaries", "sessions", "events", "forgotten_memories", "request_snapshots"):
                     self._db.execute(f"DELETE FROM {table}")
+                # Imported materials are not history: artifacts keep their links to material chunks.
+                self._db.execute("DELETE FROM dependencies WHERE NOT (owner_type='artifact' AND source_id IN (SELECT id FROM material_chunks))")
                 self._db.execute("DELETE FROM memory_conflicts WHERE candidate_id NOT IN (SELECT id FROM memories)")
-                self._db.execute("DELETE FROM vectors WHERE record_id NOT IN (SELECT id FROM memories)")
-                self._db.execute("DELETE FROM vector_records WHERE record_id NOT IN (SELECT id FROM memories)")
+                kept = "(SELECT id FROM memories UNION SELECT id FROM material_chunks)"
+                self._db.execute(f"DELETE FROM vectors WHERE record_id NOT IN {kept}")
+                self._db.execute(f"DELETE FROM vector_records WHERE record_id NOT IN {kept}")
+                # Artifacts stay until deleted explicitly; their conversation citations fail visibly.
+                self._stale_message_citations()
+                self._clear_task_history()
                 if self._fts:
                     self._db.execute("DELETE FROM message_fts")
             self._checkpoint()
@@ -494,7 +515,7 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
         if max_chars < 100:
             raise ValueError("Context budget must be at least 100 characters")
         with self._lock:
-            result = {"recent": [], "memories": [], "summaries": [], "retrieved": []}
+            result = {"recent": [], "memories": [], "materials": [], "summaries": [], "retrieved": []}
 
             def take(group: str, entries: list[dict], allowance: int) -> None:
                 used = 0
@@ -516,15 +537,20 @@ class MemoryStore(VectorIndexMixin, AuditMixin):
                         result[group].append(item)
                         used += len(_json(item)) + 1
 
-            take("recent", list(reversed(self.history(30, session_id))), int(max_chars * .55))
+            take("recent", list(reversed(self.history(30, session_id))), int(max_chars * .45))
             result["recent"].reverse()
             used_ids = {item["id"] for item in result["recent"]}
             memories = sorted(self.list_memories(), key=lambda item: (_relevance(query, item["text"]), item["created_at"]), reverse=True)
             semantic = semantic or []
             memories = fuse(memories, [item for item in semantic if item["kind"] == "memory"])
-            take("memories", memories, int(max_chars * .20))
+            take("memories", memories, int(max_chars * .15))
+            # Imported materials are reference data with a locator, never instructions.
+            materials = fuse(self.search_chunks(query, 8), [item for item in semantic if item["kind"] == "chunk"])
+            take("materials", [{"id": item["id"], "role": "material", "source": chunk_label(item),
+                                "created_at": item["created_at"], "text": item["text"]} for item in materials],
+                 int(max_chars * .15))
             retrieved = fuse(self.search(query, 12), [item for item in semantic if item["kind"] == "message"])
-            take("retrieved", [item for item in retrieved if item["id"] not in used_ids], int(max_chars * .15))
+            take("retrieved", [item for item in retrieved if item["id"] not in used_ids], int(max_chars * .12))
             used_ids.update(item["id"] for item in result["retrieved"])
             summaries = [item for item in self.summaries(100) if not used_ids.intersection(self._leaf_sources(item["source_ids"]))]
             summaries.sort(key=lambda item: (_relevance(query, item["text"]) + (2 if item["session_id"] == session_id else 0), item["created_at"]), reverse=True)

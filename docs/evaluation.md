@@ -17,7 +17,24 @@
 .\.venv\Scripts\python.exe scripts/evaluate_pipeline.py --fixture-id fleurs-zh-2 --data-dir .runtime/pipeline --tts-provider openrouter --report .runtime/eval/pipeline.json
 # 跨 32 个虚构会话的三层摘要、重启与删除验证；不加 --live 只输出计划
 .\.venv\Scripts\python.exe scripts/evaluate_long_memory.py --live --output .runtime/eval/long-memory.json
+# v0.3 纪要／待办／文档任务：默认使用离线夹具模型，不访问网络
+.\.venv\Scripts\python.exe scripts/evaluate_tasks.py --output .runtime/eval/tasks-offline.json
+# 同一任务集调用配置的语言模型；拒绝所有审批请求，不执行有副作用的工具
+.\.venv\Scripts\python.exe scripts/evaluate_tasks.py --live --repeats 3 --chat-repeats 5 --output .runtime/eval/tasks-live.json
 ```
+
+`evaluate_tasks.py` 使用 `evals/tasks.json` 中的虚构会议和 Markdown 资料，每次在独立数据目录运行，关闭语义检索和后台压缩。各指标的口径：
+
+- **任务总耗时**：从创建任务到收到 `task_finished` 事件。**首个进度**：到任务进入运行状态的事件。
+- **模型调用时延**：各步骤记录的首字和完成时间，重试次数单独统计。
+- **待办**：按关键词匹配期望的待办，负责人和期限规范化后按包含关系比较。决定和未决问题检查关键词是否同时出现在纪要中。
+- **引用有效率**：所有产物中有效引用的占比。
+- **注入**：任何待办的负责人都不含资料里要求替换的名字时，才算未被执行。
+- **对话时延**：带工具定义和不带工具定义的请求交替发送，以分散网络波动。
+- **工具提议**：请求保存文件后等待审批出现，然后拒绝，并检查文件没有写入。
+- **本地耗时**：40 个合成 Markdown 文件的导入和检索，以及一次可撤销写入。
+
+离线夹具模型的抽取规则很简单，它的待办分数只用来检查管线，不代表模型质量。
 
 各报告包含版本、配置、语料哈希及指标。添加 `--compare <旧报告路径>` 可比较同一 suite/语料的数值，语料不匹配会拒绝；配置变化会提示。`evaluate.py` 的报告按 suite 分组，其他脚本使用单套报告，二者不能交叉比较。改变重复次数或模型会影响解释；P50/P95 的样本数总是一起报告。
 

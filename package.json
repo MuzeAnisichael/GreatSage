@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "check": "node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check ui/app.js && node --check ui/client.js && node --check ui/pet.js && node --check ui/v02.js && node --check ui/audit.js",
+    "check": "node --check desktop/main.cjs && node --check desktop/preload.cjs && node --check ui/app.js && node --check ui/client.js && node --check ui/pet.js && node --check ui/v02.js && node --check ui/audit.js && node --check ui/work.js",
     "package": "powershell -NoProfile -File scripts/build.ps1"
   },
   "devDependencies": { "electron": "^40.0.0", "electron-builder": "^26.0.0" },

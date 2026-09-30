@@ -374,6 +374,159 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             await runtime.emit("error", {"message": str(exc), "component": component})
             raise HTTPException(502, redact(str(exc)))
 
+    def text_field(body: dict, name: str, limit: int, required: bool = False) -> str:
+        value = body.get(name, "")
+        if not isinstance(value, str) or len(value) > limit or (required and not value.strip()):
+            raise ValueError(f"{name} 需要 {'1' if required else '0'}–{limit} 个字符的文本。")
+        return value.strip()
+
+    def id_list(body: dict, name: str) -> list[str]:
+        value = body.get(name, [])
+        if not isinstance(value, list) or len(value) > 50 or any(not isinstance(item, str) or len(item) > 64 for item in value):
+            raise ValueError(f"{name} 必须是 ID 列表。")
+        return value
+
+    @app.get("/api/materials", dependencies=api)
+    async def materials():
+        return runtime.memory.materials()
+
+    @app.post("/api/materials/import", dependencies=api)
+    async def import_materials(body: dict):
+        result = await asyncio.to_thread(runtime.memory.import_materials, text_field(body, "path", 2000, True))
+        await runtime.emit("materials_updated", {"imported": [item["id"] for item in result["materials"]],
+                                                 "errors": len(result["errors"])})
+        return result
+
+    @app.post("/api/materials/rescan", dependencies=api)
+    async def rescan_materials():
+        result = await asyncio.to_thread(runtime.memory.rescan_materials)
+        await runtime.emit("materials_updated", {"rescanned": len(result["materials"])})
+        return result
+
+    @app.get("/api/materials/search", dependencies=api)
+    async def search_materials(q: str):
+        return runtime.memory.search_chunks(q[:2000], 20)
+
+    @app.get("/api/materials/{material_id}", dependencies=api)
+    async def material(material_id: str):
+        return runtime.memory.material(material_id)
+
+    @app.delete("/api/materials/{material_id}", dependencies=api)
+    async def delete_material(material_id: str):
+        await runtime.before_delete()
+        runtime.memory.delete_material(material_id)
+        await runtime.emit("materials_updated", {"deleted_id": material_id})
+        await runtime.emit("memory_updated", {"action": "delete", "material_id": material_id})
+        return {"ok": True}
+
+    @app.get("/api/tasks", dependencies=api)
+    async def tasks():
+        return runtime.memory.tasks()
+
+    @app.post("/api/tasks", dependencies=api)
+    async def create_task(body: dict):
+        if body.get("kind", "minutes") != "minutes":
+            raise ValueError("目前只能新建纪要任务。")
+        for flag in ("use_session", "document"):
+            if not isinstance(body.get(flag, flag == "use_session"), bool):
+                raise ValueError(f"{flag} 必须是布尔值。")
+        params = {"title": text_field(body, "title", 80), "instructions": text_field(body, "instructions", 4000),
+                  "material_ids": id_list(body, "material_ids"), "document": body.get("document", False),
+                  "use_session": body.get("use_session", True)}
+        if "session_ids" in body:
+            params["session_ids"] = id_list(body, "session_ids")
+        return await runtime.tasks.start_minutes(params, "console", runtime.session_id)
+
+    @app.get("/api/tasks/{task_id}", dependencies=api)
+    async def task(task_id: str):
+        detail = runtime.memory.task(task_id)
+        detail.pop("state", None)  # conversation copies stay internal
+        return detail
+
+    @app.post("/api/tasks/{task_id}/cancel", dependencies=api)
+    async def cancel_task(task_id: str):
+        return await runtime.tasks.cancel(task_id)
+
+    @app.post("/api/tasks/{task_id}/resume", dependencies=api)
+    async def resume_task(task_id: str):
+        return await runtime.tasks.resume(task_id)
+
+    @app.delete("/api/tasks/{task_id}", dependencies=api)
+    async def delete_task(task_id: str):
+        runtime.memory.delete_task(task_id)
+        await runtime.emit("task_deleted", {"task_id": task_id})
+        return {"ok": True}
+
+    @app.get("/api/approvals", dependencies=api)
+    async def approvals():
+        return runtime.tasks.approvals_pending()
+
+    @app.post("/api/tool-calls/{call_id}/approve", dependencies=api)
+    async def approve_call(call_id: str, body: dict):
+        if body.get("scope", "once") not in ("once", "task"):
+            raise ValueError("scope 只能是 once 或 task。")
+        return await runtime.tasks.resolve(call_id, True, body.get("scope", "once"), "click")
+
+    @app.post("/api/tool-calls/{call_id}/deny", dependencies=api)
+    async def deny_call(call_id: str):
+        return await runtime.tasks.resolve(call_id, False, "once", "click")
+
+    @app.post("/api/tool-calls/{call_id}/undo", dependencies=api)
+    async def undo_call(call_id: str):
+        return await runtime.tasks.undo(call_id)
+
+    @app.get("/api/tools", dependencies=api)
+    async def tools():
+        from .tools import DEFAULT_ACTIONS, EFFECT_LABELS, NO_STANDING_ALLOW, SPECS, VOICE_APPROVABLE, Workspace
+        workspace = Workspace(runtime.data_dir, runtime.settings.raw()["workspace_dirs"])
+        return {"workspace": str(workspace.ensure()), "roots": [str(root) for root in workspace.roots],
+                "tools": [{"name": spec.name, "title": spec.title, "effect": spec.effect,
+                           "effect_label": EFFECT_LABELS[spec.effect], "default_action": DEFAULT_ACTIONS[spec.effect],
+                           "standing_allow": spec.effect not in NO_STANDING_ALLOW, "voice": spec.effect in VOICE_APPROVABLE}
+                          for spec in SPECS.values()]}
+
+    @app.get("/api/artifacts", dependencies=api)
+    async def artifacts():
+        return runtime.memory.artifacts()
+
+    @app.get("/api/artifacts/{artifact_id}", dependencies=api)
+    async def artifact(artifact_id: str, version: int | None = None):
+        return runtime.memory.artifact(artifact_id, version)
+
+    @app.put("/api/artifacts/{artifact_id}", dependencies=api)
+    async def revise_artifact(artifact_id: str, body: dict):
+        if runtime.memory.artifact(artifact_id)["kind"] == "todos":
+            raise ValueError("待办清单请逐条编辑。")
+        result = runtime.memory.add_artifact_version(artifact_id, text_field(body, "content", 400_000, True), "edited",
+                                                     text_field(body, "note", 2000))
+        await runtime.emit("artifact_updated", {"id": artifact_id, "version": result["version"]})
+        return result
+
+    @app.post("/api/artifacts/{artifact_id}/regenerate", dependencies=api)
+    async def regenerate_artifact(artifact_id: str, body: dict):
+        return await runtime.tasks.regenerate(artifact_id, text_field(body, "instructions", 4000))
+
+    @app.get("/api/artifacts/{artifact_id}/export", dependencies=api)
+    async def export_artifact(artifact_id: str):
+        from urllib.parse import quote
+        record = runtime.memory.artifact(artifact_id)
+        name = "".join(character for character in record["title"] if character not in '<>:"/\\|?*' and ord(character) >= 32).strip() or "artifact"
+        await runtime.emit("artifact_export", {"id": artifact_id, "version": record["version"]})
+        return Response(runtime.memory.export_markdown(artifact_id), media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename=\"artifact.md\"; filename*=UTF-8''{quote(name[:80] + '.md')}"})
+
+    @app.delete("/api/artifacts/{artifact_id}", dependencies=api)
+    async def delete_artifact(artifact_id: str):
+        runtime.memory.delete_artifact(artifact_id)
+        await runtime.emit("artifact_updated", {"id": artifact_id, "deleted": True})
+        return {"ok": True}
+
+    @app.put("/api/todos/{todo_id}", dependencies=api)
+    async def update_todo(todo_id: str, body: dict):
+        result = runtime.memory.update_todo(todo_id, body)
+        await runtime.emit("artifact_updated", {"id": result["artifact_id"], "todo_id": todo_id})
+        return result
+
     @app.websocket("/ws")
     async def websocket(ws: WebSocket):
         if not secrets.compare_digest(ws.query_params.get("token", "").encode("utf-8"), token.encode("utf-8")):

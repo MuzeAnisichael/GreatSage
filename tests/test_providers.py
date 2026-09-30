@@ -125,6 +125,50 @@ async def test_ollama_ndjson_disables_thinking_and_only_yields_spoken_content():
     await provider._client.aclose()
 
 
+async def test_streamed_tool_calls_are_reassembled_and_tools_are_offered():
+    stream = ByteStream(
+        'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_7","type":"function","function":{"name":"write_file","arguments":"{\\"path\\":"}}]}}]}\n\n'
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"a.md\\"}"}}]}}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        'data: [DONE]\n\n'.encode())
+    tools = [{"type": "function", "function": {"name": "write_file", "description": "fixture", "parameters": {"type": "object"}}}]
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["tools"] == tools and body["tool_choice"] == "auto"
+        return httpx.Response(200, stream=stream)
+
+    provider = service(handler)
+    events = [item async for item in provider.stream_chat({"provider": "openai", "model": "fixture", "tools": tools}, [])]
+    assert events == [{"text": "好"}, {"tool_calls": [{"id": "call_7", "name": "write_file", "arguments": '{"path":"a.md"}'}]}]
+    bad = service(lambda _: httpx.Response(200, stream=ByteStream(
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"rm -rf","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n')))
+    with pytest.raises(ProviderError, match="invalid_tool_call"):
+        _ = [item async for item in bad.stream_chat({"provider": "openai", "model": "fixture"}, [])]
+    await provider.close()
+    await bad.close()
+
+
+async def test_ollama_tool_history_is_translated_and_tool_calls_are_parsed():
+    history = [{"role": "user", "content": "列出文件"},
+               {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"a.md"}'}}]},
+               {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": "{}"}]
+
+    def handler(request):
+        messages = json.loads(request.content)["messages"]
+        assert messages[1]["tool_calls"] == [{"function": {"name": "read_file", "arguments": {"path": "a.md"}}}]
+        assert messages[2] == {"role": "tool", "content": "{}", "tool_name": "read_file"}
+        return httpx.Response(200, text='{"message":{"content":"","tool_calls":[{"function":{"name":"list_files","arguments":{"path":""}}}]},"done":false}\n'
+                                        '{"message":{"content":""},"done":true}\n')
+
+    provider = service(handler)
+    events = [item async for item in provider.stream_chat({"provider": "ollama", "model": "local"}, history)]
+    assert events[-1] == {"tool_calls": [{"id": "call_0", "name": "list_files", "arguments": '{"path": ""}'}]}
+    await provider.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content,code", [
     (b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', "stream_ended_before_completion"),

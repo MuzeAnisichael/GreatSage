@@ -198,6 +198,20 @@ function registerBridge() {
     const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), { title: '选择包含 SKILL.md 的技能文件夹', properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] || null;
   });
+  handle('choose-material-path', async (event, kind) => {
+    const options = kind === 'folder'
+      ? { title: '选择包含 .md 资料的文件夹', properties: ['openDirectory'] }
+      : { title: '选择 .md 资料', properties: ['openFile'], filters: [{ name: 'Markdown', extensions: ['md'] }] };
+    const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), options);
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
+  handle('open-workspace', async () => {
+    // Only the fixed workspace folder; the renderer cannot choose what gets opened.
+    const folder = path.join(dataDir, 'workspace');
+    fs.mkdirSync(folder, { recursive: true });
+    const error = await shell.openPath(folder);
+    if (error) throw new Error('无法打开工作目录。');
+  });
 }
 
 function selectPort() {

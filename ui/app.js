@@ -1,5 +1,6 @@
 import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } from './client.js';
 import { setupV02 } from './v02.js';
+import { setupWork } from './work.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -16,6 +17,7 @@ let historySearchTimer;
 let historySearchEpoch = 0;
 let historySearchResults = null;
 let enhancements;
+let work;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -43,7 +45,8 @@ function showView(view) {
   if (!$('#view-' + view)) return;
   $$('.view').forEach(node => { node.hidden = node.id !== 'view-' + view; node.classList.toggle('active', !node.hidden); });
   $$('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === view));
-  $('#page-breadcrumb').textContent = ({ conversation: '对话与感知', memory: '长期记忆', skills: '技能库', logs: '运行日志', settings: '设置' })[view];
+  $('#page-breadcrumb').textContent = ({ conversation: '对话与感知', tasks: '任务与产物', materials: '资料库', memory: '长期记忆', skills: '技能库', logs: '运行日志', settings: '设置' })[view];
+  if (view === 'tasks' || view === 'materials') work?.refresh(view).catch(error => toast(error.message, 'error'));
   if (view === 'memory') refreshMemory().catch(error => toast(error.message, 'error'));
   if (view === 'skills') refreshSkills().catch(error => toast(error.message, 'error'));
   if (view === 'logs') renderEvents();
@@ -84,9 +87,11 @@ function fillSettings(settings) {
   for (const input of $$('#settings-form [name]')) {
     if (input.name.endsWith('.api_key')) { input.value = ''; input.placeholder = getPath(settings, input.name.split('.')[0] + '.key_configured') ? '密钥已配置，留空保留' : '可填写密钥，或使用环境变量'; continue; }
     const value = getPath(settings, input.name);
-    if (input.type === 'checkbox') input.checked = Boolean(value);
+    if (input.dataset.json !== undefined) input.value = JSON.stringify(value ?? []);
+    else if (input.type === 'checkbox') input.checked = Boolean(value);
     else if (value !== undefined && value !== null) input.value = value;
   }
+  work?.fillSettings();
   updateQuickSettings();
   refreshProviderControls();
   if (settings.tts?.provider === 'system') refreshVoiceList().catch(error => { $('#voice-catalog-note').textContent = error.message; });
@@ -125,7 +130,8 @@ async function saveSettings() {
   const result = structuredClone(state.settings);
   for (const input of $$('#settings-form [name]')) {
     if (input.name.endsWith('.api_key') && !input.value.trim()) continue;
-    const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
+    const value = input.dataset.json !== undefined ? JSON.parse(input.value || '[]')
+      : input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
     setPath(result, input.name, value);
   }
   await client.request('/api/settings', { method: 'PUT', body: result });
@@ -347,6 +353,7 @@ function onEvent(event) {
   if (event.id && state.seenEvents.has(event.id)) return;
   addEvent(event);
   enhancements?.onEvent(event);
+  work?.onEvent(event);
   const data = event.data || {};
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
@@ -612,11 +619,12 @@ async function refreshSkills() {
   }
 }
 
-function confirmAction(title, message) {
+function confirmAction(title, message, confirmLabel = '确认删除') {
   const dialog = $('#confirm-dialog');
   if (dialog.open) return Promise.resolve(false);
   $('#confirm-title').textContent = title;
   $('#confirm-message').textContent = message;
+  $('#confirm-accept').textContent = confirmLabel;
   dialog.returnValue = 'cancel';
   dialog.showModal();
   return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true }));
@@ -699,6 +707,7 @@ async function loadInitial() {
     ['音频来源', refreshSources],
     ['记忆与历史', async () => { await refreshMemory(); renderChat(); }],
     ['技能', refreshSkills],
+    ['任务', () => work.init()],
     ['日志', async () => { const result = await client.request('/api/events'); const events = Array.isArray(result) ? result : result.events || []; for (const event of events) addEvent(event); }],
   ];
   const results = await Promise.allSettled(requests.map(([, action]) => action()));
@@ -707,6 +716,7 @@ async function loadInitial() {
 }
 
 enhancements = setupV02({ client, state, toast, busy, confirmAction, refreshMemory });
+work = setupWork({ client, toast, busy, confirmAction });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });

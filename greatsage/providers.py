@@ -150,6 +150,38 @@ def _json(value: str | bytes, provider: str) -> dict:
     return result
 
 
+def _ollama_messages(messages: list) -> list:
+    """Translate OpenAI-style tool call history into Ollama's chat format."""
+    result = []
+    for message in messages:
+        message = dict(message)
+        if message.get("tool_calls"):
+            calls = []
+            for call in message["tool_calls"]:
+                arguments = call["function"]["arguments"]
+                try:
+                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+                except json.JSONDecodeError:
+                    arguments = {}
+                calls.append({"function": {"name": call["function"]["name"], "arguments": arguments}})
+            message["tool_calls"] = calls
+        if message.get("role") == "tool":
+            message = {"role": "tool", "content": message.get("content", ""), "tool_name": message.get("name", "")}
+        result.append(message)
+    return result
+
+
+def _tool_calls(pending: dict) -> list[dict]:
+    calls = []
+    for index in sorted(pending):
+        call = pending[index]
+        if not isinstance(call.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", call["name"]):
+            raise ProviderError("stream", "invalid_tool_call")
+        calls.append({"id": str(call.get("id") or f"call_{index}")[:128], "name": call["name"],
+                      "arguments": call.get("arguments") or "{}"})
+    return calls
+
+
 def _desktop_http_client() -> httpx.AsyncClient:
     """Honor an existing Windows proxy when no proxy environment is configured.
 
@@ -284,7 +316,11 @@ class Providers:
         ollama = provider == "ollama"
         endpoint = "/api/chat" if ollama else "/chat/completions"
         url, headers, timeout = self._request(config, endpoint)
-        payload = {"model": config["model"], "messages": messages, "stream": True}
+        payload = {"model": config["model"], "messages": _ollama_messages(messages) if ollama else messages, "stream": True}
+        if config.get("tools"):
+            payload["tools"] = config["tools"]
+            if not ollama:
+                payload["tool_choice"] = "auto"
         if config.get('json_schema'):
             if ollama:
                 payload['format'] = config['json_schema']
@@ -310,6 +346,8 @@ class Providers:
                 payload["max_tokens"] = limit
         total_timeout = _number(config, "total_timeout_seconds", 120, 0.1, 600)
         finished = False
+        pending_calls: dict[int, dict] = {}
+        call_bytes = 0
         try:
             async with asyncio.timeout(total_timeout):
                 async with self._client.stream("POST", url, headers=headers, json=payload,
@@ -328,6 +366,12 @@ class Providers:
                             text = message.get("content")
                             if isinstance(text, str) and text:
                                 yield {"text": text}
+                            for call in message.get("tool_calls") or []:
+                                function = call.get("function", {}) if isinstance(call, dict) else {}
+                                arguments = function.get("arguments", {})
+                                pending_calls[len(pending_calls)] = {
+                                    "name": function.get("name"),
+                                    "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)}
                             if item.get("done"):
                                 finished = True
                                 usage = {}
@@ -374,8 +418,22 @@ class Providers:
                                 text = delta.get("content")
                                 if isinstance(text, str) and text:
                                     yield {"text": text}
+                                for part in delta.get("tool_calls") or []:
+                                    if not isinstance(part, dict) or not isinstance(part.get("index", 0), int):
+                                        raise ProviderError(provider, "invalid_tool_call")
+                                    call = pending_calls.setdefault(part.get("index", 0), {"arguments": ""})
+                                    function = part.get("function") or {}
+                                    call["id"] = part.get("id") or call.get("id")
+                                    call["name"] = function.get("name") or call.get("name")
+                                    piece = function.get("arguments") or ""
+                                    call_bytes += len(piece)
+                                    if not isinstance(piece, str) or call_bytes > 600_000:
+                                        raise ProviderError(provider, "tool_call_too_large")
+                                    call["arguments"] += piece
                     if not finished:
                         raise ProviderError(provider, "stream_ended_before_completion")
+                    if pending_calls:
+                        yield {"tool_calls": _tool_calls(pending_calls)}
         except (TimeoutError, httpx.TimeoutException):
             raise ProviderError(provider, "timeout") from None
         except httpx.HTTPError as exc:

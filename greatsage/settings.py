@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .tools import NO_STANDING_ALLOW, TOOL_EFFECTS
+
 
 _IS_WINDOWS = sys.platform == "win32"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
@@ -70,6 +72,9 @@ def _defaults() -> dict:
                       "api_key_env": "OPENROUTER_API_KEY", "enabled": False, "timeout_seconds": 60,
                       "query_timeout_seconds": 1.5},
         "semantic_decisions": True, "audit_content": False,
+        # v0.3 tools: side effects ask by default; voice approval and commands are opt-in.
+        "tools_enabled": True, "voice_approval": False, "command_tool": False,
+        "workspace_dirs": [], "tool_rules": [], "app_launchers": [],
         # Confirmed v0.1 policy: text stays until deletion, logs 30 days,
         # opt-in recordings 7 days. Retention is configurable in the UI.
         "record_audio": False, "recording_retention_days": 7, "log_retention_days": 30,
@@ -159,6 +164,33 @@ def _url(value: str, label: str, allow_empty: bool) -> str:
     return value.rstrip("/")
 
 
+def _validate_tools(config: dict) -> None:
+    def rows(field: str, limit: int, keys: set[str]) -> list:
+        value = config[field]
+        if not isinstance(value, list) or len(value) > limit or any(not isinstance(item, dict) or set(item) != keys for item in value):
+            raise ValueError(f"Invalid {field}")
+        return value
+
+    directories = config["workspace_dirs"]
+    if not isinstance(directories, list) or len(directories) > 20:
+        raise ValueError("Invalid workspace_dirs")
+    for item in directories:
+        if not Path(_string(item, "workspace_dirs", 1024, empty=False)).is_absolute():
+            raise ValueError("工作目录必须是完整的绝对路径。")
+    for rule in rows("tool_rules", 100, {"tool", "match", "action"}):
+        if rule["tool"] != "*" and rule["tool"] not in TOOL_EFFECTS or rule["action"] not in ("allow", "ask", "deny"):
+            raise ValueError("Invalid tool_rules entry")
+        _string(rule["match"], "tool_rules.match", 512)
+        if rule["action"] == "allow" and (rule["tool"] == "*" or TOOL_EFFECTS[rule["tool"]] in NO_STANDING_ALLOW):
+            raise ValueError("删除和命令类工具不能设为始终允许，“允许”规则也必须指定具体工具。")
+    names = set()
+    for app in rows("app_launchers", 30, {"name", "path"}):
+        name = _string(app["name"], "app_launchers.name", 64, empty=False).strip().casefold()
+        if name in names or not Path(_string(app["path"], "app_launchers.path", 1024, empty=False)).is_absolute():
+            raise ValueError("程序名称不能重复，路径必须是完整的绝对路径。")
+        names.add(name)
+
+
 def _validate(config: dict) -> dict:
     allowed = set(_defaults())
     unknown = set(config) - allowed
@@ -168,9 +200,11 @@ def _validate(config: dict) -> dict:
         raise ValueError("Invalid mode")
     if config["desktop_source"] not in ("none", "system", "process"):
         raise ValueError("Invalid desktop_source")
-    for field in ("voice_enabled", "allow_proactive", "microphone", "record_audio", "semantic_decisions", "audit_content"):
+    for field in ("voice_enabled", "allow_proactive", "microphone", "record_audio", "semantic_decisions", "audit_content",
+                  "tools_enabled", "voice_approval", "command_tool"):
         if type(config[field]) is not bool:
             raise ValueError(f"Invalid {field}: expected a boolean")
+    _validate_tools(config)
     _string(config["global_prompt"], "global_prompt", 32000)
     for field in ("output_language", "voice_language"):
         if not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}", _string(config[field], field, 24, empty=False)):
