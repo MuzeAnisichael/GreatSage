@@ -336,3 +336,60 @@ async def test_pre_migration_task_without_checkpoint_can_resume(runtime):
     await runtime.tasks.resume(task_id)
     await until(status(runtime, task_id, "succeeded", "failed"))
     assert runtime.memory.task(task_id)["status"] == "succeeded"
+
+
+async def test_graph_pauses_each_tool_individually_and_releases_task_slot(runtime, tmp_path):
+    runtime.providers.turns = [[{"tool_calls": [
+        {"id": "a", "name": "write_file", "arguments": '{"path":"a.md","content":"A"}'},
+        {"id": "b", "name": "write_file", "arguments": '{"path":"b.md","content":"B"}'}]}], [{"text": "完成"}]]
+    await runtime.chat("写入两个文件")
+    first = await pending_call(runtime)
+    await until(lambda: first["task_id"] not in runtime.tasks.jobs)
+    assert not runtime.tasks.slot.locked()
+    snapshot = await runtime.tasks.graphs.inspect(runtime.memory.task(first["task_id"]))
+    assert snapshot["pending_calls"] == [first["id"]]
+    await runtime.tasks.resolve(first["id"], True)
+    second = await pending_call(runtime)
+    assert second["id"] != first["id"] and second["target"] == "b.md"
+    assert (tmp_path / "workspace" / "a.md").exists()
+    assert not (tmp_path / "workspace" / "b.md").exists()
+    await runtime.tasks.resolve(second["id"], False)
+    await until(status(runtime, first["task_id"], "succeeded", "failed"))
+    assert runtime.memory.task(first["task_id"])["status"] == "succeeded"
+    assert not (tmp_path / "workspace" / "b.md").exists()
+
+
+async def test_cancel_revokes_an_approved_but_queued_graph_command(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "later.md", "content": "fixture"})
+    await runtime.chat("写入 later.md")
+    call = await pending_call(runtime)
+    await until(lambda: call["task_id"] not in runtime.tasks.jobs)
+    await runtime.tasks.slot.acquire()
+    try:
+        await runtime.tasks.resolve(call["id"], True)
+        await runtime.tasks.cancel(call["task_id"])
+    finally:
+        runtime.tasks.slot.release()
+    assert runtime.memory.tool_call(call["id"])["status"] == "expired"
+    assert runtime.memory.tool_call(call["id"])["approval"] is None
+    await runtime.tasks.resume(call["task_id"])
+    again = await pending_call(runtime)
+    assert not (tmp_path / "workspace" / "later.md").exists()
+    await runtime.tasks.resolve(again["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert (tmp_path / "workspace" / "later.md").exists()
+
+
+async def test_source_deletion_cancels_graph_and_revokes_pending_approval(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "deleted.md", "content": "deleted source"})
+    await runtime.chat("保存这段原文")
+    call = await pending_call(runtime)
+    await runtime.before_delete()
+    runtime.memory.clear_history()
+    assert runtime.memory.task(call["task_id"])["status"] == "cancelled"
+    assert not runtime.tasks.approvals_pending()
+    with pytest.raises(ValueError):
+        await runtime.tasks.resolve(call["id"], True)
+    with pytest.raises(ValueError, match="上下文已清除"):
+        await runtime.tasks.resume(call["task_id"])
+    assert not (tmp_path / "workspace" / "deleted.md").exists()

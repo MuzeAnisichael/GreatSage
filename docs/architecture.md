@@ -176,4 +176,4 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 图使用 `AsyncSqliteSaver` 同步落盘控制状态，位于运行目录的 `agent-checkpoints.sqlite3`。只存任务 ID、路由、节点和 checkpoint 元数据；异常只存类型，不存消息正文。任务数据库继续保存需要遵循来源删除规则的业务内容，以及操作是否执行过的权威账本。恢复时优先使用图的未完成节点，旧版本无 checkpoint 的任务可以从原步骤记录进入新图。删除任务同时删除它的 checkpoint。
 
-checkpoint 不提供副作用的 exactly-once 保证。调用去重、未知结果不重放和重新授权仍由应用负责。当前审批先保留原权限层的等待方式，随后单独迁移为 LangGraph interrupt / resume。
+checkpoint 不提供副作用的 exactly-once 保证。调用去重、未知结果不重放和重新授权仍由应用负责。审批使用 LangGraph `interrupt` / `Command(resume=...)`，每个工具节点最多一个中断，checkpoint 中只含调用 ID 与用户批准／拒绝的控制值。等待时释放任务执行位置；批准值绑定调用 ID 并核对本地审批记录。取消、退出和重启会使未执行授权失效，继续任务需要重新确认；删除来源前取消相关运行并清理业务上下文。

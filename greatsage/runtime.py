@@ -1084,6 +1084,7 @@ class Runtime:
         self.data_epoch += 1
         self.epoch += 1
         # Idle tasks keep no intermediate copies of text that is about to be deleted.
+        await self.tasks.invalidate()
         self.memory.purge_task_bodies()
         for queue in tuple(self.subscribers):
             while not queue.empty():

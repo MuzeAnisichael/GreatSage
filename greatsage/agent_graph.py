@@ -12,6 +12,7 @@ from typing import TypedDict
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 from langsmith import tracing_context
 
 from .tasks import MAX_ROUNDS, TaskError, _now, assistant_calls
@@ -150,13 +151,15 @@ class AgentGraphs:
         outcome = self.manager.memory.step(task["id"], "act")["result"]
         await self.manager._step(task["id"], "reply", lambda: self.manager._reply(task, outcome))
 
-    async def run(self, task):
+    async def run(self, task, approval=None):
         await self.ensure()
         graph, config = self.graphs[task["kind"]], self.config(task["id"])
         with tracing_context(enabled=False):
             saved = await graph.aget_state(config)
-            value = None if saved.next else {"task_id": task["id"], "route": ""}
-            await graph.ainvoke(value, config, durability="sync")
+            value = Command(resume=approval) if approval is not None else (
+                None if saved.next else {"task_id": task["id"], "route": ""})
+            result = await graph.ainvoke(value, config, durability="sync")
+            return bool(result.get("__interrupt__"))
 
     async def delete(self, task_id):
         await self.ensure()
@@ -170,4 +173,6 @@ class AgentGraphs:
         return {"engine": "langgraph", "graph_version": 1, "task_id": task["id"],
                 "node": self.nodes.get(task["id"]), "next": list(state.next),
                 "checkpoint_id": (state.config or {}).get("configurable", {}).get("checkpoint_id"),
-                "checkpoint_at": state.created_at, "checkpoint_content": "control_only"}
+                "checkpoint_at": state.created_at, "checkpoint_content": "control_only",
+                "pending_calls": [item.value["call_id"] for item in state.interrupts
+                                  if isinstance(item.value, dict) and "call_id" in item.value]}
