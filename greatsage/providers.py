@@ -113,31 +113,6 @@ def _generation_usage(response: httpx.Response) -> dict:
     return {}
 
 
-async def _sse_events(response: httpx.Response) -> AsyncIterator[tuple[str, str]]:
-    data: list[str] = []
-    event = "message"
-    size = 0
-    async for line in response.aiter_lines():
-        if len(line) > 1_000_000:
-            raise ProviderError("stream", "event_too_large")
-        if not line:
-            if data:
-                yield event, "\n".join(data)
-            data, event, size = [], "message", 0
-        elif line.startswith("data:"):
-            value = line[5:]
-            value = value[1:] if value.startswith(" ") else value
-            data.append(value)
-            size += len(value)
-            if size > 1_000_000:
-                raise ProviderError("stream", "event_too_large")
-        elif line.startswith("event:"):
-            event = line[6:].strip()
-        # SSE comments, IDs and retry hints do not carry answer text.
-    if data:
-        yield event, "\n".join(data)
-
-
 def _json(value: str | bytes, provider: str) -> dict:
     try:
         result = json.loads(value)
@@ -147,27 +122,6 @@ def _json(value: str | bytes, provider: str) -> dict:
         raise ProviderError(provider, "invalid_response_shape")
     if result.get("error"):
         raise ProviderError(provider, "upstream_error")
-    return result
-
-
-def _ollama_messages(messages: list) -> list:
-    """Translate OpenAI-style tool call history into Ollama's chat format."""
-    result = []
-    for message in messages:
-        message = dict(message)
-        if message.get("tool_calls"):
-            calls = []
-            for call in message["tool_calls"]:
-                arguments = call["function"]["arguments"]
-                try:
-                    arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
-                except json.JSONDecodeError:
-                    arguments = {}
-                calls.append({"function": {"name": call["function"]["name"], "arguments": arguments}})
-            message["tool_calls"] = calls
-        if message.get("role") == "tool":
-            message = {"role": "tool", "content": message.get("content", ""), "tool_name": message.get("name", "")}
-        result.append(message)
     return result
 
 
@@ -222,6 +176,9 @@ def _network_code(exc: httpx.HTTPError) -> str:
 
 class Providers:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+        # Load framework adapters during backend startup, not on the first utterance.
+        from .chat_models import stream_chat
+        self._chat_stream = stream_chat
         self._owns_client = client is None
         self._client = client or _desktop_http_client()
         self._local_executor: ThreadPoolExecutor | None = None
@@ -308,136 +265,10 @@ class Providers:
             raise ProviderError(provider, "invalid_embedding_response") from None
 
     async def stream_chat(self, config: dict, messages: list) -> AsyncIterator[dict]:
-        provider = _provider(config)
-        if provider not in _DEFAULT_URLS:
-            raise ProviderError(provider, "chat_not_supported")
-        if not config.get("model"):
-            raise ProviderError(provider, "model_missing")
-        ollama = provider == "ollama"
-        endpoint = "/api/chat" if ollama else "/chat/completions"
-        url, headers, timeout = self._request(config, endpoint)
-        payload = {"model": config["model"], "messages": _ollama_messages(messages) if ollama else messages, "stream": True}
-        if config.get("tools"):
-            payload["tools"] = config["tools"]
-            if not ollama:
-                payload["tool_choice"] = "auto"
-        if config.get('json_schema'):
-            if ollama:
-                payload['format'] = config['json_schema']
-            else:
-                payload['response_format'] = {'type': 'json_schema', 'json_schema': {
-                    'name': 'greatsage_decision', 'strict': True, 'schema': config['json_schema']}}
-        limit = config.get("max_tokens", config.get("max_output_tokens"))
-        if ollama:
-            payload["think"] = False
-            options = {}
-            if "temperature" in config:
-                options["temperature"] = config["temperature"]
-            if limit is not None:
-                options["num_predict"] = limit
-            if options:
-                payload["options"] = options
-        else:
-            if config.get("include_usage", True):
-                payload["stream_options"] = {"include_usage": True}
-            if "temperature" in config:
-                payload["temperature"] = config["temperature"]
-            if limit is not None:
-                payload["max_tokens"] = limit
-        total_timeout = _number(config, "total_timeout_seconds", 120, 0.1, 600)
-        finished = False
-        pending_calls: dict[int, dict] = {}
-        call_bytes = 0
-        try:
-            async with asyncio.timeout(total_timeout):
-                async with self._client.stream("POST", url, headers=headers, json=payload,
-                                               timeout=timeout) as response:
-                    self._status(response, provider)
-                    if ollama:
-                        async for line in response.aiter_lines():
-                            if not line.strip():
-                                continue
-                            if len(line) > 1_000_000:
-                                raise ProviderError(provider, "event_too_large")
-                            item = _json(line, provider)
-                            message = item.get("message", {})
-                            if not isinstance(message, dict):
-                                raise ProviderError(provider, "invalid_response_shape")
-                            text = message.get("content")
-                            if isinstance(text, str) and text:
-                                yield {"text": text}
-                            for call in message.get("tool_calls") or []:
-                                function = call.get("function", {}) if isinstance(call, dict) else {}
-                                arguments = function.get("arguments", {})
-                                pending_calls[len(pending_calls)] = {
-                                    "name": function.get("name"),
-                                    "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)}
-                            if item.get("done"):
-                                finished = True
-                                usage = {}
-                                for source, destination in (
-                                    ("prompt_eval_count", "prompt_tokens"),
-                                    ("eval_count", "completion_tokens"),
-                                ):
-                                    if isinstance(item.get(source), int):
-                                        usage[destination] = item[source]
-                                if usage:
-                                    usage["total_tokens"] = sum(usage.values())
-                                yield {"usage": usage}
-                                break
-                    else:
-                        async for event, data in _sse_events(response):
-                            if event == "error":
-                                raise ProviderError(provider, "upstream_stream_error")
-                            if data.strip() == "[DONE]":
-                                finished = True
-                                break
-                            if event in ("ping", "heartbeat"):
-                                continue
-                            item = _json(data, provider)
-                            usage = _usage(item.get("usage"))
-                            if usage:
-                                usage.update(_generation_usage(response))
-                                yield {"usage": usage}
-                            choices = item.get("choices", [])
-                            if not isinstance(choices, list):
-                                raise ProviderError(provider, "invalid_response_shape")
-                            for choice in choices:
-                                if not isinstance(choice, dict):
-                                    raise ProviderError(provider, "invalid_response_shape")
-                                if choice.get("index", 0) != 0:
-                                    continue
-                                reason = choice.get("finish_reason")
-                                if reason in ("error", "content_filter"):
-                                    raise ProviderError(provider, "generation_not_completed")
-                                if reason is not None:
-                                    finished = True
-                                delta = choice.get("delta") or {}
-                                if not isinstance(delta, dict):
-                                    raise ProviderError(provider, "invalid_response_shape")
-                                text = delta.get("content")
-                                if isinstance(text, str) and text:
-                                    yield {"text": text}
-                                for part in delta.get("tool_calls") or []:
-                                    if not isinstance(part, dict) or not isinstance(part.get("index", 0), int):
-                                        raise ProviderError(provider, "invalid_tool_call")
-                                    call = pending_calls.setdefault(part.get("index", 0), {"arguments": ""})
-                                    function = part.get("function") or {}
-                                    call["id"] = part.get("id") or call.get("id")
-                                    call["name"] = function.get("name") or call.get("name")
-                                    piece = function.get("arguments") or ""
-                                    call_bytes += len(piece)
-                                    if not isinstance(piece, str) or call_bytes > 600_000:
-                                        raise ProviderError(provider, "tool_call_too_large")
-                                    call["arguments"] += piece
-                    if not finished:
-                        raise ProviderError(provider, "stream_ended_before_completion")
-                    if pending_calls:
-                        yield {"tool_calls": _tool_calls(pending_calls)}
-        except (TimeoutError, httpx.TimeoutException):
-            raise ProviderError(provider, "timeout") from None
-        except httpx.HTTPError as exc:
-            raise ProviderError(provider, _network_code(exc)) from None
+        from contextlib import aclosing
+        async with aclosing(self._chat_stream(self, config, messages)) as stream:
+            async for event in stream:
+                yield event
 
     async def transcribe(self, config: dict, pcm: bytes, sample_rate: int = 16000) -> dict:
         provider = _provider(config)

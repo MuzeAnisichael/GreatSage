@@ -9,6 +9,10 @@ for package in ('faster_whisper', 'ctranslate2', 'tokenizers', 'pyaudiowpatch'):
     binaries += collect_dynamic_libs(package)
 for distribution in ('webrtcvad-wheels', 'huggingface-hub', 'faster-whisper'):
     data += copy_metadata(distribution)
+for package in ('langchain_core', 'langchain_openai', 'langchain_ollama'):
+    data += collect_data_files(package)
+for distribution in ('langchain-core', 'langchain-openai', 'langchain-ollama', 'langsmith', 'openai', 'ollama'):
+    data += copy_metadata(distribution)
 
 analysis = Analysis(
     [str(root / 'scripts' / 'backend_entry.py')], pathex=[str(root)],

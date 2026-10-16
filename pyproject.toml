@@ -13,6 +13,8 @@ dependencies = [
   "PyAudioWPatch>=0.2.12.7; sys_platform == 'win32'", "psutil>=5.9,<8",
   "webrtcvad-wheels>=2.0.14", "python-multipart>=0.0.18", "av>=14,<19",
   "tiktoken>=0.9,<1",
+  "langchain-openai==1.7.2", "langchain-ollama==1.1.0", "langchain-core==1.6.11",
+  "openai==2.45.0", "ollama==0.6.3",
   "audioop-lts>=0.2.1; python_version >= '3.13'",
 ]
 
