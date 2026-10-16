@@ -639,7 +639,12 @@ class TaskManager:
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc))
             await self._call_changed(row)
             return self._outcome(row)
-        decision, reason = decide(spec, target, task["origin"], settings, self.grants.get(task["id"], set()))
+        if any(item["status"] == "unknown" for item in self.memory.task(task["id"])["tool_calls"]):
+            # The model may have requested several tools in one reply. Removing
+            # tools from the next model call cannot protect this existing batch.
+            decision, reason = "deny", "上一项操作结果未知，已停止后续工具；请先检查结果。"
+        else:
+            decision, reason = decide(spec, target, task["origin"], settings, self.grants.get(task["id"], set()))
         if row is None:
             row = self.memory.add_tool_call(task["id"], key, spec.name, arguments, spec.effect, target, decision, reason, "proposed")
         else:

@@ -12,8 +12,9 @@
 | interrupt / resume 审批 | 219 passed、5 skipped | 每个工具单独等待，等待释放执行位置，排队取消撤销授权，来源删除使审批失效 |
 | MCP HTTP | 227 passed、5 skipped | 官方 SDK 模拟协议、JSON Schema、定义变化、断连未知结果、迟到发现和点击授权 |
 | 运行监控 | **228 passed、5 skipped**（23.22 秒） | 认证、消息／来源／预算元数据、正文隔离与删除失效 |
+| 同批工具未知结果保护 | **229 passed、5 skipped**（33.31 秒） | 首个 MCP 结果未知后，同条模型回复中的后续只读工具也必须拒绝 |
 
-全量命令：`.venv/Scripts/python.exe -m pytest -q --basetemp .runtime/pytest-inspector-20261017 --tb=short --maxfail=3`。使用独立工作区临时目录，绕开本机系统临时目录的写入限制；没有为环境问题修改产品行为。`npm.cmd run check` 通过。跳过项仍包括需要显式许可的原生语音／音源测试和本机不可创建的符号链接测试；不计为通过。
+最终全量命令：`.venv/Scripts/python.exe -m pytest -q --basetemp .runtime/pytest-unknown-batch-final --tb=short --maxfail=3`。使用独立工作区临时目录，绕开本机系统临时目录的写入限制；没有为环境问题修改产品行为。`npm.cmd run check` 通过。跳过项仍包括需要显式许可的原生语音／音源测试和本机不可创建的符号链接测试；不计为通过。新增同批工具用例在修复前确实失败，修复后通过，未把原来只覆盖下一轮模型的测试当作同批工具已受保护。
 
 源码 Electron 的合成数据检查 **31/31 通过**，覆盖设置、MCP 配置不被通用保存覆盖、不自动连接、任务节点与 checkpoint、请求消息元数据、正文不显示、无横向溢出、桌宠和退出后端清理。报告在本地 `.runtime/desktop-smoke/2026-10-16T16-38-39-271Z/result.json`。目录名使用 UTC，因此可能与北京时间日期相差一天。
 
@@ -33,6 +34,8 @@ PyInstaller **6.22.2** 成功构建后端。`scripts/smoke_backend.py` 分别以
 - 请求目录和上下文元数据可查，正文没有出现在监控响应中。
 
 两次分别调用合成模型 4 次、合成工具 1 次，未访问付费服务或用户文件。冻结报告为 `.runtime/backend-smoke/20261016T164741Z-a8bc18/result.json`，源码报告为 `.runtime/backend-smoke/20261016T164852Z-8562b5/result.json`。源码模式已加入 Windows CI。
+
+这些冻结／源码黑盒报告对应同批工具拦截补丁之前的迁移切片，用于验证依赖、协议和恢复；补丁另由最终源码回归覆盖，没有宣称上述冻结产物包含后来的修改。
 
 首轮冻结检查在纪要阶段失败，原因是脚本选择了重启后新建的空会话；修正测试的会话选择后通过。这不是产品恢复失败，也没有放宽会话隔离。回环服务是自有合成夹具，不能据此宣称兼容所有第三方 MCP 服务。
 

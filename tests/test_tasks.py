@@ -423,3 +423,30 @@ async def test_mcp_runs_only_after_click_and_unknown_results_stop_further_tools(
         assert runtime.memory.task(call["task_id"])["status"] == "failed"
     else:
         assert runtime.memory.tool_call(call["id"])["status"] == "succeeded"
+
+
+async def test_unknown_tool_result_blocks_remaining_calls_in_same_model_reply(runtime, tmp_path, monkeypatch):
+    from test_mcp import registry
+    mcp, seen, _, _ = registry(tmp_path, monkeypatch, mode="disconnect")
+    runtime.settings.update({"mcp_servers": mcp.settings()["mcp_servers"]})
+    mcp.settings = runtime.settings.raw
+    runtime.tasks.mcp = mcp
+    await mcp.discover("fixture")
+    name = next(iter(mcp.specs))
+    executed = []
+    def local_tool(*args):
+        executed.append(args[1].name)
+        return {"text": "must not run"}, None
+    monkeypatch.setattr(runtime.tasks.runner, "run", local_tool)
+    runtime.providers.turns = [[{"tool_calls": [
+        {"id": "external", "name": name, "arguments": '{"value":2}'},
+        {"id": "later", "name": "read_file", "arguments": '{"path":"later.md"}'}]}],
+        [{"text": "外部操作结果未知，请检查服务。"}]]
+    await runtime.chat("执行测试服务后读取测试文件")
+    call = await pending_call(runtime)
+    await runtime.tasks.resolve(call["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert not executed, "unknown results must also block tools already present in this model reply"
+    assert seen.count("tools/call") == 1
+    assert [row["status"] for row in runtime.memory.task(call["task_id"])["tool_calls"]] == ["unknown", "denied"]
+    assert "tools" not in runtime.providers.calls[-1][0]
