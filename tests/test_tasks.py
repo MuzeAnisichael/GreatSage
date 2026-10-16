@@ -279,3 +279,60 @@ async def test_chat_can_start_a_minutes_task_and_regeneration_versions_artifacts
     await until(status(runtime, again["id"], "succeeded", "failed"))
     assert runtime.memory.artifact(artifact_id)["version"] == 3
     assert "负责人写全名" in runtime.memory.task(again["id"])["params"]["instructions"]
+
+
+async def test_graph_restart_resumes_model_without_replaying_completed_tool(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "once.md", "content": "only once"})
+    await runtime.chat("保存 once.md")
+    call = await pending_call(runtime)
+    runtime.providers.gate = asyncio.Event()
+    await runtime.tasks.resolve(call["id"], True)
+    await until(lambda: len(runtime.providers.calls) == 2)
+    await runtime.tasks.cancel(call["task_id"])
+    graph_state = await runtime.tasks.graphs.inspect(runtime.memory.task(call["task_id"]))
+    assert graph_state["next"] == ["model"] and graph_state["checkpoint_id"]
+    restarted = Runtime(tmp_path, providers=Scripted())
+    try:
+        await restarted.start()
+        def never_replay(*args):
+            raise AssertionError("a completed write must not run twice")
+        restarted.tasks.runner.run = never_replay
+        await restarted.tasks.resume(call["task_id"])
+        await until(status(restarted, call["task_id"], "succeeded", "failed"))
+        assert restarted.memory.task(call["task_id"])["status"] == "succeeded"
+        assert restarted.providers.calls[0][1][-1]["role"] == "tool"
+        assert (tmp_path / "workspace" / "once.md").read_text() == "only once"
+    finally:
+        await restarted.close()
+
+
+async def test_graph_checkpoints_exclude_bodies_and_exception_messages(runtime, tmp_path, monkeypatch):
+    import sqlite3
+    secret = "private-fixture-body-never-checkpoint"
+    say(runtime, secret)
+    async def fail(*args):
+        raise tasks.TaskError(secret)
+    monkeypatch.setattr(runtime.tasks, "_extract", fail)
+    task = await runtime.tasks.start_minutes({}, "console", runtime.session_id)
+    await until(status(runtime, task["id"], "failed"))
+    view = await runtime.tasks.graphs.inspect(runtime.memory.task(task["id"]))
+    assert view["next"] == ["extract"] and view["checkpoint_content"] == "control_only"
+    with sqlite3.connect(tmp_path / "agent-checkpoints.sqlite3") as db:
+        for table in ("checkpoints", "writes"):
+            rows = db.execute(f"SELECT * FROM {table}").fetchall()
+            assert rows and secret.encode() not in repr(rows).encode()
+    await runtime.tasks.graphs.delete(task["id"])
+    assert (await runtime.tasks.graphs.inspect(runtime.memory.task(task["id"])))["checkpoint_id"] is None
+
+
+async def test_pre_migration_task_without_checkpoint_can_resume(runtime):
+    say(runtime, "新版界面下周二内部试用。")
+    params = {"session_ids": [runtime.session_id], "material_ids": [], "instructions": "", "document": False}
+    task_id = runtime.memory.create_task("minutes", "旧任务", "console", runtime.session_id, "legacy", params,
+                                        [("collect", "收集"), ("extract", "抽取"), ("compose", "生成")])
+    collected = await runtime.tasks._collect(runtime.memory.task(task_id))
+    runtime.memory.update_step(task_id, "collect", status="succeeded", result=collected)
+    runtime.memory.update_task(task_id, status="interrupted")
+    await runtime.tasks.resume(task_id)
+    await until(status(runtime, task_id, "succeeded", "failed"))
+    assert runtime.memory.task(task_id)["status"] == "succeeded"

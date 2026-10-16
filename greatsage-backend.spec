@@ -13,6 +13,8 @@ for package in ('langchain_core', 'langchain_openai', 'langchain_ollama'):
     data += collect_data_files(package)
 for distribution in ('langchain-core', 'langchain-openai', 'langchain-ollama', 'langsmith', 'openai', 'ollama'):
     data += copy_metadata(distribution)
+for distribution in ('langgraph', 'langgraph-checkpoint', 'langgraph-checkpoint-sqlite'):
+    data += copy_metadata(distribution)
 
 analysis = Analysis(
     [str(root / 'scripts' / 'backend_entry.py')], pathex=[str(root)],

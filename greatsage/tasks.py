@@ -226,6 +226,7 @@ class TaskStoreMixin:
 
 class TaskManager:
     def __init__(self, runtime):
+        from .agent_graph import AgentGraphs
         self.runtime = runtime
         self.jobs: dict[str, asyncio.Task] = {}
         self.approvals: dict[str, asyncio.Future] = {}
@@ -233,6 +234,7 @@ class TaskManager:
         self.slot = asyncio.Semaphore(1)
         self.closing = False
         self.runner = ToolRunner(runtime.data_dir, runtime.memory, runtime.settings.raw)
+        self.graphs = AgentGraphs(self)
 
     @property
     def memory(self):
@@ -248,6 +250,7 @@ class TaskManager:
         for job in jobs:
             job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
+        await self.graphs.close()
 
     async def changed(self, id: str) -> None:
         summary = self.memory.task_summary(id)
@@ -291,7 +294,7 @@ class TaskManager:
                     return
                 self.memory.update_task(id, status="running", error=None)
                 await self.changed(id)
-                await (self._run_minutes if task["kind"] == "minutes" else self._run_action)(task)
+                await self.graphs.run(task)
         except asyncio.CancelledError:
             status = "interrupted" if self.closing else "cancelled"
             raise
@@ -567,13 +570,6 @@ class TaskManager:
                                                    task["id"], note=note)
         return {"artifact_ids": [artifact["id"]], "unknown_markers": unknown}
 
-    async def _run_minutes(self, task: dict) -> None:
-        collected = await self._step(task["id"], "collect", lambda: self._collect(task))
-        extraction = await self._step(task["id"], "extract", lambda: self._extract(task, collected))
-        await self._step(task["id"], "compose", lambda: self._compose(task, collected, extraction))
-        if task["params"].get("document"):
-            await self._step(task["id"], "document", lambda: self._document(task, collected, extraction))
-
     # ---- tool actions ----------------------------------------------------
     async def start_action(self, message: dict, messages: list, text: str, calls: list[dict], trace_id: str) -> dict:
         origin = "user_voice" if message["source"].startswith("microphone") else "user_text"
@@ -584,35 +580,6 @@ class TaskManager:
         await self.changed(id)
         self._schedule(id)
         return self.memory.task_summary(id)
-
-    async def _run_action(self, task: dict) -> None:
-        if not task["state"].get("messages"):
-            raise TaskError("这项操作的上下文已清除，请重新发起请求。")
-        outcome = await self._step(task["id"], "act", lambda: self._act(task))
-        await self._step(task["id"], "reply", lambda: self._reply(task, outcome))
-
-    async def _act(self, task: dict) -> dict:
-        state = self.memory.task(task["id"])["state"]
-        messages, calls = state["messages"], state["calls"]
-        for round_index in range(state.get("round", 0), MAX_ROUNDS):
-            results = []
-            for call in calls:
-                outcome = await self._call(task, f"{round_index}:{call['id']}", call)
-                results.append({"role": "tool", "tool_call_id": call["id"], "name": call["name"],
-                                "content": json.dumps(outcome, ensure_ascii=False)[:8000]})
-            messages = messages + results
-            config = self.runtime._provider("llm")
-            settings = self.runtime.settings.raw()
-            if settings.get("tools_enabled", True):
-                config["tools"] = definitions(settings)
-            reply_to = task["params"].get("reply_to")
-            sources = [reply_to] if reply_to and self.memory.record(reply_to) else []
-            text, calls = await self._model(task, "act", "task_action", messages, config, sources)
-            if not calls:
-                return {"text": text}
-            messages = messages + [assistant_calls(text, calls)]
-            self.memory.update_task(task["id"], state={"messages": messages, "calls": calls, "round": round_index + 1})
-        raise TaskError(f"连续操作超过 {MAX_ROUNDS} 轮，已停止。")
 
     def _outcome(self, call: dict) -> dict:
         if call["status"] == "succeeded":

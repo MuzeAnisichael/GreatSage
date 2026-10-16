@@ -454,6 +454,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     @app.delete("/api/tasks/{task_id}", dependencies=api)
     async def delete_task(task_id: str):
         runtime.memory.delete_task(task_id)
+        await runtime.tasks.graphs.delete(task_id)
         await runtime.emit("task_deleted", {"task_id": task_id})
         return {"ok": True}
 

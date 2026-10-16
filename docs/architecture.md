@@ -167,3 +167,13 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 - 任务：`/api/tasks`（列表、新建）、`/{id}`（查看、删除）、`/{id}/cancel`、`/{id}/resume`。
 - 审批与工具：`/api/approvals`、`/api/tool-calls/{id}/approve`、`/deny`、`/undo`，以及 `/api/tools`。
 - 产物：`/api/artifacts`、`/{id}`（查看、修改、删除）、`/{id}/regenerate`、`/{id}/export`，以及 `/api/todos/{id}`。
+
+## v0.4 迁移：模型与任务编排
+
+`chat_models.py` 使用 LangChain 的 OpenAI 兼容与 Ollama 适配器，`Providers` 继续作为语音／嵌入和聊天事件的应用接口。框架不隐式上传追踪、不隐式重试，也不接管凭据配置。
+
+`agent_graph.py` 用 LangGraph 编排两张图：纪要 `collect → extract → compose → document（可选）`；操作 `单个工具 → 下个工具或模型 → 后续工具或回复`。每个工具单独成为节点，循环仍限制为 4 轮。简单对话继续走流式短路径。
+
+图使用 `AsyncSqliteSaver` 同步落盘控制状态，位于运行目录的 `agent-checkpoints.sqlite3`。只存任务 ID、路由、节点和 checkpoint 元数据；异常只存类型，不存消息正文。任务数据库继续保存需要遵循来源删除规则的业务内容，以及操作是否执行过的权威账本。恢复时优先使用图的未完成节点，旧版本无 checkpoint 的任务可以从原步骤记录进入新图。删除任务同时删除它的 checkpoint。
+
+checkpoint 不提供副作用的 exactly-once 保证。调用去重、未知结果不重放和重新授权仍由应用负责。当前审批先保留原权限层的等待方式，随后单独迁移为 LangGraph interrupt / resume。

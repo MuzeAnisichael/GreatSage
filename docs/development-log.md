@@ -10,6 +10,13 @@
 - 协议测试中的 Ollama 模拟响应补全官方协议要求的 `message.role`；工具调用 ID 接受 SDK 生成值。无效 SSE JSON（包括非 JSON 的 error 事件）统一安全报告 `invalid_json_response`；缺失完成标志仍拒绝成功。
 - 验证：全量 **213 passed、5 skipped**（21.45 秒），新增 HTTP 错误不隐式重试、环境账号／密钥隔离、禁止远端追踪和 Ollama 不完整流回归。未把模拟协议测试当作真实 API、Ollama 或安装器验收。
 
+## 2026-10-17 · 任务图与本地 checkpoint
+
+- 纪要步骤和原自写工具循环改为 LangGraph 状态图；每个工具一个节点，保留 4 轮上限和任务串行执行。
+- SQLite checkpoint 只存控制状态，业务正文保留在原数据层，异常消息不进入 checkpoint。恢复优先从图的未完成节点继续；兼容迁移前没有 checkpoint 的任务。删除任务清除 checkpoint。
+- 验证：全量 **216 passed、5 skipped**（21.91 秒）。新增跨 Runtime 重启后不重复写文件、checkpoint 不包含正文／异常内容、迁移前任务恢复测试。现有审批、取消、产物引用与旧回归均通过。
+- 此切片尚未替换审批等待机制；下一片使用框架 interrupt / resume，继续以 GreatSage 权限层和执行账本约束副作用。
+
 ## 2026-10-16 · 迁移基线与范围
 
 - 以 GitHub `main` 的 `5095c04` 为基线，新建 `codex/framework-migration` 分支；开始前本地无未提交改动，与远端一致。
