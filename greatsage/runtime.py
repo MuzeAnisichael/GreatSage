@@ -731,7 +731,10 @@ class Runtime:
             if generation != self.generation or data_epoch != self.data_epoch:
                 raise asyncio.CancelledError()
             messages, source_ids, selected_skills = self._build_context(message, config, proactive, semantic, tools)
-            snapshot = await self.snapshot_request(trace, 'proactive' if proactive else 'response', messages, source_ids, selected_skills)
+            llm = self._provider("llm")
+            if tools:
+                llm["tools"] = tools
+            snapshot = await self.snapshot_request(trace, 'proactive' if proactive else 'response', messages, source_ids, selected_skills, provider=llm)
             await self.emit("context", {"source_ids": source_ids, "skills": selected_skills,
                                         "settings_version": self.settings.version(),
                                         "model": config["llm"]["model"], "proactive": proactive,
@@ -747,9 +750,6 @@ class Runtime:
             gate_open = not proactive
             silent = False
             started = time.time()
-            llm = self._provider("llm")
-            if tools:
-                llm["tools"] = tools
             async for delta in self.providers.stream_chat(llm, messages):
                 if generation != self.generation or data_epoch != self.data_epoch:
                     raise asyncio.CancelledError()

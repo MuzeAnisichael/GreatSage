@@ -2,6 +2,7 @@ import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } f
 import { setupV02 } from './v02.js';
 import { setupWork } from './work.js';
 import { setupMCP } from './mcp.js';
+import { setupInspector } from './inspector.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -20,6 +21,7 @@ let historySearchResults = null;
 let enhancements;
 let work;
 let mcp;
+let inspector;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -47,12 +49,13 @@ function showView(view) {
   if (!$('#view-' + view)) return;
   $$('.view').forEach(node => { node.hidden = node.id !== 'view-' + view; node.classList.toggle('active', !node.hidden); });
   $$('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === view));
-  $('#page-breadcrumb').textContent = ({ conversation: '对话与感知', tasks: '任务与产物', materials: '资料库', memory: '长期记忆', skills: '技能库', logs: '运行日志', settings: '设置' })[view];
+  $('#page-breadcrumb').textContent = ({ conversation: '对话与感知', tasks: '任务与产物', materials: '资料库', memory: '长期记忆', skills: '技能库', inspector: '运行监控', logs: '运行日志', settings: '设置' })[view];
   if (view === 'tasks' || view === 'materials') work?.refresh(view).catch(error => toast(error.message, 'error'));
   if (view === 'memory') refreshMemory().catch(error => toast(error.message, 'error'));
   if (view === 'skills') refreshSkills().catch(error => toast(error.message, 'error'));
   if (view === 'logs') renderEvents();
   if (view === 'settings') mcp?.refresh().catch(error => toast(error.message, 'error'));
+  if (view === 'inspector') inspector?.refresh().catch(error => toast(error.message, 'error'));
 }
 
 function showConnection(stateName, message) {
@@ -358,6 +361,7 @@ function onEvent(event) {
   addEvent(event);
   enhancements?.onEvent(event);
   work?.onEvent(event);
+  inspector?.onEvent(event);
   const data = event.data || {};
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
@@ -722,6 +726,7 @@ async function loadInitial() {
 enhancements = setupV02({ client, state, toast, busy, confirmAction, refreshMemory });
 work = setupWork({ client, toast, busy, confirmAction });
 mcp = setupMCP({ client, toast, busy });
+inspector = setupInspector({ client, busy, toast });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });

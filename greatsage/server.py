@@ -83,6 +83,11 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def status():
         return runtime.status()
 
+    @app.get("/api/inspector", dependencies=api)
+    async def inspector():
+        from .inspector import inspect_runtime
+        return await inspect_runtime(runtime)
+
     @app.get("/api/settings", dependencies=api)
     async def settings():
         return runtime.settings.get()
