@@ -16,7 +16,6 @@ from langgraph.types import Command
 from langsmith import tracing_context
 
 from .tasks import MAX_ROUNDS, TaskError, _now, assistant_calls
-from .tools import definitions
 
 
 class ControlState(TypedDict):
@@ -133,11 +132,14 @@ class AgentGraphs:
             return "reply"
         config = manager.runtime._provider("llm")
         settings = manager.runtime.settings.raw()
-        if settings.get("tools_enabled", True):
-            config["tools"] = definitions(settings)
+        uncertain = any(call["status"] == "unknown" for call in task["tool_calls"])
+        if settings.get("tools_enabled", True) and not uncertain:
+            config["tools"] = manager.tool_definitions()
         reply_to = task["params"].get("reply_to")
         sources = [reply_to] if reply_to and manager.memory.record(reply_to) else []
         text, calls = await manager._model(task, "act", "task_action", state["messages"], config, sources)
+        if calls and uncertain:
+            raise TaskError("上一项操作结果未知，已停止后续工具调用；请先检查结果。")
         if not calls:
             manager.memory.update_step(task["id"], "act", status="succeeded", finished_at=_now(), result={"text": text})
             await manager.changed(task["id"])

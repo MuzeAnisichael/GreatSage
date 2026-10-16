@@ -393,3 +393,33 @@ async def test_source_deletion_cancels_graph_and_revokes_pending_approval(runtim
     with pytest.raises(ValueError, match="上下文已清除"):
         await runtime.tasks.resume(call["task_id"])
     assert not (tmp_path / "workspace" / "deleted.md").exists()
+
+
+@pytest.mark.parametrize("disconnected", [False, True])
+async def test_mcp_runs_only_after_click_and_unknown_results_stop_further_tools(runtime, tmp_path, monkeypatch, disconnected):
+    from test_mcp import registry
+    mcp, seen, _, _ = registry(tmp_path, monkeypatch, mode="disconnect" if disconnected else "ok")
+    runtime.settings.update({"mcp_servers": mcp.settings()["mcp_servers"], "voice_approval": True})
+    mcp.settings = runtime.settings.raw
+    runtime.tasks.mcp = mcp
+    await mcp.discover("fixture")
+    name = next(iter(mcp.specs))
+    tool_turns(runtime, name, {"value": 2})
+    if disconnected:
+        runtime.providers.turns[-1] = [{"tool_calls": [{"id": "retry", "name": name, "arguments": '{"value":2}'}]}]
+    await runtime.chat("调用测试服务")
+    call = await pending_call(runtime)
+    assert call["effect"] == "external" and "tools/call" not in seen
+    with pytest.raises(ValueError, match="逐次确认"):
+        await runtime.tasks.resolve(call["id"], True, "task")
+    with pytest.raises(ValueError, match="点击确认"):
+        await runtime.tasks.resolve(call["id"], True, via="voice")
+    await runtime.tasks.resolve(call["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert seen.count("tools/call") == 1
+    if disconnected:
+        assert runtime.memory.tool_call(call["id"])["status"] == "unknown"
+        assert "tools" not in runtime.providers.calls[-1][0]
+        assert runtime.memory.task(call["task_id"])["status"] == "failed"
+    else:
+        assert runtime.memory.tool_call(call["id"])["status"] == "succeeded"

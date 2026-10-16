@@ -25,7 +25,6 @@ from .settings import SettingsStore
 from .skills import SkillsManager
 from .semantic import chunks as embedding_chunks, fingerprint, text_hash
 from .tasks import TaskManager
-from .tools import definitions as tool_definitions
 
 
 def redact(value):
@@ -723,7 +722,7 @@ class Runtime:
         first_text = False
         snapshot = None
         # Only the user's own direct requests may reach tools; proactive and observed turns never do.
-        tools = tool_definitions(config) if (config.get("tools_enabled", True) and not proactive
+        tools = self.tasks.tool_definitions() if (config.get("tools_enabled", True) and not proactive
                                              and message["role"] == "user") else []
         tool_calls = []
         messages = []

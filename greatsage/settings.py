@@ -75,6 +75,7 @@ def _defaults() -> dict:
         # v0.3 tools: side effects ask by default; voice approval and commands are opt-in.
         "tools_enabled": True, "voice_approval": False, "command_tool": False,
         "workspace_dirs": [], "tool_rules": [], "app_launchers": [],
+        "mcp_servers": [],
         # Confirmed v0.1 policy: text stays until deletion, logs 30 days,
         # opt-in recordings 7 days. Retention is configurable in the UI.
         "record_audio": False, "recording_retention_days": 7, "log_retention_days": 30,
@@ -178,11 +179,21 @@ def _validate_tools(config: dict) -> None:
         if not Path(_string(item, "workspace_dirs", 1024, empty=False)).is_absolute():
             raise ValueError("工作目录必须是完整的绝对路径。")
     for rule in rows("tool_rules", 100, {"tool", "match", "action"}):
-        if rule["tool"] != "*" and rule["tool"] not in TOOL_EFFECTS or rule["action"] not in ("allow", "ask", "deny"):
+        remote = isinstance(rule["tool"], str) and re.fullmatch(r"mcp_[a-z][a-z0-9_]{0,19}_[0-9a-f]{12}", rule["tool"])
+        if (rule["tool"] != "*" and rule["tool"] not in TOOL_EFFECTS and not remote) or rule["action"] not in ("allow", "ask", "deny"):
             raise ValueError("Invalid tool_rules entry")
         _string(rule["match"], "tool_rules.match", 512)
-        if rule["action"] == "allow" and (rule["tool"] == "*" or TOOL_EFFECTS[rule["tool"]] in NO_STANDING_ALLOW):
-            raise ValueError("删除和命令类工具不能设为始终允许，“允许”规则也必须指定具体工具。")
+        if rule["action"] == "allow" and (rule["tool"] == "*" or TOOL_EFFECTS.get(rule["tool"], "external") in NO_STANDING_ALLOW):
+            raise ValueError("删除、命令和外部工具不能设为始终允许，“允许”规则也必须指定具体工具。")
+    names = set()
+    for server in rows("mcp_servers", 4, {"id", "url", "token_env"}):
+        if not isinstance(server["id"], str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,19}", server["id"]) or server["id"] in names:
+            raise ValueError("MCP 服务 ID 必须唯一，使用不超过 20 位的小写字母、数字或下划线。")
+        names.add(server["id"])
+        server["url"] = _url(server["url"], "mcp.url", False)
+        name = _string(server["token_env"], "mcp.token_env", 128)
+        if name and not _ENV_NAME.fullmatch(name):
+            raise ValueError("MCP 凭据必须填写环境变量名称。")
     names = set()
     for app in rows("app_launchers", 30, {"name", "path"}):
         name = _string(app["name"], "app_launchers.name", 64, empty=False).strip().casefold()

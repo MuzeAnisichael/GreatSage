@@ -91,7 +91,12 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def update_settings(patch: dict):
         was_listening = runtime.listening
         # Validate first, then stop/reconfigure the active pipeline.
+        previous_mcp = runtime.settings.raw()["mcp_servers"]
         updated = runtime.settings.update(patch)
+        if updated["mcp_servers"] != previous_mcp:
+            runtime.tasks.mcp.clear()
+            await runtime.tasks.invalidate()
+            await runtime.emit("mcp_updated")
         await runtime.interrupt("settings_changed")
         await runtime.pause_background()
         runtime.background.retry()
@@ -484,7 +489,24 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                 "tools": [{"name": spec.name, "title": spec.title, "effect": spec.effect,
                            "effect_label": EFFECT_LABELS[spec.effect], "default_action": DEFAULT_ACTIONS[spec.effect],
                            "standing_allow": spec.effect not in NO_STANDING_ALLOW, "voice": spec.effect in VOICE_APPROVABLE}
-                          for spec in SPECS.values()]}
+                          for spec in runtime.tasks.specs().values()]}
+
+    @app.get("/api/mcp/servers", dependencies=api)
+    async def mcp_servers():
+        return runtime.tasks.mcp.status()
+
+    @app.post("/api/mcp/servers/{server_id}/discover", dependencies=api)
+    async def discover_mcp(server_id: str):
+        result = await runtime.tasks.mcp.discover(server_id)
+        await runtime.emit("mcp_updated", {"server_id": server_id})
+        return result
+
+    @app.post("/api/mcp/disconnect", dependencies=api)
+    async def disconnect_mcp():
+        runtime.tasks.mcp.clear()
+        await runtime.tasks.invalidate()
+        await runtime.emit("mcp_updated")
+        return {"ok": True}
 
     @app.get("/api/artifacts", dependencies=api)
     async def artifacts():

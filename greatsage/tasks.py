@@ -19,7 +19,7 @@ from langgraph.types import interrupt
 from .budget import TokenCounter
 from .materials import chunk_label
 from .providers import ProviderError
-from .tools import (EFFECT_LABELS, NO_STANDING_ALLOW, SPECS, VOICE_APPROVABLE, ToolError, ToolRunner, decide,
+from .tools import (EFFECT_LABELS, NO_STANDING_ALLOW, SPECS, VOICE_APPROVABLE, ToolError, ToolOutcomeUnknown, ToolRunner, decide,
                     definitions, validate_arguments, voice_intent)
 from .workflows import (EXTRACT_SCHEMA, SUMMARY_SCHEMA, clean_extraction, clean_markers, document_messages,
                         extract_messages, keep_sources, language_name, merge_extractions, render_minutes,
@@ -179,7 +179,7 @@ class TaskStoreMixin:
         self._db.execute("UPDATE task_steps SET result=NULL WHERE name IN ('collect','extract','act')")
         self._db.execute("UPDATE tasks SET state='{}'")
         self._db.execute("""UPDATE tool_calls SET arguments='{"redacted":true}',result=NULL
-                            WHERE tool IN ('write_file','create_minutes_task','search_materials','run_command')""")
+                            WHERE tool IN ('write_file','create_minutes_task','search_materials','run_command') OR tool LIKE 'mcp_%'""")
 
     def delete_task(self, id: str) -> None:
         with self._lock, self._db:
@@ -229,6 +229,7 @@ class TaskStoreMixin:
 class TaskManager:
     def __init__(self, runtime):
         from .agent_graph import AgentGraphs
+        from .mcp_tools import MCPTools
         self.runtime = runtime
         self.jobs: dict[str, asyncio.Task] = {}
         self.approvals: set[str] = set()
@@ -238,6 +239,13 @@ class TaskManager:
         self.closing = False
         self.runner = ToolRunner(runtime.data_dir, runtime.memory, runtime.settings.raw)
         self.graphs = AgentGraphs(self)
+        self.mcp = MCPTools(runtime.settings.raw)
+
+    def specs(self):
+        return SPECS | self.mcp.specs
+
+    def tool_definitions(self):
+        return definitions(self.runtime.settings.raw(), self.mcp.specs.values())
 
     @property
     def memory(self):
@@ -598,7 +606,8 @@ class TaskManager:
     # ---- tool actions ----------------------------------------------------
     async def start_action(self, message: dict, messages: list, text: str, calls: list[dict], trace_id: str) -> dict:
         origin = "user_voice" if message["source"].startswith("microphone") else "user_text"
-        names = "、".join(SPECS[call["name"]].title if call["name"] in SPECS else call["name"] for call in calls)
+        specs = self.specs()
+        names = "、".join(specs[call["name"]].title if call["name"] in specs else call["name"] for call in calls)
         state = {"messages": messages + [assistant_calls(text, calls)], "calls": calls, "round": 0}
         id = self.memory.create_task("action", f"操作：{names}"[:80], origin, message["session_id"], trace_id,
                                      {"reply_to": message["id"]}, [("act", "执行操作"), ("reply", "回复结果")], state)
@@ -616,12 +625,14 @@ class TaskManager:
         if row and row["status"] in FINISHED_CALLS:
             return self._outcome(row)
         settings = self.runtime.settings.raw()
-        spec = SPECS.get(call["name"])
+        spec = self.specs().get(call["name"])
         try:
             if not spec:
                 raise ToolError("未知工具。")
             arguments = validate_arguments(spec, call["arguments"] if row is None else row["arguments"])
-            target = self.runner.target(spec, arguments)
+            target = self.mcp.target(spec.name) if spec.effect == "external" else self.runner.target(spec, arguments)
+            if row and spec.effect == "external" and row["target"] != target:
+                raise ToolError("MCP 工具定义或服务配置已改变，请发起新请求。")
         except ToolError as exc:
             row = row or self.memory.add_tool_call(task["id"], key, call["name"][:64], {}, spec.effect if spec else "unknown",
                                                    "", "deny", "参数无效。", "failed")
@@ -650,12 +661,16 @@ class TaskManager:
         try:
             if spec.effect == "internal":
                 result, undo = await self._internal(task, spec, arguments), None
+            elif spec.effect == "external":
+                result, undo = await self.mcp.call(spec.name, arguments), None
             else:
                 result, undo = await asyncio.to_thread(self.runner.run, row["id"], spec, arguments)
             row = self.memory.update_tool_call(row["id"], status="succeeded", result=result, undo=undo)
         except asyncio.CancelledError:
             self.memory.update_tool_call(row["id"], status="unknown", error="任务在执行期间被取消，结果未知。")
             raise
+        except ToolOutcomeUnknown as exc:
+            row = self.memory.update_tool_call(row["id"], status="unknown", error=str(exc))
         except (ToolError, ValueError, KeyError) as exc:
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc)[:500])
         except OSError as exc:
@@ -674,7 +689,7 @@ class TaskManager:
         task = self.memory.task(call["task_id"])
         settings = self.runtime.settings.raw()
         return {"id": call["id"], "task_id": call["task_id"], "task_title": task["title"], "tool": call["tool"],
-                "title": SPECS[call["tool"]].title if call["tool"] in SPECS else call["tool"], "effect": call["effect"],
+                "title": self.specs()[call["tool"]].title if call["tool"] in self.specs() else call["tool"], "effect": call["effect"],
                 "effect_label": EFFECT_LABELS.get(call["effect"], call["effect"]), "target": call["target"],
                 "arguments": arguments, "reason": call["reason"], "origin": task["origin"], "created_at": call["created_at"],
                 "task_scope": call["effect"] not in NO_STANDING_ALLOW,
@@ -718,7 +733,7 @@ class TaskManager:
         if task["status"] != "waiting_approval" or call_id not in saved["pending_calls"]:
             raise ValueError("审批状态已改变，请刷新后重试。")
         if scope not in ("once", "task") or (scope == "task" and call["effect"] in NO_STANDING_ALLOW):
-            raise ValueError("删除和命令类操作只能逐次确认。")
+            raise ValueError("删除、命令和外部工具只能逐次确认。")
         if via == "voice" and (not self.runtime.settings.raw().get("voice_approval") or call["effect"] not in VOICE_APPROVABLE):
             raise ValueError("这项操作需要在控制台点击确认。")
         approval = {"call_id": call_id, "approved": bool(approved), "scope": scope, "via": via, "at": _now()}

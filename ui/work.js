@@ -437,6 +437,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     onEvent(event) {
       const data = event.data || {};
       switch (event.kind) {
+        case 'mcp_updated': loadTools().catch(() => {}); break;
         case 'task_updated': {
           const index = work.tasks.findIndex(task => task.id === data.id);
           if (index >= 0) work.tasks[index] = data; else work.tasks.unshift(data);

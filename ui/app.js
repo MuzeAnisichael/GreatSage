@@ -1,6 +1,7 @@
 import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } from './client.js';
 import { setupV02 } from './v02.js';
 import { setupWork } from './work.js';
+import { setupMCP } from './mcp.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -18,6 +19,7 @@ let historySearchEpoch = 0;
 let historySearchResults = null;
 let enhancements;
 let work;
+let mcp;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -50,6 +52,7 @@ function showView(view) {
   if (view === 'memory') refreshMemory().catch(error => toast(error.message, 'error'));
   if (view === 'skills') refreshSkills().catch(error => toast(error.message, 'error'));
   if (view === 'logs') renderEvents();
+  if (view === 'settings') mcp?.refresh().catch(error => toast(error.message, 'error'));
 }
 
 function showConnection(stateName, message) {
@@ -128,6 +131,7 @@ async function saveSettings() {
   if (!state.settings) throw new Error('配置尚未读取，请先连接本地服务。');
   if (!$('#settings-form').reportValidity()) return;
   const result = structuredClone(state.settings);
+  delete result.mcp_servers; // Managed by the separate MCP form; do not overwrite newer changes.
   for (const input of $$('#settings-form [name]')) {
     if (input.name.endsWith('.api_key') && !input.value.trim()) continue;
     const value = input.dataset.json !== undefined ? JSON.parse(input.value || '[]')
@@ -717,6 +721,7 @@ async function loadInitial() {
 
 enhancements = setupV02({ client, state, toast, busy, confirmAction, refreshMemory });
 work = setupWork({ client, toast, busy, confirmAction });
+mcp = setupMCP({ client, toast, busy });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });
