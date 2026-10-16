@@ -30,6 +30,7 @@ It hears what you say and can also listen in on meeting audio from your computer
 > GreatSage is an **alpha**. It is developed on Windows 11 with Python 3.11 and runs from source; there is no installer yet.
 >
 > - **Versions:** the latest release is 0.2.0-alpha.1. The v0.3 materials library, minutes tasks and controlled tools are merged into main but not released.
+> - **Migration:** `codex/framework-migration` adds LangChain, LangGraph, MCP HTTP and local runtime inspection. It is not a release; see the [development log](docs/development-log.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
@@ -52,6 +53,9 @@ It hears what you say and can also listen in on meeting audio from your computer
 - **Auditable**
   - Every interaction has a trace ID with the sources actually used, Skill versions, stage timings and the usage reported by each service.
   - Request snapshots keep metadata only unless you opt in.
+- **Shared frameworks (v0.4 migration branch)**
+  - LangChain connects cloud models and Ollama; LangGraph runs task graphs and approvals. MCP HTTP tools require explicit discovery and a click for each call.
+  - The local inspector shows task nodes, message metadata, context estimates and memory changes, with links to request evidence.
 - **Desktop pet**
   - A chibi owl shows its status, simplified task progress and pending approvals. You can pat it.
 
@@ -67,6 +71,12 @@ It hears what you say and can also listen in on meeting audio from your computer
     <td width="50%"><img src="docs/assets/memory.webp" alt="Long-term memory page with explicit memories and transcripts"><br><sub><b>Long-term memory</b>: explicit memories and transcripts persist across sessions and can be corrected or deleted.</sub></td>
   </tr>
 </table>
+
+<details>
+  <summary>v0.4 migration: local runtime inspector</summary>
+  <img src="docs/assets/inspector.webp" alt="Local runtime inspector showing task graph nodes, memory counts and model request metadata">
+  <p>Synthetic data only. Request bodies require prior opt-in and a separate inspection action.</p>
+</details>
 
 <p align="center">
   <img src="docs/assets/pet.webp" width="300" alt="Desktop pet bubble saying a file write needs approval in the console"><br>
@@ -149,9 +159,10 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 - **Echo:** echo handling combines process exclusion, playback references and text de-duplication. It is not full acoustic echo cancellation; headphones help.
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
+- **v0.4 validation:** MCP was tested against a synthetic HTTP service; third-party interoperability is pending. stdio, OAuth, entity memory and multi-agent execution are not implemented yet.
 - **Distribution:** only a locally verified folder build exists. There is no installer, code signing or cross-machine testing yet.
 
-Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md) and [v0.3 validation](docs/validation-v0.3.md) (Chinese).
+Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
 
 ## Roadmap
 
@@ -159,8 +170,9 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md) and [
 | --- | --- | --- |
 | v0.1 alpha | Released | Voice secretary basics: presets, cloud/local models, memory, logs and the pet |
 | v0.2 alpha | Released | Response-quality evaluation, hybrid search, layered summaries, request audits and background recovery |
-| v0.3 | Merged, unreleased | Materials library, cited minutes/todos/documents, controlled tools, task cancel and resume; installer and MCP pending |
-| v0.4 and later | Planned | Screen and window input, more platforms, richer pet |
+| v0.3 | Merged, unreleased | Materials, cited minutes/todos/documents, controlled tools and task recovery; real-world validation remains pending |
+| v0.4 | First migration slices implemented; review and interoperability pending | LangChain, LangGraph, MCP HTTP and local inspection |
+| v0.5–v0.7 | Planned in stages | Pipecat voice and installation, LangMem/entity memory, Deep Agents/multi-agent; richer inputs and pet later |
 
 ## Contributing
 

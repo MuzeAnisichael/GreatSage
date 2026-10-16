@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-01。最近发布的版本是 v0.2 alpha；v0.3 的资料库、纪要任务和受控工具已合入 main，尚未发版。[项目现状](project-status.md)区分已实现、已验证与尚未交付。简要的贡献规则见仓库根目录的 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-17。最近发布的版本仍为 v0.2 alpha；v0.3 已合入 main，本迁移分支新增 v0.4 框架首片，尚未发版。[项目现状](project-status.md)区分已实现、已验证与尚未交付；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -37,6 +37,7 @@ Electron 启动开发环境下的 Python 后端并管理本地连接。单独开
 | --- | --- |
 | .runtime/ | 源码桌面运行数据，已从版本控制排除 |
 | memory.sqlite3 | 历史、记忆、摘要、依赖关系和审计事件 |
+| agent-checkpoints.sqlite3 | LangGraph 控制状态；正文与工具执行账本仍在 memory.sqlite3 |
 | settings.json、secrets-*.bin | 配置快照与 DPAPI 密文文件引用 |
 | skills.json | 用户本地 Skill 注册路径与启用状态 |
 | models/ | 用户明确准备的模型缓存 |
@@ -114,6 +115,7 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 ## 6. 增加适配器与改动数据格式
 
 - 新服务沿用 providers 层的流式、取消和受控错误接口，不在 UI 中散落凭据。
+- 聊天适配复用 `chat_models.py` 的 LangChain 入口；升级固定版本时重点核对费用字段、Ollama 工具名称、取消、错误脱敏和隐式 tracing。任务图控制状态不得复制业务正文，所有本地／MCP 工具必须经过 `tools.py`。
 - 增加配置字段时同步字段校验、默认值、界面和文档；未知字段目前会被拒绝。
 - 增加音源时保持来源身份、时间戳和代际失效机制，采集线程不能等待模型调用。
 - 增加记忆写入或新的派生数据时登记 source_ids，并验证删除与旧任务提交不能复活内容。

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — v0.4 framework migration (2026-10-17)
+
+- 聊天改用 LangChain OpenAI 兼容与 Ollama 适配器；保留应用凭据、代理、取消、安全错误和实际用量，关闭隐式重试与继承的远端追踪。
+- 纪要和工具循环改用 LangGraph，SQLite checkpoint 只保存控制状态；逐工具 interrupt/resume 审批，等待释放执行位置，取消／重启撤销未执行授权；旧任务与原副作用账本继续有效。
+- 新增显式配置／发现的 MCP Streamable HTTP 工具，环境变量凭据、JSON Schema 参数校验、工具定义版本检查、逐次点击与未知结果不重放；尚无 stdio／OAuth。
+- 新增本地“运行监控”：任务节点、消息目录、上下文估算、记忆统计／变更和请求证据入口。默认不显示正文，实体记忆／多 Agent 仍属规划。
+- 新增开发日志、迁移方案和源码／冻结后端黑盒脚本，按模块提交；现有语音、记忆与桌宠继续沿用。
+- 验证：本机 **228 passed、5 skipped**，源码桌面 **31/31**，PyInstaller 后端构建成功；源码／冻结后端回环 HTTP、重启重新授权与三类产物各 **14/14**。真实 API／本地模型只做有限问答探测，未完成真实第三方 MCP、长时间或安装器验收。详见 [v0.4 验证](docs/validation-v0.4.md)。
+
 ## Unreleased — repository presentation (2026-10-01)
 
 - 重写 README，新增英文版 `README.en.md`。内容包括：

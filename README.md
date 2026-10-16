@@ -30,6 +30,7 @@
 > 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准，目前需要从源码运行，还没有安装包。
 >
 > - **版本**：最近发布的是 0.2.0-alpha.1。v0.3 的资料库、纪要任务和受控工具已合入 main，尚未发版。
+> - **本轮迁移**：`codex/framework-migration` 已接入 LangChain、LangGraph、MCP HTTP 和本地运行监控，尚未发布；见[开发日志](docs/development-log.md)与[v0.4 验证](docs/validation-v0.4.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
 
@@ -52,6 +53,9 @@
 - **可以审计**
   - 每次交互都有 trace ID，记录实际使用的来源、Skill 版本、各阶段耗时和服务返回的用量。
   - 请求快照默认只保存元数据。
+- **通用框架（v0.4 迁移分支）**
+  - LangChain 连接云端／Ollama，LangGraph 编排任务与审批；MCP HTTP 外部工具显式发现、逐次确认。
+  - “运行监控”显示任务节点、消息目录、上下文估算和记忆变更，可直达请求证据。
 - **桌宠**
   - Q 版猫头鹰显示运行状态、简化的任务进度和待确认提示，也可以摸摸它。
 
@@ -67,6 +71,12 @@
     <td width="50%"><img src="docs/assets/memory.webp" alt="长期记忆页面：显式记忆和会话原文"><br><sub><b>长期记忆</b>：显式记忆和原文跨会话保留，可以修正或删除。</sub></td>
   </tr>
 </table>
+
+<details>
+  <summary>v0.4 迁移：本地运行监控</summary>
+  <img src="docs/assets/inspector.webp" alt="运行监控：LangGraph 任务节点、长期记忆统计、模型请求消息目录和上下文估算">
+  <p>使用合成数据展示。消息正文需要事先开启归档，再到请求证据中单独查看。</p>
+</details>
 
 <p align="center">
   <img src="docs/assets/pet.webp" width="300" alt="桌宠气泡提示：一项写入文件的操作需要在控制台确认"><br>
@@ -122,12 +132,12 @@ flowchart LR
     Text[文字输入] --> Runtime
     Docs[Markdown 资料] --> Memory[(记忆与资料<br/>SQLite)]
     Runtime <--> Memory
-    Runtime --> LLM[语言模型<br/>云端或本地]
+    Runtime --> LLM[LangChain 适配<br/>云端或本地]
     LLM --> Output[文字、语音与桌宠]
-    Runtime --> Tasks[后台任务<br/>纪要、待办、文档]
+    Runtime --> Tasks[LangGraph 任务<br/>纪要、待办、文档]
     Tasks --> Policy{权限层}
-    Policy -->|你确认后| Tools[工作目录内的工具]
-    Runtime -.-> Audit[事件与审计]
+    Policy -->|你确认后| Tools[本地工具与 MCP HTTP]
+    Runtime -.-> Audit[事件、审计与本地监控]
 ```
 
 Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负责音频、模型、记忆、任务和事件。桌面音频按旁听内容保存，只有你的文字、麦克风请求和控制台操作才能发起工具调用。模块和数据流见[实现架构](docs/architecture.md)。
@@ -152,9 +162,10 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **自身回声**：用进程排除、播放参考和文本去重来减少，不是完整的声学回声消除（AEC）。用耳机代替扬声器可以减少回声干扰。
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
+- **v0.4 验证范围**：MCP 使用合成 HTTP 服务验证，第三方互操作尚待检查；stdio／OAuth、实体记忆和多 Agent 尚未接入。
 - **分发**：只有本机验证过的目录包，还没有安装器、发行签名和跨电脑验证。
 
-测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)和 [v0.3 验证](docs/validation-v0.3.md)。
+测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
 
 ## 路线图
 
@@ -162,8 +173,9 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | --- | --- | --- |
 | v0.1 alpha | 已发布 | 语音秘书基础：三种预设、云端／本地模型、记忆、日志和桌宠 |
 | v0.2 alpha | 已发布 | 回应质量评测、混合检索、分层摘要、请求审计与后台恢复 |
-| v0.3 | 已合入 main，未发版 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；安装器和 MCP 待实现 |
-| v0.4 及以后 | 规划中 | 屏幕和窗口等更多电脑信息输入，更多平台和桌宠表现 |
+| v0.3 | 已合入 main，未发版 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；真实场景验收继续保留 |
+| v0.4 | 迁移首片已实现，待审阅与互操作验收 | LangChain、LangGraph、MCP HTTP、本地监控 |
+| v0.5–v0.7 | 分阶段规划 | Pipecat 语音与安装、LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 
@@ -172,6 +184,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | 文档 | 内容 |
 | --- | --- |
 | [项目现状](docs/project-status.md) | 已实现、已验证、仍待验收和未来目标的快速索引 |
+| [迁移方案](docs/v0.4-plan.md) · [开发日志](docs/development-log.md) · [迁移验证](docs/validation-v0.4.md) | 本轮范围、每个切片的改动和实际证据 |
 | [使用说明](docs/usage.md) | 音源、预设、记忆、资料、任务和工具授权的操作方法 |
 | [需求与验收](docs/requirements.md) | 已确认的范围、实现状态和尚待完成的验收 |
 | [实现架构](docs/architecture.md) | 模块、实时管线、事件、接口与数据边界 |

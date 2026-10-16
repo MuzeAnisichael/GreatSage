@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-10-01。本文记录 v0.2 alpha 已落地的模块，以及 v0.3 新增的资料、产物、任务和工具模块（第 9 节，已合入 main，尚未发版）和它们的明确限制。性能和真实服务兼容性见各版本的验证记录。
+更新日期：2026-10-17。本文记录 v0.2 alpha、已合入 main 的 v0.3 主线，以及本迁移分支的 v0.4 框架首片。v0.4 使用通用模型适配、图编排和 MCP 协议，仍保留 GreatSage 的权限、来源／删除、实时采集与桌面职责；尚未发版。性能和兼容性见各版本验证记录。
 
 ## 1. 组成与调用关系
 
@@ -15,18 +15,21 @@ flowchart LR
     ASR --> Runtime
     Runtime <--> Memory[SQLite 记忆与摘要]
     Skills[本地 Skill 指令与资料] --> Runtime
-    Runtime --> LLM[流式语言模型]
+    Runtime --> LLM[LangChain 流式模型适配]
     LLM --> Output[文字与分句语音输出]
     Output --> UI[控制台与桌宠]
     UI --> Runtime
     Runtime --> Events[事件与审计]
     Events --> UI
     Materials[Markdown 资料] --> Memory
-    Runtime --> Tasks[后台任务]
+    Runtime --> Tasks[LangGraph 后台任务]
     Tasks --> LLM
     Tasks --> Artifacts[纪要／待办／文档产物]
     Tasks --> Policy[权限层与审批]
-    Policy --> Tools[工作目录内的工具]
+    Policy --> Tools[工作目录内的本地工具]
+    Policy --> MCP[MCP HTTP 外部工具]
+    Tasks --> Inspector[本地运行监控]
+    Events --> Inspector
 ```
 
 Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python 服务管理音频、模型、记忆和事件。两者通过回环 HTTP 与 WebSocket 通信。采集线程不等待 ASR 或 LLM 网络请求。
@@ -41,6 +44,10 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/echo.py | 播放参考及自身声音抑制；不是完整 AEC |
 | greatsage/segmentation.py | 30 ms VAD 帧、预留音频、临时快照、静音结束与最长分段 |
 | greatsage/providers.py | 流式 LLM、ASR、TTS、本地模型准备与受控错误 |
+| greatsage/chat_models.py | LangChain OpenAI／Ollama 聊天适配，复用应用连接池与凭据 |
+| greatsage/agent_graph.py | LangGraph 纪要／操作图、SQLite 控制 checkpoint 和审批恢复 |
+| greatsage/mcp_tools.py | 官方 SDK 的显式发现、定义版本、参数校验与受控 HTTP 调用 |
+| greatsage/inspector.py、ui/inspector.js | 本地状态、消息／上下文和记忆元数据检查 |
 | greatsage/settings.py | 配置校验、环境变量、DPAPI 密钥与原子提交 |
 | greatsage/memory.py | 持久化、检索、摘要、来源关系、修正与删除 |
 | greatsage/skills.py | 只读技能注册、选择、版本与引用边界 |
@@ -114,6 +121,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 | approval_requested、approval_resolved、approval_hint（v0.3） | 待确认操作、审批结果、语音确认的提示 |
 | tool_call（v0.3） | 工具名、效果、操作对象、状态、授权决策和错误；完整参数保存在任务的工具调用记录中 |
 | materials_updated、artifact_updated、artifact_export（v0.3） | 资料、产物变化与导出 |
+| agent_node、mcp_updated（v0.4） | 图节点控制状态、外部工具目录变化与监控刷新 |
 
 慢订阅者优先丢弃普通日志事件，不能维持完整文字流时发送显式重载标记，避免界面误认为缺段内容完整。审计记录系统实际输入和结果，不声称能读取模型内部思维链。
 
@@ -131,7 +139,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 ## 8. 扩展点与尚未完成的能力
 
-提供商适配、音源、回应调度、记忆和桌宠分别分层。尚未实现原生流式 ASR、完整 AEC、MCP 接入和跨平台桌面采集；当前提供本机目录包，尚无安装器与发行签名。
+提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP 首片已接入；原生流式 ASR、完整 AEC、MCP stdio／OAuth、实体记忆、多 Agent 和跨平台桌面采集尚未实现。当前提供本机目录包，尚无安装器与发行签名。
 
 ## 9. v0.3 资料、任务与工具
 
@@ -144,7 +152,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 - 重新扫描时内容有变化就提升版本号，并按删除语义处理旧片段。
 - 片段进入独立的 FTS5 索引。开启语义检索后也建立向量，并作为“资料”组进入对话上下文。
 
-**纪要任务。**`TaskManager` 用信号量保证同一时间只运行一个任务。纪要任务有四个步骤，每步结果写入 SQLite，重启后从第一个未完成的步骤继续：
+**纪要任务。**`TaskManager` 用信号量保证同一时间只运行一个任务，v0.4 中由 LangGraph 驱动下列步骤。每步结果写入原 SQLite 业务表，控制 checkpoint 写入单独数据库；重启后从未完成步骤继续：
 
 1. **collect**：收集所选会话原文和资料片段，给每条来源分配 `S1`、`S2` 这样的标记。
 2. **extract**：模型按 JSON Schema 输出摘要、要点、决定、待办和未决问题，温度为 0；超出上下文预算时分批抽取再合并。
@@ -177,3 +185,15 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 图使用 `AsyncSqliteSaver` 同步落盘控制状态，位于运行目录的 `agent-checkpoints.sqlite3`。只存任务 ID、路由、节点和 checkpoint 元数据；异常只存类型，不存消息正文。任务数据库继续保存需要遵循来源删除规则的业务内容，以及操作是否执行过的权威账本。恢复时优先使用图的未完成节点，旧版本无 checkpoint 的任务可以从原步骤记录进入新图。删除任务同时删除它的 checkpoint。
 
 checkpoint 不提供副作用的 exactly-once 保证。调用去重、未知结果不重放和重新授权仍由应用负责。审批使用 LangGraph `interrupt` / `Command(resume=...)`，每个工具节点最多一个中断，checkpoint 中只含调用 ID 与用户批准／拒绝的控制值。等待时释放任务执行位置；批准值绑定调用 ID 并核对本地审批记录。取消、退出和重启会使未执行授权失效，继续任务需要重新确认；删除来源前取消相关运行并清理业务上下文。
+
+### MCP 工具与本地监控
+
+`mcp_tools.py` 复用官方 MCP SDK 的 Streamable HTTP 协议、会话与传输清理。配置最多 4 个服务，每个最多 32 个工具；用户显式发现，单次发现／调用建立并关闭会话，不自动连接或启动服务器进程。发现结果转为应用工具定义，再经过同一参数校验、`tools.decide()`、审批和执行账本，模型不能直接访问 SDK。
+
+MCP 工具统一归为 `external`，不信任服务端的只读提示来降低权限；每次必须点击，不支持语音或持续授权。参数采用 JSON Schema，拒绝外部 schema 引用；执行前重新获取目录并比较服务配置及完整工具描述的哈希。修改配置或停用会清除目录、撤销等待任务，使迟到发现失效。调用发出后断连记为未知，不自动重试，也不再允许该任务发出后续工具。外部服务的能力不受本地工作目录沙箱限制，批准范围应按服务和调用参数判断。
+
+本地认证接口 `/api/mcp/servers`、`/api/mcp/servers/{id}/discover`、`/api/mcp/disconnect` 对应配置状态、显式发现和停用；不启用服务端 sampling、roots 或 elicitation。未来传输／认证扩展仍须保留相同权限边界。
+
+`/api/inspector` 聚合最近任务图状态、请求快照元数据、记忆计数与变更事件。每个新快照记录消息顺序／角色／序列化字节数／指纹、来源类型与版本、输入／工具／schema 估算及输出预留；最多显示 256 条消息目录。正文始终由既有审计入口显式查看，不能因监控页面打开而开启归档。事件到达即递增界面请求代际，丢弃迟到刷新；实体记忆与多 Agent 返回 `planned`，不会用空数据暗示已实现。
+
+选择这些框架是为了复用供应商协议、持久化编排与标准工具生态；选择薄适配而保留应用边界，是为了让现有 Windows 音频、历史数据、来源失效、权限和桌宠行为继续兼容。语音、实体记忆和复杂规划按路线图逐步迁移，不能把使用了 LangGraph 等同于已经具备多 Agent。

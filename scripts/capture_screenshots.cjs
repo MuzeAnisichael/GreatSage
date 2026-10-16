@@ -229,7 +229,7 @@ function socialCard(consoleImage) {
 
     const seed = `import json,sys\nfrom pathlib import Path\nfrom greatsage.memory import MemoryStore\ndata=json.load(sys.stdin)\nstore=MemoryStore(Path(data['directory']))\nfor role,text,source in data['conversation']: store.add_message(role,text,source,data['session'])\nstore.add_memory('我喜欢简短、直接的回答。')\nstore.add_memory('会议纪要默认使用中文，人名和数字保留原文。')\nstore.close()`;
     const session = (await request('/api/status')).session_id;
-    const seeded = childProcess.spawnSync(path.join(root, '.venv', 'Scripts', 'python.exe'), ['-c', seed], {
+    const seeded = childProcess.spawnSync(path.join(root, '.venv', 'Scripts', 'python.exe'), ['-X', 'utf8', '-c', seed], {
       cwd: root, encoding: 'utf8', windowsHide: true, timeout: 15000,
       input: JSON.stringify({ directory: process.env.GREATSAGE_DATA_DIR, session, conversation: CONVERSATION }) });
     if (seeded.status !== 0) throw new Error(`Seeding failed: ${seeded.stderr}`);
@@ -283,6 +283,12 @@ function socialCard(consoleImage) {
     await until(() => evaluate("document.querySelector('#view-memory').innerText.includes('我喜欢简短、直接的回答')"), 'memory view');
     await capture(main, 'memory');
 
+    main.setContentSize(1280, 1040);
+    await evaluate("document.querySelector('[data-view=inspector]').click()");
+    await until(() => evaluate("document.querySelectorAll('#inspector-messages tr').length > 0"), 'runtime inspector');
+    await capture(main, 'inspector');
+    main.setContentSize(1280, 800);
+
     // Example rules; none of them matches the pending write above.
     await request('/api/settings', 'PUT', {
       tool_rules: [
@@ -329,9 +335,11 @@ function socialCard(consoleImage) {
       fs.mkdirSync(assets, { recursive: true });
       for (const file of outputs) fs.copyFileSync(file, path.join(assets, path.basename(file)));
     }
+    fs.writeFileSync(path.join(runDir, 'result.json'), JSON.stringify({ success: true, images: outputs.map(file => path.basename(file)) }, null, 2));
     console.log(`Captured ${outputs.length} images in ${runDir}${process.argv.includes('--write') ? ' and docs/assets' : ''}`);
   } catch (error) {
     failed = true;
+    fs.writeFileSync(path.join(runDir, 'result.json'), JSON.stringify({ success: false, error: error.message }, null, 2));
     console.error(`FAIL: ${error.message}`);
     if (main && !main.isDestroyed()) await capture(main, 'failure').catch(() => {});
   } finally {
