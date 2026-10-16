@@ -69,6 +69,15 @@ npm.cmd run check
 
 mock 提供商测试不能接收真实用户密钥，也不应联网。测试临时数据放在测试目录／临时目录，不与 .runtime 共用真实用户历史。
 
+迁移后的模型／MCP／任务图还可以通过真实回环 HTTP 做黑盒检查，不需要外部服务、密钥或麦克风：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/smoke_backend.py
+.\.venv\Scripts\python.exe scripts/smoke_backend.py --executable dist/greatsage-backend/greatsage-backend.exe
+```
+
+第一条已加入 Windows CI；第二条在冻结构建后检查动态依赖。脚本用独立目录和合成服务，验证请求、逐次审批、进程中断后重新授权、工具不重复执行、纪要／待办／文档和监控元数据。原始报告在 `.runtime/backend-smoke/`。它主动终止自己启动的测试后端来模拟中断，不代替桌面正常退出或安装器验收。
+
 ## 4. 真实模型与音频测试
 
 `scripts/probe_providers.py` 提供受控的本地／云端探测参数。先查看帮助，再明确选择要测试的服务和组件：
