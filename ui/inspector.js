@@ -4,6 +4,9 @@ export function setupInspector({ client, busy, toast }) {
   document.querySelector('[data-view=logs]').before(nav);
   const page = document.createElement('section'); page.className = 'view'; page.id = 'view-inspector'; page.hidden = true; page.setAttribute('aria-label', '运行监控');
   page.innerHTML = '<div class="view-header"><div><h2>秘书正在做什么</h2><p class="source-note">查看任务节点、实际请求的消息目录、上下文估算和记忆变更。</p></div><button class="button ghost small" id="inspector-refresh">刷新</button></div><p id="inspector-stamp" class="source-note" role="status">正在读取…</p><div class="stat-strip" id="inspector-stats"></div><div class="inspector-grid"><section class="panel"><div class="panel-heading"><h2>任务运行</h2></div><div class="panel-body" id="inspector-tasks"></div></section><section class="panel"><div class="panel-heading"><h2>长期记忆</h2><button class="button ghost small" id="inspector-memory-open">查看与管理</button></div><div class="panel-body" id="inspector-memory"></div></section></div><section class="panel inspector-context"><div class="panel-heading"><h2>模型请求与上下文</h2><button class="button ghost small" id="inspector-audit-open">请求证据</button></div><div class="panel-body"><label class="field"><span>最近请求</span><select id="inspector-request"></select></label><div id="inspector-budget"></div><div class="inspector-table-wrap"><table class="inspector-table"><thead><tr><th>顺序</th><th>角色</th><th>消息字节</th><th>内容指纹</th></tr></thead><tbody id="inspector-messages"></tbody></table></div><p class="source-note" id="inspector-sources"></p><p class="source-note">此页始终展示元数据。事先开启正文归档的请求，可在“请求证据”中单独查看正文。实体记忆、多 Agent 和远端追踪尚未接入。</p></div></section>';
+  const voicePanel = document.createElement('section'); voicePanel.className = 'panel inspector-context';
+  voicePanel.innerHTML = '<div class="panel-heading"><h2>语音管线与播放反馈</h2></div><div class="panel-body"><p class="source-note" id="inspector-voice-state"></p><div class="inspector-table-wrap"><table class="inspector-table"><thead><tr><th>音源</th><th>状态</th><th>识别方式</th><th>排队音频帧</th><th>失败原因</th></tr></thead><tbody id="inspector-voice-sources"></tbody></table></div><div class="stat-strip" id="inspector-voice-metrics"></div><p class="source-note">音频就绪记录合成完成；播放和停止由客户端回执确认，回执上界包含回传耗时。客户端起播记录收到音频事件到 playing 事件的间隔。这些数值均不是声卡实际发声测量。</p><p class="source-note" id="inspector-voice-window"></p></div>';
+  page.querySelector('.inspector-grid').after(voicePanel);
   document.querySelector('main').append(page);
   const $ = selector => page.querySelector(selector);
   const element = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (className) node.className = className; return node; };
@@ -11,6 +14,42 @@ export function setupInspector({ client, busy, toast }) {
   const nodeNames = { collect: '收集来源', extract: '抽取要点', compose: '生成纪要', document: '撰写文档', tools: '工具执行／审批', model: '模型回应', reply: '保存回复' };
   const contentLabels = { saved: '正文已归档', disabled: '仅元数据', source_deleted: '来源已删除', size_limit: '正文超出归档上限' };
   let data, epoch = 0, selected = '', timer;
+  function renderVoice() {
+    const voice = data.voice || {}, sources = voice.sources || [];
+    const states = { starting: '正在连接', running: '运行中', closed: '已关闭', failed: '已停用' };
+    const sourceLabel = source => source === 'system' ? '系统声音 · 观察'
+      : source.startsWith('process:') ? `进程 ${source.slice(8)} · 观察`
+      : `麦克风 ${source.split(':')[1] || '默认'} · 用户输入`;
+    $('#inspector-voice-state').textContent = sources.length
+      ? '各音源分别处理；停用的音源需要关闭并重新开启聆听。'
+      : data.listening ? '等待所选音源的音频。' : '尚未聆听，开启后显示各音源的管线状态。';
+    $('#inspector-voice-sources').replaceChildren();
+    for (const source of sources) {
+      const row = element('tr');
+      const mode = source.streaming === true ? '实时流式' : source.streaming === false ? '分段识别' : '待恢复';
+      const pending = Number.isInteger(source.pending_frames) && source.pending_frames >= 0 ? source.pending_frames.toLocaleString() : '待测';
+      for (const value of [sourceLabel(source.source), states[source.state] || '待测', mode, pending, source.error_code || '—']) row.append(element('td', value));
+      $('#inspector-voice-sources').append(row);
+    }
+    $('#inspector-voice-metrics').replaceChildren();
+    const measurements = [
+      ['audio_ready_ms', '音频就绪', '语音结束 → 合成完成'],
+      ['first_audio_ms', '首段播放确认', '语音结束 → 起播回执上界'],
+      ['client_event_to_playing_ms', '客户端起播', '收到音频事件 → playing'],
+      ['interrupt_to_stop_ack_ms', '打断停止确认', '打断 → 停止回执上界'],
+    ];
+    for (const [name, label, description] of measurements) {
+      const sample = voice.metrics?.[name], value = sample?.value_ms;
+      const measured = typeof value === 'number' && Number.isFinite(value) && value >= 0;
+      const note = measured && sample.created_at ? ` · ${new Date(sample.created_at).toLocaleTimeString()}` : '';
+      const emptyStop = sample?.had_audio === false ? ' · 当时无播放' : '';
+      const stat = element('div', undefined, 'stat');
+      stat.append(element('span', label), element('strong', measured ? `${value.toLocaleString()} ms` : '待测'),
+        element('small', `${description}${note}${emptyStop}`));
+      $('#inspector-voice-metrics').append(stat);
+    }
+    $('#inspector-voice-window').textContent = `每项独立显示最近 ${voice.recent_event_limit || 80} 条日志内的最新有效样本，可能来自不同回答。“待测”表示此窗口没有记录，不等于零延迟。此页只展示状态与耗时。`;
+  }
   function renderRequest() {
     const request = data?.requests.find(row => row.id === selected);
     $('#inspector-messages').replaceChildren(); $('#inspector-budget').replaceChildren();
@@ -41,6 +80,7 @@ export function setupInspector({ client, busy, toast }) {
     for (const [label, value, note] of [['当前状态', status[data.state] || data.state, data.listening ? '正在监听所选音源' : '未监听音源'], ['模型', data.model.name, data.model.provider], ['任务', running, 'LangGraph 编排'], ['外部工具', data.mcp_tools, '本次已发现的 MCP 工具']]) {
       const stat = element('div', undefined, 'stat'); stat.append(element('span', label), element('strong', value), element('small', note)); $('#inspector-stats').append(stat);
     }
+    renderVoice();
     $('#inspector-tasks').replaceChildren();
     if (!data.tasks.length) $('#inspector-tasks').textContent = '尚无任务。简单对话直接流式回答，多步骤任务会在这里显示。';
     for (const task of data.tasks) {
@@ -75,7 +115,7 @@ export function setupInspector({ client, busy, toast }) {
     document.querySelector('#audit-refresh').click();
   };
   return { refresh, onEvent(event) {
-    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated'].includes(event.kind)) return;
+    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated', 'metrics', 'audio_source', 'audio_gap', 'error'].includes(event.kind)) return;
     // Invalidate an older in-flight response immediately, before the debounce.
     epoch++; clearTimeout(timer); timer = setTimeout(() => refresh().catch(error => toast(error.message, 'error')), 250);
   } };

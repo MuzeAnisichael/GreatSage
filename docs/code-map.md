@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-10-20。适用于 v0.3 主线及 v0.4 迁移分支当前实现；版本状态以 [project-status.md](project-status.md) 为准。
+更新日期：2026-10-21。适用于 v0.5 当前源码实现；版本状态以 [project-status.md](project-status.md) 为准。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -27,6 +27,8 @@ GreatSage/
 │  ├─ runtime.py                    前台交互与后台任务协调
 │  ├─ audio.py / winloopback.py      Windows 采集
 │  ├─ segmentation.py / echo.py     分段与回声抑制措施
+│  ├─ voice_pipeline.py             Pipecat 分音源生命周期、背压及固定身份
+│  ├─ streaming_asr.py              可选 Deepgram 官方 SDK 薄适配、连接探针
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
 │  ├─ settings.py / skills.py       配置、凭据与只读 Skill
 │  ├─ memory.py / semantic.py       记忆持久化、来源关系、向量检索
@@ -55,13 +57,14 @@ GreatSage/
 | 用户功能 / 问题 | UI / API 入口 | 主要实现文件与符号 | 相关验证位置 |
 | --- | --- | --- | --- |
 | 启动、连接失败、窗口与托盘 | [desktop/main.cjs](../desktop/main.cjs): `startBackend`, `makeMainWindow`, `registerBridge` | [greatsage/__main__.py](../greatsage/__main__.py): `main` → `server.create_app`；[ui/client.js](../ui/client.js): `SageClient.initialize`, `connect` | [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs), [tests/test_server.py](../tests/test_server.py) |
+| 桌面退出、父进程消失与后端收尾 | [desktop/main.cjs](../desktop/main.cjs): `stopBackend`，私有 stdin 管道 | [greatsage/__main__.py](../greatsage/__main__.py): `_watch_desktop_pipe` / `--shutdown-stdin` → uvicorn 正常关闭 → `Runtime.close` | [scripts/test_desktop_shutdown.cjs](../scripts/test_desktop_shutdown.cjs), [scripts/smoke_shutdown.py](../scripts/smoke_shutdown.py) |
 | 设置、密钥、模型切换 | [ui/app.js](../ui/app.js): `saveSettings`, `saveQuickSettings`；`PUT /api/settings` | [greatsage/settings.py](../greatsage/settings.py): `SettingsStore.update`, `provider`, `read_env`；服务端 `update_settings` | [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
 | 音源列表、开始 / 停止监听 | [ui/app.js](../ui/app.js): `loadSources`；`GET /api/audio/sources`, `POST /api/listening` | [runtime.py](../greatsage/runtime.py): `Runtime.set_listening`, `_enqueue`, `_audio_consumer`；[audio.py](../greatsage/audio.py): `AudioCaptureManager.sources`, `start`, `stop`；进程采集再看 [winloopback.py](../greatsage/winloopback.py) | [test_audio.py](../tests/test_audio.py), [test_runtime.py](../tests/test_runtime.py) |
 | 识别、断句、打断与回声 | `POST /api/interrupt`；`transcript`, `speech_start`, `interrupt` 事件 | [segmentation.py](../greatsage/segmentation.py): `Segmenter.feed`；[runtime.py](../greatsage/runtime.py): `_transcribe`, `interrupt`；[providers.py](../greatsage/providers.py): `Providers.transcribe`；[echo.py](../greatsage/echo.py) | [test_segmentation.py](../tests/test_segmentation.py), [test_echo.py](../tests/test_echo.py), [test_runtime.py](../tests/test_runtime.py) |
 | 文字回答、旁听与主动回应 | [ui/app.js](../ui/app.js) 的消息提交监听器；`POST /api/chat` | [runtime.py](../greatsage/runtime.py): `chat`, `_route_message`, `_should_reply`, `_consider_proactive`, `submit_message`, `_respond`；策略辅助在 [decisions.py](../greatsage/decisions.py) | [test_runtime.py](../tests/test_runtime.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
 | API / Ollama 流式聊天 | `POST /api/providers/test`；服务端 `test_provider` | [providers.py](../greatsage/providers.py): `Providers.stream_chat` → [chat_models.py](../greatsage/chat_models.py): `stream_chat`；`MeteredChatOpenAI`, `NamedToolChatOllama` | [test_providers.py](../tests/test_providers.py), [test_probe_providers.py](../tests/test_probe_providers.py) |
 | 全局指令与现成 Skills | [ui/app.js](../ui/app.js): `refreshSkills`；`/api/skills` 系列接口 | [skills.py](../greatsage/skills.py): `SkillsManager.import_path`, `select`, `set_enabled`；[runtime.py](../greatsage/runtime.py): `_build_context` | [test_skills.py](../tests/test_skills.py), [test_runtime.py](../tests/test_runtime.py) |
-| 语音语言、音色与播放 | [ui/app.js](../ui/app.js): `AudioPlayer.enqueue`, `next`, `stop`, `notify`；`POST /api/playback` | [runtime.py](../greatsage/runtime.py): `_speak_worker`, `playback`；[providers.py](../greatsage/providers.py): `synthesize`, `voices` | [test_providers.py](../tests/test_providers.py), [test_runtime.py](../tests/test_runtime.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
+| 语音语言、音色与播放 | [ui/app.js](../ui/app.js): `AudioPlayer.enqueue`, `next`, `stop`, `notify`；`POST /api/playback` | [runtime.py](../greatsage/runtime.py): `_speak_worker`, `playback`，校验每句身份／顺序与一次性停止回执；[providers.py](../greatsage/providers.py): `synthesize`, `voices` | [test_providers.py](../tests/test_providers.py), [test_runtime.py](../tests/test_runtime.py), [test_audio_player.py](../tests/test_audio_player.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 新会话与历史浏览 | [ui/app.js](../ui/app.js) 的新会话监听器；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/sessions`, `/api/history/page` | [runtime.py](../greatsage/runtime.py): `reset_session`；[memory.py](../greatsage/memory.py): `new_session`, `sessions`, `history_page` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime.py](../tests/test_runtime.py), [test_server.py](../tests/test_server.py) |
 | 显式长期记忆与冲突 | [ui/app.js](../ui/app.js): `renderMemories`；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/memories`, `/api/memory/conflicts` | [runtime.py](../greatsage/runtime.py): `_remember_explicit`, `add_memory_checked`；[memory.py](../greatsage/memory.py): `add_memory`, `conflicts`, `resolve_conflict` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
 | 历史检索与回答上下文 | [ui/app.js](../ui/app.js): `scheduleHistorySearch`；`GET /api/memory/search` | 手动搜索：[memory.py](../greatsage/memory.py): `search`；回答检索：[runtime.py](../greatsage/runtime.py): `_semantic_context`, `_build_context` → `MemoryStore.context`；[semantic.py](../greatsage/semantic.py): `semantic_search`, `fuse`；[budget.py](../greatsage/budget.py): `TokenCounter.count` | [test_memory.py](../tests/test_memory.py), [test_memory_v02.py](../tests/test_memory_v02.py), [test_semantic.py](../tests/test_semantic.py) |
@@ -76,7 +79,7 @@ GreatSage/
 | MCP 配置、发现与调用 | [ui/mcp.js](../ui/mcp.js): `setupMCP`；`/api/mcp/servers`, `/{server_id}/discover`, `/api/mcp/disconnect` | [mcp_tools.py](../greatsage/mcp_tools.py): `MCPTools.discover`, `call`, `sdk_session`；执行仍从 `TaskManager._call` 进入 | [test_mcp.py](../tests/test_mcp.py), [test_tasks.py](../tests/test_tasks.py), [scripts/smoke_backend.py](../scripts/smoke_backend.py) |
 | 动态日志、请求审计、运行监控 | [ui/app.js](../ui/app.js): `onEvent`, `renderEvents`；[ui/audit.js](../ui/audit.js): `setupAudit` / [ui/inspector.js](../ui/inspector.js): `setupInspector`；`/api/events`, `/api/audit`, `/api/inspector` | [runtime.py](../greatsage/runtime.py): `emit`, `snapshot_request`；[audit.py](../greatsage/audit.py): `AuditMixin.save_snapshot`, `snapshot`；[inspector.py](../greatsage/inspector.py): `inspect_runtime` | [test_audit.py](../tests/test_audit.py), [test_server.py](../tests/test_server.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 桌宠摸摸、气泡、状态与任务提示 | [ui/pet.js](../ui/pet.js): `setMessage`, `setState`, `taskMessage` 及触摸事件监听器 | [desktop/main.cjs](../desktop/main.cjs): `showPet`, `hidePet`；[ui/pet.html](../ui/pet.html), [pet.css](../ui/pet.css)；接收 `SageClient` 推送事件 | [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
-| 构建与分发 | [package.json](../package.json): `package`；[scripts/build.ps1](../scripts/build.ps1) | [greatsage-backend.spec](../greatsage-backend.spec), [scripts/backend_entry.py](../scripts/backend_entry.py)；PyInstaller 后端 → electron-builder `win dir` | [scripts/smoke_backend.py](../scripts/smoke_backend.py)；验收边界见各 `validation-*.md` |
+| 构建与分发 | [package.json](../package.json): `package` / `build.nsis`；[scripts/build.ps1](../scripts/build.ps1): `-Target dir/zip/nsis` | [greatsage-backend.spec](../greatsage-backend.spec), [scripts/backend_entry.py](../scripts/backend_entry.py)；PyInstaller 后端 → electron-builder 目录／ZIP／NSIS | [scripts/smoke_backend.py](../scripts/smoke_backend.py)；安装配置已实现，实际验收见各 `validation-*.md` |
 
 测试表内省略目录的 `test_*.py` 均在 `tests/`。`MemoryStore` 继承 `VectorIndexMixin`、`AuditMixin`、`MaterialsMixin`、`ArtifactsMixin`、`TaskStoreMixin`：例如 `runtime.memory.create_artifact()` 的实现位于 `artifacts.py`，任务账本实现位于 `task_store.py`，不是 `memory.py`。
 
@@ -91,9 +94,12 @@ GreatSage/
 ```mermaid
 flowchart LR
     C["AudioCaptureManager.start"] -. "采集线程回调 / call_soon_threadsafe" .-> Q["Runtime._enqueue"]
-    Q -. "audio_queue" .-> A["Runtime._audio_consumer / Segmenter.feed"]
-    A -. "create_task" .-> T["Runtime._transcribe → Providers.transcribe"]
-    T --> R["Runtime._route_message"]
+    Q -. "audio_queue" .-> A["Runtime._audio_consumer → SourceVoicePipeline.feed"]
+    A -. "VAD / _handle_segment" .-> T["Runtime._transcribe → Providers.transcribe"]
+    A -. "流式帧" .-> STT["Deepgram → _streaming_transcript → _flush_streaming_turn"]
+    T --> Accept["Runtime._accept_transcript"]
+    STT --> Accept
+    Accept --> R["Runtime._route_message"]
     U["POST /api/chat → Runtime.chat"] --> S["Runtime.submit_message"]
     R --> S
     S -. "reply_task" .-> O["Runtime._respond"]
@@ -105,7 +111,7 @@ flowchart LR
     P --> F["POST /api/playback → Runtime.playback"]
 ```
 
-旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音识别目前是分段快照，不是 Pipecat 管线。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
+旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音统一经 Pipecat 管线；原服务保留分段快照，Deepgram 可选原生流式。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
 
 ### 2. 回答上下文与后台记忆更新
 
@@ -175,6 +181,16 @@ flowchart LR
 
 ## 快速定位与追溯
 
+安装验收：[scripts/smoke_installer.ps1](../scripts/smoke_installer.ps1) 的 `Invoke-Installer`／`Invoke-OwnedUninstall`、`Assert-DataHashes` 及人工退出节点；运行前查看脚本头部边界。`desktop/main.cjs` 在 ready 前处理显式数据目录隔离，`stopBackend` 与后端 `_watch_desktop_pipe` 完成正常退出。
+
+冻结语音排障：`python -m greatsage --check-voice-runtime` 或包内后端同名参数 → [diagnostics.py](../greatsage/diagnostics.py) 的 `check_voice_runtime`；不连接服务、不启用设备，检查 SDK 懒加载与合成静音管线。新增依赖时同步 [greatsage-backend.spec](../greatsage-backend.spec)、[hook-deepgram.py](../scripts/hooks/hook-deepgram.py) 和[许可记录](third-party.md)。
+
+语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
+
+语音管线入口：[voice_pipeline.py](../greatsage/voice_pipeline.py) 的 `VoiceIdentity`、`SourceVoicePipeline.start/feed/drain/close`；`_SegmentProcessor` 先传开始事件、后传 PCM、最后传结束事件，`_ResultProcessor` 仅回调固定身份和白名单端点信息。定向覆盖见 [test_voice_pipeline.py](../tests/test_voice_pipeline.py)；Runtime 接入状态见开发日志。
+
+流式服务配置：[settings.py](../greatsage/settings.py) 的 `_validate`／`SettingsStore.update` → [streaming_asr.py](../greatsage/streaming_asr.py) 的 `_configuration`；实例化由 `create_streaming_asr` 完成，`probe_streaming_connection` 负责无音频连接检查。界面入口为“设置 → 语音识别 → Deepgram 流式识别”，对应 `setupProviderExtras` 与 `/api/providers/test`；[test_streaming_asr.py](../tests/test_streaming_asr.py) 覆盖单连接、空 Finalize、错误／取消和无正文日志。
+
 真实模型／MCP 的有界验收入口是 [scripts/probe_agent_tools.py](../scripts/probe_agent_tools.py)：`run_case()` 复用 `Runtime.chat`、`TaskManager.resolve` 和工具账本；`MeasuredProviders.stream_chat()` 记录请求次数与用量。显式选择服务后才调用，公开结果见 [evals/results-v0.4.json](../evals/results-v0.4.json)。它不替代故障回归或真实鼠标／语音验收。
 
 在仓库根目录使用以下只读搜索；先缩小文件范围，不必打印整个仓库：
@@ -193,4 +209,23 @@ git blame -L '/async def _call/,+25' -- greatsage/tasks.py
 
 一次问题优先关联 `trace_id` → `task_id` / `call_id` → 请求快照与事件；快照全文默认关闭，监控页不等于完整请求档案。排查源码时不打印运行目录中的密钥、录音或私人会话。结论、原因、修复和验证边界写入 [development-log.md](development-log.md)，架构取舍回链到对应设计文档。
 
-当前尚未实现：Pipecat 语音迁移、LangMem / 实体记忆、Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth、原生安装器。上述目录或符号不能被当成这些能力已经交付的证据；新增能力时同步本页对应行和调用链。
+当前尚未实现：LangMem / 实体记忆、Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
+
+### v0.5 音源、话轮与取消链
+
+```mermaid
+flowchart LR
+    Capture[Windows capture] --> Queue[Runtime._enqueue / _audio_consumer]
+    Queue --> Pipe[SourceVoicePipeline.feed]
+    Pipe --> Segment[Runtime._handle_segment]
+    Segment --> Batch[Providers.transcribe]
+    Pipe --> STT[Deepgram 官方流式服务]
+    STT --> Turn[Runtime._streaming_transcript / _flush_streaming_turn]
+    Batch --> Accept[Runtime._accept_transcript]
+    Turn --> Accept
+    Accept --> Route[记忆 / _route_message / 原权限入口]
+    Cancel[停听 / 删除 / 会话切换] --> Invalidate[_invalidate_audio]
+    Invalidate --> Close[SourceVoicePipeline.close]
+```
+
+丢帧／积压排障从 `_voice_failed`、`_retire_voice_source` 和 `voice_errors` 开始；流式端点排障看 `_streaming_segment`／`_streaming_finalize_timeout`。`_voice_current` 与提交阶段 `current()` 核验固定身份；后台任务不能通过旧身份写回。相关覆盖：[test_voice_runtime.py](../tests/test_voice_runtime.py)。

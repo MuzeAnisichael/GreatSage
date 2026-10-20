@@ -11,7 +11,7 @@ from greatsage.settings import read_env
 
 def main():
     paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
-    credentials = [read_env(name).encode() for name in ('OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN') if read_env(name)]
+    credentials = [read_env(name).encode() for name in ('OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'DEEPGRAM_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN') if read_env(name)]
     failures = []
     forbidden = {'.runtime', '.venv', 'node_modules', 'recordings', 'logs', 'data', 'release', 'dist'}
     for name in filter(None, paths):

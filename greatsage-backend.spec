@@ -2,7 +2,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 root = Path(SPECPATH)
-data = [(str(root / 'ui'), 'ui')]
+data = [(str(root / 'ui'), 'ui'),
+        (str(root / 'docs' / 'third-party.md'), 'licenses')]
 binaries = []
 for package in ('faster_whisper', 'ctranslate2', 'tokenizers', 'pyaudiowpatch'):
     data += collect_data_files(package)
@@ -19,6 +20,11 @@ for package in ('mcp', 'mcp_types', 'jsonschema_specifications'):
     data += collect_data_files(package)
 for distribution in ('mcp', 'mcp-types', 'jsonschema', 'jsonschema-specifications'):
     data += copy_metadata(distribution)
+# Pipecat reads its distribution version on import. Keep the metadata/licences
+# for the narrow voice import graph, without collecting its bundled ONNX models,
+# CLI templates or unrelated service extras. Deepgram's lazy exports have a hook.
+for distribution in ('pipecat-ai', 'soxr', 'sentencex', 'loudness'):
+    data += copy_metadata(distribution)
 
 analysis = Analysis(
     [str(root / 'scripts' / 'backend_entry.py')], pathex=[str(root)],
@@ -28,6 +34,8 @@ analysis = Analysis(
                    'pywintypes', 'faster_whisper', 'av', 'uvicorn.logging',
                    'uvicorn.loops.asyncio', 'uvicorn.protocols.http.h11_impl',
                    'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.lifespan.on'],
+    # The voice slice keeps WebRTC VAD; Pipecat's optional ONNX SmartTurn/Silero
+    # and resampy/scipy paths are not configured or imported by this pipeline.
     excludes=['torch', 'tensorflow', 'jax', 'matplotlib', 'pandas', 'scipy',
               'IPython', 'notebook', 'pytest', 'sympy', 'tkinter', 'transformers',
               'sklearn', 'statsmodels', 'plotly', 'h5py', 'keras', 'tensorboard',

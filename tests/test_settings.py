@@ -166,3 +166,25 @@ def test_native_dpapi_roundtrip_encrypts_for_current_user():
     protected = settings._protect_bytes(plaintext)
     assert plaintext not in protected
     assert settings._unprotect_bytes(protected) == plaintext
+
+
+def test_streaming_provider_never_inherits_the_previous_service_key(store, monkeypatch):
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "STREAMING_ENV_FIXTURE")
+    store.update({"asr": {"api_key": "PREVIOUS_SERVICE_FIXTURE"}})
+    store.update({"asr": {"provider": "deepgram_streaming", "base_url": "https://api.deepgram.com",
+                         "model": "nova-3", "language": "zh", "api_key_env": "DEEPGRAM_API_KEY"}})
+    assert store.provider("asr")["api_key"] == "STREAMING_ENV_FIXTURE"
+    assert "PREVIOUS_SERVICE_FIXTURE" not in json.dumps(store.get())
+    store.update({"asr": {"api_key": "EXPLICIT_STREAMING_FIXTURE"}})
+    store.update({"asr": {"language": "ja"}})
+    assert store.provider("asr")["api_key"] == "EXPLICIT_STREAMING_FIXTURE"
+    with pytest.raises(ValueError):
+        store.update({"asr": {"base_url": "https://unrelated.example"}})
+
+
+def test_new_destination_requires_explicit_account_configuration(store):
+    store.update({"llm": {"api_key": "PREVIOUS_DESTINATION_FIXTURE"}})
+    store.update({"llm": {"provider": "openai", "base_url": "https://model.example/v1"}})
+    assert store.provider("llm")["api_key"] == ""
+    store.update({"llm": {"base_url": "https://another.example/v1", "api_key": "NEW_DESTINATION_FIXTURE"}})
+    assert store.provider("llm")["api_key"] == "NEW_DESTINATION_FIXTURE"

@@ -205,15 +205,91 @@ async def test_user_can_repeat_assistant_words_without_text_only_echo_suppressio
     assert runtime.memory.history()[-1]["role"] == "assistant"
 
 
-async def test_playback_reference_begins_on_actual_play_and_clears_on_interrupt(runtime):
-    reference = b"\x10\x00" * 16000
-    runtime.playback_references[("test-trace", "一句话")] = (time.time(), reference)
+async def speech_clips(runtime, monkeypatch, texts, trace="test-trace"):
+    monkeypatch.setattr("greatsage.runtime.decode_reference", lambda *_: b"\x10\x00" * 16000)
+    events, sentences = asyncio.Queue(), asyncio.Queue()
+    runtime.subscribers.add(events)
+    for text in texts:
+        sentences.put_nowait(text)
+    sentences.put_nowait(None)
+    await runtime._speak_worker(sentences, trace, runtime.generation, time.time() - 1,
+                                runtime.settings.raw())
+    runtime.subscribers.remove(events)
+    return [event["data"] for event in drain(events) if event["kind"] == "audio"]
+
+
+async def acknowledge(runtime, clip, playing, sequence=1):
+    return await runtime.playback(playing, audio_id=clip["audio_id"], generation=clip["generation"],
+                                  session_id=clip["session_id"], sequence=sequence, client_elapsed_ms=25)
+
+
+async def test_playback_reference_begins_on_actual_play_and_clears_on_interrupt(runtime, monkeypatch):
+    clip, = await speech_clips(runtime, monkeypatch, ["一句话"])
     assert runtime.echo.last_decision["reason"] == "no_reference"
-    await runtime.playback(True, "一句话", "test-trace")
+    assert await acknowledge(runtime, clip, True)
+    assert runtime.echo.last_decision["reason"] == "reference_ready"
+    assert await acknowledge(runtime, clip, True, sequence=2)
     assert runtime.echo.last_decision["reason"] == "reference_ready"
     await runtime.interrupt()
     assert runtime.echo.last_decision["reason"] == "no_reference"
     assert not runtime.playback_references
+
+
+@pytest.mark.parametrize("operation", ["interrupt", "reset_session", "before_delete"])
+async def test_late_playback_start_after_interrupt_is_ignored(runtime, monkeypatch, operation):
+    clip, = await speech_clips(runtime, monkeypatch, ["旧回答"])
+    assert await acknowledge(runtime, clip, True)
+    await getattr(runtime, operation)()
+    assert not await acknowledge(runtime, clip, True, sequence=2)
+    assert not runtime.playing
+    assert runtime.state == "idle"
+    assert not runtime.playback_items
+
+
+async def test_old_sentence_stop_cannot_stop_new_sentence(runtime, monkeypatch):
+    first, second = await speech_clips(runtime, monkeypatch, ["相同的句子", "相同的句子"])
+    assert await acknowledge(runtime, first, True)
+    assert await acknowledge(runtime, second, True)
+    assert not await acknowledge(runtime, first, False, sequence=2)
+    assert runtime.playing
+    assert runtime.state == "speaking"
+    assert runtime.active_audio_id == second["audio_id"]
+    assert runtime.echo.last_decision["reason"] == "reference_ready"
+    assert await acknowledge(runtime, second, False, sequence=2)
+    assert not await acknowledge(runtime, second, True, sequence=1)
+    assert not runtime.playing
+    assert runtime.echo.last_decision["reason"] == "no_reference"
+    metrics = [event["data"] for event in runtime.memory.events()
+               if event["kind"] == "metrics" and "first_audio_ms" in event["data"]]
+    assert len(metrics) == 1 and metrics[0]["measurement"] == "client_playing_ack_received"
+    assert metrics[0]["client_event_to_playing_ms"] == 25
+
+
+async def test_stop_before_playing_ack_is_terminal_and_unissued_clip_is_ignored(runtime, monkeypatch):
+    clip, = await speech_clips(runtime, monkeypatch, ["一句话"])
+    assert not await runtime.playback(True)
+    assert await acknowledge(runtime, clip, False, sequence=2)
+    assert not await acknowledge(runtime, clip, True, sequence=1)
+    assert not await acknowledge(runtime, clip, True, sequence=3)
+    assert not runtime.playing
+    assert not [event for event in runtime.memory.events() if "first_audio_ms" in event["data"]]
+
+
+async def test_stop_receipt_records_timing_once_without_changing_new_state(runtime):
+    await runtime.interrupt()
+    receipt = {key: runtime.pending_stop[key] for key in ("interrupt_id", "generation", "session_id")}
+    runtime.state = "thinking"  # A new response may already be running when stop acknowledgement arrives.
+    assert await runtime.playback(False, **receipt, client_elapsed_ms=2.5, had_audio=True)
+    assert runtime.state == "thinking"
+    assert not await runtime.playback(False, **receipt, client_elapsed_ms=2.5, had_audio=True)
+    metric = next(event["data"] for event in runtime.memory.events() if "interrupt_to_stop_ack_ms" in event["data"])
+    assert metric["interrupt_to_stop_ack_ms"] >= 0
+    assert metric["client_stop_ms"] == 2.5 and metric["had_audio"]
+    assert metric["measurement"] == "client_pause_ack_received"
+    await runtime.interrupt()
+    old = {key: runtime.pending_stop[key] for key in ("interrupt_id", "generation", "session_id")}
+    await runtime.before_delete()
+    assert not await runtime.playback(False, **old)
 
 
 @pytest.mark.parametrize("operation", ["reset", "delete"])

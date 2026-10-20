@@ -27,12 +27,14 @@
 </picture>
 
 > [!NOTE]
-> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。可以下载 Windows x64 目录 ZIP，或从源码运行；尚无安装器。
+> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。可以下载 Windows x64 目录 ZIP，或从源码运行；最近发布包不含安装器。
 >
 > - **版本**：[0.4.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) 从 `main` 交付，包含此前 v0.3 的资料库、纪要任务和受控工具。
 > - **框架迁移**：LangChain、LangGraph、MCP HTTP 和本地运行监控已纳入本版；实际验证范围见[v0.4 验证](docs/validation-v0.4.md)，逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
+
+当前源码已推进 **v0.5 首轮集成**：Pipecat 语音管线、可选 Deepgram 流式识别、播放／打断计时、语音监控及 NSIS 构建。它尚未作为 v0.5 发布；真实新服务、设备与安装链验收仍待完成。配置与证据见[使用说明](docs/usage.md)和[v0.5 验证](docs/validation-v0.5.md)，上面的 v0.4 下载不包含这些改动。
 
 ## 它能做什么
 
@@ -183,7 +185,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
 - **v0.4 验证范围**：真实模型、MCP 服务及打包对象的具体覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth、实体记忆和多 Agent 尚未接入。
-- **分发**：提供 Windows x64 目录 ZIP；尚无安装器、发行签名，干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
+- **分发**：提供 Windows x64 目录 ZIP；v0.5 已有 NSIS 构建、尚未发布安装器或发行签名，干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
 
 测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
 
@@ -195,7 +197,8 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.2 alpha | 已发布 | 回应质量评测、混合检索、分层摘要、请求审计与后台恢复 |
 | v0.3 | 随 v0.4 alpha 交付 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；真实场景验收继续保留 |
 | v0.4 alpha | 已从 main 交付 | LangChain、LangGraph、MCP HTTP、本地监控与 Windows x64 目录 ZIP |
-| v0.5–v0.7 | 分阶段规划 | Pipecat 语音与安装、LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
+| v0.5 | 首轮集成，真实验收待完成 | Pipecat、可选流式识别、语音监控与 NSIS 构建 |
+| v0.6–v0.7 | 分阶段规划 | LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 

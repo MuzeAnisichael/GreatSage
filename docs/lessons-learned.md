@@ -57,3 +57,17 @@
 - **处理**：不修改系统执行策略，直接运行脚本对应的 PyInstaller／electron-builder 命令；桌面阶段可通过构建器的 `electronDist` 复用已安装的相同版本 Electron。需要正常缓存访问时按执行环境申请权限，不重建已经完成的后端。
 - **何时复查**：换构建环境或下载缓存失败时，先确认失败阶段与已有产物；不要把构建失败当作业务代码故障。
 - **证据**：[开发日志](development-log.md)、[开发与发布说明](development.md)。
+
+## L09 · 流式稳定片段不能直接成为用户命令
+
+- **症状／原因**：云端 `is_final` 可以出现在一句话中间；强制分段也不代表说话结束。空 Finalize 确认被上游忽略时，已收到的稳定文字又可能一直不提交。
+- **处理**：保留官方 SDK 的帧和时间区间，聚合稳定片段，等待本地 VAD 与远端端点；短噪声丢弃不能升级为命令。时间区间不明、跨轮重叠、积压或超时停止该流式源，不能猜测归属。
+- **何时复查**：更换识别 SDK、轮次模型或恢复策略时，同时检查单连接、空确认、取消、来源代际和可选录音限额。
+- **证据**：[voice_pipeline.py](../greatsage/voice_pipeline.py)、[streaming_asr.py](../greatsage/streaming_asr.py)、[test_voice_runtime.py](../tests/test_voice_runtime.py)。
+
+## L10 · SDK 的导入、调试扩展与冻结都属于运行边界
+
+- **症状／原因**：首批 PCM 中导入语音框架可能阻塞采集；Pipecat 1.13 会执行 `PIPECAT_SETUP_FILES` 的脚本；源码通过不能覆盖 SDK 的懒加载冻结依赖。
+- **处理**：采集前预加载，停用未授权的环境脚本扩展；按实际进口路径补 PyInstaller hook 和许可元数据。包内运行离线诊断，明确不等于联网识别或设备验收。
+- **何时复查**：语音框架升级、切换 Python 版本或调整构建排除项。Python 3.11 的上游 `wait_for2` 全局兼容补丁已记录，不能忽略取消语义变化。
+- **证据**：[v0.5 验证](validation-v0.5.md)、[diagnostics.py](../greatsage/diagnostics.py)、[第三方记录](third-party.md)。

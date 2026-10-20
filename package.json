@@ -1,6 +1,6 @@
 {
   "name": "greatsage",
-  "version": "0.4.0-alpha.1",
+  "version": "0.5.0-alpha.1",
   "private": true,
   "author": "GreatSage contributors",
   "license": "MIT",
@@ -18,7 +18,16 @@
     "productName": "GreatSage",
     "files": ["desktop/**", "ui/**", "package.json"],
     "extraResources": [{"from":"dist/greatsage-backend", "to":"backend", "filter":["**/*"]}],
-    "win": {"target": "dir"},
+    "win": {"target": [{"target": "nsis", "arch": ["x64"]}]},
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-win-${arch}-Setup.${ext}"
+    },
     "directories": {"output": "release"}
   }
 }
