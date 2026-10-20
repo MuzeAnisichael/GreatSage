@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-10-20。适用于 v0.3 主线及 v0.4 迁移分支当前实现；版本状态以 [project-status.md](project-status.md) 为准。
+更新日期：2026-10-21。适用于 v0.5 当前源码实现；版本状态以 [project-status.md](project-status.md) 为准。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -108,7 +108,7 @@ flowchart LR
     P --> F["POST /api/playback → Runtime.playback"]
 ```
 
-旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音识别目前是分段快照，不是 Pipecat 管线。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
+旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音统一经 Pipecat 管线；原服务保留分段快照，Deepgram 可选原生流式。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
 
 ### 2. 回答上下文与后台记忆更新
 

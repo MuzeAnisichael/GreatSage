@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-20。当前版本为从 `main` 交付的 **0.4.0-alpha.1**，包含 v0.3 功能和 v0.4 框架迁移，提供 Windows x64 目录 ZIP。[项目现状](project-status.md)区分已实现、已验证与尚未交付；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-21。当前源码为 v0.5 候选，最近已发布版本为从 `main` 交付的 **0.4.0-alpha.1**，包含 v0.3 功能和 v0.4 框架迁移，提供 Windows x64 目录 ZIP。[项目现状](project-status.md)区分已实现、已验证与尚未交付；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -135,7 +135,7 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 表示：本版为 `0.4.0a1` 与 `0.4.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
+Python 与桌面包分别使用对应的 alpha 表示：当前候选为 `0.5.0a1` 与 `0.5.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
 
 PyInstaller 冻结后端，electron-builder 生成桌面目录与 ZIP。`scripts/build.ps1` 默认 `-Target dir`，发布 ZIP 使用 `-Target zip`；若脚本执行受限，直接调用两个构建工具，命令见[README](../README.md)。将整个目录分发，不能只复制 `GreatSage.exe`。GitHub [v0.4.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1)提供 Windows x64 ZIP 与 `SHA256SUMS.txt`；发布前对最终 ZIP 计算 SHA256，上传后核对资产名、大小与摘要。它没有安装器或发行签名，跨电脑安装／升级／卸载仍待验收。
 
@@ -181,6 +181,12 @@ README 截图和社交预览图用下面的脚本重新生成：
 最终测试数量、云端模型名单和性能结论以实际验证记录为准，不在工作完成前预填。
 
 ## 8. 开源参考与复用
+
+v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒加载入口和元数据，不收集所有服务 extras 或模型。许可与来源见 [third-party.md](third-party.md)。NSIS 使用 `scripts/build.ps1 -Target nsis`，当前源码版本为 `0.5.0a1`／`0.5.0-alpha.1`，发布状态以[项目现状](project-status.md)为准。
+
+升级前从托盘菜单退出 GreatSage，再备份完整数据目录。NSIS 的运行中升级处理可能强制结束进程，不保证执行应用关闭流程。默认当前用户安装、手动升级、卸载保留数据、不自动启动；DPAPI 仍绑定 Windows 用户。`GREATSAGE_DATA_DIR` 显式设置时也隔离 Electron profile，正常启动沿用既有路径。
+
+有界退出复现：`python scripts/smoke_shutdown.py`；冻结包可追加 `--executable dist/greatsage-backend/greatsage-backend.exe`。实际安装验收脚本为 [smoke_installer.ps1](../scripts/smoke_installer.ps1)，带人工退出节点，先阅读预检与注册项／快捷方式／缓存边界。重复安装相同版本只能证明覆盖安装，不等于跨版本升级通过。完整安装、自然语音和整天运行的未测项见[v0.5 验证](validation-v0.5.md)。
 
 当前架构参考了成熟项目对角色渲染、实时语音调度、打断和可观测性的拆分思路：
 

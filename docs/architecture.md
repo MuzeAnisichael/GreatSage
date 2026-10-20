@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-10-20。本文记录 `main` 交付的 **0.4.0-alpha.1** 架构，包含此前 v0.3 的资料到产物主线。v0.4 使用通用模型适配、图编排和 MCP 协议，仍保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。性能和兼容性以[v0.4 验证](validation-v0.4.md)及其中引用的历史记录为准。按功能定位文件、函数和调用链见[代码导航](code-map.md)。
+更新日期：2026-10-21。本文记录 v0.5 当前源码架构：在 v0.4 的 LangChain、LangGraph 和 MCP 基础上接入 Pipecat，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。源码、构建、真实服务和已发布版本的边界见[项目现状](project-status.md)与[v0.5 验证](validation-v0.5.md)。按功能定位文件和函数见[代码导航](code-map.md)。
 
 ## 1. 组成与调用关系
 
@@ -9,10 +9,14 @@ flowchart LR
     Mic[麦克风] --> Capture[Windows 音频采集]
     Desktop[系统 / 指定进程] --> Capture
     Capture --> Echo[来源区分与回声抑制措施]
-    Echo --> VAD[VAD 与分段]
-    VAD --> ASR[本地或 API 识别]
+    Echo --> Pipe[Pipecat 分音源管线]
+    Pipe --> VAD[WebRTC VAD 与分段]
+    VAD --> ASR[本地或 API 分段识别]
+    Pipe --> Streaming[可选 Deepgram 流式识别]
+    Streaming --> Turn[本地与远端双端点确认]
     Text[手动文字输入] --> Runtime[Runtime 回应策略]
     ASR --> Runtime
+    Turn --> Runtime
     Runtime <--> Memory[SQLite 记忆与摘要]
     Skills[本地 Skill 指令与资料] --> Runtime
     Runtime --> LLM[LangChain 流式模型适配]
@@ -43,6 +47,8 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/audio.py、winloopback.py | 麦克风、系统／进程回环、PCM 转换与线程队列 |
 | greatsage/echo.py | 播放参考及自身声音抑制；不是完整 AEC |
 | greatsage/segmentation.py | 30 ms VAD 帧、预留音频、临时快照、静音结束与最长分段 |
+| greatsage/voice_pipeline.py | Pipecat 帧、分音源身份、串行处理、背压和关闭 |
+| greatsage/streaming_asr.py | 官方 Deepgram SDK 薄适配、单连接、显式语言与凭据、安全失败 |
 | greatsage/providers.py | 流式 LLM、ASR、TTS、本地模型准备与受控错误 |
 | greatsage/chat_models.py | LangChain OpenAI／Ollama 聊天适配，复用应用连接池与凭据 |
 | greatsage/agent_graph.py | LangGraph 纪要／操作图、SQLite 控制 checkpoint 和审批恢复 |
@@ -69,7 +75,11 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 
 每个音源保留来源标记，转换为单声道 16 kHz PCM16，进入有界队列。用户选择麦克风和至多一个桌面音源；指定程序模式包括该程序的进程树。设备或进程重新启动后，应刷新并重新选择当前 ID。
 
-VAD 在独立于模型请求的管线中处理音频，产生开始、临时快照、最终片段和丢弃事件。临时快照可反复请求 ASR，最终片段串行保序；长语句达到上限后分段，并保持“仍在说话”的状态。这是**分段快照识别**，不是语音 API 的原生流式协议。
+每源使用 Pipecat `PipelineWorker`，VAD 产生开始、临时快照、最终片段和丢弃事件。原 API／本地路径仍以快照请求识别，最终片段串行保序；长语句达到上限后分段并保持“仍在说话”。选择 Deepgram 时，PCM 经官方 SDK 流式发送，稳定片段先聚合，需本地 VAD 结束和远端 Finalize／speech_final 同时满足才提交。临时文字不能发起回答或工具；短噪声的本地丢弃不能被云端转写升级为命令。
+
+管线固定来源、会话与代际，有界排队并在关闭时使回调立即失效。普通分段识别丢帧后重建该源管线；流式丢帧、积压、超过 15 秒未确认、前一轮未确认时新轮次开始等情况停止该源并要求重开，不能自动重连重放或换提供商。当前尚需真实连续会话验证这些保守边界。录音开启时额外 PCM 缓存有界；超长轮次保留文字、跳过残缺录音。
+
+框架 tracing、RTVI、转写正文日志和环境脚本 `PIPECAT_SETUP_FILES` 均停用。Pipecat 1.13 在 Python 3.11 上使用其官方 `wait_for2` 兼容补丁。版本、许可和 SDK 默认行为见[v0.5 方案](v0.5-plan.md)。
 
 每个 30 ms 帧都传入 VAD 更新内部状态，再应用 RMS 门限。音源带累计采样序号；丢帧会重置对应分段并拒绝此前进行中的 ASR 结果，避免拼接不连续话语。参考回声在长批次内按 20 ms 分别判断，保留独立人声帧。全部采集线程退出会回报 Runtime 并结束监听，旧代际通知不影响新采集。
 
