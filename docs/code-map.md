@@ -178,7 +178,9 @@ flowchart LR
 
 ## 快速定位与追溯
 
-安装验收：[scripts/smoke_installer.ps1](../scripts/smoke_installer.ps1) 的 `Invoke-OwnedInstall`／`Invoke-OwnedUninstall`、`Assert-DataHashes` 及人工退出节点；运行前查看脚本头部边界。`desktop/main.cjs` 在 ready 前处理显式数据目录隔离，`stopBackend` 与后端 `_watch_desktop_pipe` 完成正常退出。
+安装验收：[scripts/smoke_installer.ps1](../scripts/smoke_installer.ps1) 的 `Invoke-Installer`／`Invoke-OwnedUninstall`、`Assert-DataHashes` 及人工退出节点；运行前查看脚本头部边界。`desktop/main.cjs` 在 ready 前处理显式数据目录隔离，`stopBackend` 与后端 `_watch_desktop_pipe` 完成正常退出。
+
+冻结语音排障：`python -m greatsage --check-voice-runtime` 或包内后端同名参数 → [diagnostics.py](../greatsage/diagnostics.py) 的 `check_voice_runtime`；不连接服务、不启用设备，检查 SDK 懒加载与合成静音管线。新增依赖时同步 [greatsage-backend.spec](../greatsage-backend.spec)、[hook-deepgram.py](../scripts/hooks/hook-deepgram.py) 和[许可记录](third-party.md)。
 
 语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import secrets
@@ -34,7 +35,15 @@ def main():
     parser.add_argument("--ui-dir", type=Path)
     parser.add_argument("--shutdown-stdin", action="store_true",
                         help="Exit gracefully when the owning desktop closes stdin or sends shutdown.")
+    parser.add_argument("--check-voice-runtime", action="store_true",
+                        help="Check voice package imports and a synthetic pipeline offline; print safe JSON and exit.")
     args = parser.parse_args()
+    if args.check_voice_runtime:
+        from .diagnostics import check_voice_runtime
+
+        report = asyncio.run(check_voice_runtime())
+        print(json.dumps(report, ensure_ascii=True))
+        raise SystemExit(0 if report["ok"] else 1)
     token = os.environ.get("GREATSAGE_TOKEN") or secrets.token_urlsafe(32)
     args.data_dir.mkdir(parents=True, exist_ok=True)
     connection = args.data_dir / "connection.json"
