@@ -178,6 +178,8 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.
 
 Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first:
 
+Developer references (Chinese): [working method](agent.md), [feature-to-code map and call graphs](docs/code-map.md), [lessons learned](docs/lessons-learned.md), and [development log](docs/development-log.md).
+
 - Tests use fictional data only.
 - Never commit runtime data, recordings, transcripts or credentials.
 - Behavior changes come with updated docs and recorded test results.

@@ -184,6 +184,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | 文档 | 内容 |
 | --- | --- |
 | [项目现状](docs/project-status.md) | 已实现、已验证、仍待验收和未来目标的快速索引 |
+| [开发方法指导](agent.md) · [代码导航](docs/code-map.md) · [经验记录](docs/lessons-learned.md) | 开发约定、按功能找文件／函数、结构树与调用链、已知问题的原因和处理 |
 | [迁移方案](docs/v0.4-plan.md) · [开发日志](docs/development-log.md) · [迁移验证](docs/validation-v0.4.md) | 本轮范围、每个切片的改动和实际证据 |
 | [使用说明](docs/usage.md) | 音源、预设、记忆、资料、任务和工具授权的操作方法 |
 | [需求与验收](docs/requirements.md) | 已确认的范围、实现状态和尚待完成的验收 |

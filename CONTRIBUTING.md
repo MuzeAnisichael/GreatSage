@@ -6,12 +6,12 @@
 
 - Discuss new features in an issue first.
 - Test with fictional data only, and never commit runtime data, recordings, transcripts or credentials.
-- Run the checks below, then describe the actual results in your pull request.
+- Select checks for the affected behavior, reuse valid evidence, and report actual results; existing CI gates still apply.
 - Keep docs in sync with behavior.
 
 ## 开始之前
 
-- **先读范围文档**：阅读 [AGENTS.md](AGENTS.md)、[需求与验收](docs/requirements.md)和[项目现状](docs/project-status.md)，确认改动属于当前阶段的范围。
+- **先读范围文档**：从 [AGENTS.md](AGENTS.md)进入[开发方法指导](agent.md)，按[代码导航](docs/code-map.md)定位功能，确认改动属于当前阶段的范围；相关历史问题见[经验记录](docs/lessons-learned.md)。
 - **新功能先开 Issue**：说明使用场景和期望行为。涉及操作权限、隐私或删除语义的改动，先讨论边界再实现。
 - **一次只做一件事**：每个 Pull Request 围绕一个可以审查的问题。
 
@@ -24,7 +24,17 @@ npm.cmd ci
 npm.cmd start
 ```
 
-## 提交前的检查
+## 按改动选择检查
+
+先说明本次可能影响什么，再选择最接近该行为的现有检查。文档改动检查链接与符号；机械改名检查引用／语法；行为变更运行对应模块测试。权限、删除、取消与恢复的相关失败路径仍须覆盖。完整策略见[开发方法指导](agent.md)。
+
+例如，只涉及记忆与任务存储时：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_memory.py tests/test_tasks.py -q
+```
+
+跨模块集成或发布需要完整回归时，使用：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
@@ -32,17 +42,18 @@ npm.cmd run check
 .\.venv\Scripts\python.exe scripts/check_repository.py
 ```
 
-- **桌面界面改动**：运行一次桌面 smoke test：
+- **桌面交互链变化**：需要检查窗口、播放或任务联动时运行一次桌面 smoke test：
   ```powershell
   .\node_modules\electron\dist\electron.exe scripts/smoke_desktop.cjs --parallel-sources
   ```
   它使用隔离的数据目录，不打开麦克风，也不调用模型。
-- **界面外观改动**：重新生成 README 截图：
+- **公开截图已不能反映界面时**：重新生成 README 截图：
   ```powershell
   .\node_modules\electron\dist\electron.exe scripts/capture_screenshots.cjs --write
   ```
   截图使用虚构数据和本地演示模型，不需要 API 密钥。
 - **在 Pull Request 里如实写结果**：包括失败和跳过的项目。没有实际测量的时延或质量，不要写成“已验证”。
+- **避免重复**：可以引用适用于本次代码／配置的现有结果并说明覆盖边界，不要求每个切片重复全量测试、打包或真实模型调用；CI 与发布门槛仍保留。
 
 ## 数据与凭据
 

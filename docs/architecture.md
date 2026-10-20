@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-10-17。本文记录 v0.2 alpha、已合入 main 的 v0.3 主线，以及本迁移分支的 v0.4 框架首片。v0.4 使用通用模型适配、图编排和 MCP 协议，仍保留 GreatSage 的权限、来源／删除、实时采集与桌面职责；尚未发版。性能和兼容性见各版本验证记录。
+更新日期：2026-10-20。本文记录 v0.2 alpha、已合入 main 的 v0.3 主线，以及本迁移分支的 v0.4 框架首片。v0.4 使用通用模型适配、图编排和 MCP 协议，仍保留 GreatSage 的权限、来源／删除、实时采集与桌面职责；尚未发版。性能和兼容性见各版本验证记录。按功能定位文件、函数和调用链见[代码导航](code-map.md)。
 
 ## 1. 组成与调用关系
 
@@ -57,9 +57,13 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/materials.py（v0.3） | Markdown 导入、分块、版本、重新扫描和片段检索 |
 | greatsage/artifacts.py（v0.3） | 产物版本、引用表、待办和 Markdown 导出 |
 | greatsage/workflows.py（v0.3） | 纪要抽取的提示与 JSON Schema、条目清理、合并和渲染 |
-| greatsage/tasks.py（v0.3） | 任务与步骤持久化、任务执行、模型调用重试、审批和工具调用记录 |
+| greatsage/task_store.py | 任务／步骤／工具账本的 SQLite 持久化，复用 MemoryStore 的数据库与锁 |
+| greatsage/tasks.py（v0.3） | 任务执行、模型调用重试、审批、取消与恢复协调 |
 | greatsage/tools.py（v0.3） | 工具定义、效果分级、授权决策、工作目录沙箱、执行与撤销 |
 | ui/work.js（v0.3） | 任务、资料、产物、审批和工具设置界面 |
+| ui/memory.js、audit.js | 记忆来源、冲突、历史浏览、索引和审计控件 |
+
+存储层的 `TaskStoreMixin` 从 `task_store.py` 注入 `MemoryStore`，不再经 `tasks.py` 导入任务执行依赖。`tasks.py` 保留原符号兼容入口；表结构、事务和恢复语义保持原样。目录按当前职责组织，较大的 Runtime／路由拆分随对应功能迁移进行，避免无关搬迁。
 
 ## 2. 音频与实时响应
 
