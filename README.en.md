@@ -182,7 +182,7 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
 - **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth, entity memory and multi-agent execution are not implemented yet.
-- **Distribution:** a Windows x64 folder ZIP is available. There is no installer or code signing; clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified.
+- **Distribution:** the released Windows x64 package is a folder ZIP. v0.5 adds NSIS builds; no installer release or trusted signing is provided yet. Clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified.
 
 Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
 

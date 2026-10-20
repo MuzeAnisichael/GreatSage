@@ -94,9 +94,12 @@ GreatSage/
 ```mermaid
 flowchart LR
     C["AudioCaptureManager.start"] -. "采集线程回调 / call_soon_threadsafe" .-> Q["Runtime._enqueue"]
-    Q -. "audio_queue" .-> A["Runtime._audio_consumer / Segmenter.feed"]
-    A -. "create_task" .-> T["Runtime._transcribe → Providers.transcribe"]
-    T --> R["Runtime._route_message"]
+    Q -. "audio_queue" .-> A["Runtime._audio_consumer → SourceVoicePipeline.feed"]
+    A -. "VAD / _handle_segment" .-> T["Runtime._transcribe → Providers.transcribe"]
+    A -. "流式帧" .-> STT["Deepgram → _streaming_transcript → _flush_streaming_turn"]
+    T --> Accept["Runtime._accept_transcript"]
+    STT --> Accept
+    Accept --> R["Runtime._route_message"]
     U["POST /api/chat → Runtime.chat"] --> S["Runtime.submit_message"]
     R --> S
     S -. "reply_task" .-> O["Runtime._respond"]

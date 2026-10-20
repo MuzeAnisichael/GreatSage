@@ -153,7 +153,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 ## 8. 扩展点与尚未完成的能力
 
-提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP 已接入；原生流式 ASR、完整 AEC、MCP stdio／OAuth、实体记忆、多 Agent 和跨平台桌面采集尚未实现。当前通过 PyInstaller 冻结后端、electron-builder 打包桌面并生成 Windows x64 目录 ZIP，运行数据独立于解压目录；尚无安装器与发行签名，不能把 ZIP 构建视为干净电脑安装验收。
+提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP、Pipecat 与可选 Deepgram 原生流式 ASR 已接入；完整 AEC、MCP stdio／OAuth、实体记忆、多 Agent 和跨平台桌面采集尚未实现。PyInstaller 冻结后端，electron-builder 提供目录、ZIP 与 NSIS 构建。v0.5 安装器候选尚未公开发布或完成安装链验收，也没有受信任发行签名；构建成功不能代替干净电脑验收。
 
 ## 9. v0.3 资料、任务与工具
 

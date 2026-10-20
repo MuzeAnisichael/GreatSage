@@ -24,6 +24,14 @@
 
 首个候选（运行代码 `87559e9`）已通过冻结离线语音诊断（1585 ms）、冻结 shutdown／EOF（656／843 ms，报告 `.runtime/shutdown-smoke/9f39c4e21173cd93/`）、包内桌面 31 项（`.runtime/desktop-smoke/2026-10-20T19-14-36-329Z/result.json`）。随后发现并修复设置切换竞态；前述结果仅对应修复前候选，不冒充最终包验收。SoXR 独立 `.pyd` 和四份原许可证已确认随包存在。
 
+## 最终候选构建
+
+- 修复后的运行代码对应 `36a1e04`，PyInstaller 后端与 electron-builder NSIS 再构建成功。仅重建受到修复影响的候选，未重新调用付费服务。
+- 最终冻结后端黑盒 **14/14**：回环 HTTP、设置、模型／MCP 合成协议、重启撤销授权、重新点击后恰好一次工具执行、三类产物及监控隐私。合成模型 4 次、合成工具 1 次，无外部模型或麦克风。报告：`.runtime/backend-smoke/20261020T192046Z-cf8c87/result.json`。
+- 本地候选：`release/GreatSage-0.5.0-alpha.1-win-x64-Setup.exe`，**212,154,416 字节**，SHA256 `24382372CEBCE284E2137B4C2B4298BDF4C67D95CC84CF148C02F95993E74CE2`，无受信任发行签名。校验清单为 `release/SHA256SUMS-v0.5-candidate.txt`。构建产物留在忽略目录，未上传 v0.5 Release。
+- 候选安装器尚未执行。需要人工退出的实际安装链、跨版本升级和干净电脑检查仍属后续验收；包内桌面前一片的 31 项没有为最终服务端顺序修复重复运行，改用上述 14 项冻结接口检查。
+- GitHub Windows CI 在 `5e3cd6c` 为 **287 passed、3 skipped**，后端 smoke、前端和仓库检查通过；设置竞态新增回归之后的最终提交仍须通过 CI 再合入 main。最终合并状态以 [PR #6](https://github.com/MuzeAnisichael/GreatSage/pull/6) 为准。
+
 ## 一次同样本真实 API 检查
 
 样本为已缓存、获得授权的 Google FLEURS 中文真人朗读 `fleurs-zh-2`（CC BY 4.0），时长 7.56 秒；PCM SHA256 为 `e7a6c5052c2a438d6c825d7f27632da71fc8fb675af423602f8e29c926ebfb94`，与旧基线一致。没有播放到扬声器、打开麦克风或下载新样本。
