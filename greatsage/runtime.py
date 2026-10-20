@@ -90,7 +90,11 @@ class Runtime:
         self.generated_texts = deque(maxlen=8)
         self.recent_transcripts = deque(maxlen=20)
         self.audio_cache: dict[str, tuple[float, bytes, str]] = {}
-        self.playback_references: dict[tuple[str, str], tuple[float, bytes]] = {}
+        self.playback_references: dict[str, tuple[float, bytes]] = {}
+        self.playback_items: dict[str, dict] = {}
+        self.playback_index = -1
+        self.active_audio_id = None
+        self.pending_stop = None
         self.echo = EchoGuard()
         self.last_echo_audit = 0.0
         self.last_proactive = 0.0
@@ -100,7 +104,7 @@ class Runtime:
         self.epoch = 0
         self.data_epoch = 0
         self.capture_generation = 0
-        self.trace_times: dict[str, float] = {}
+        self.trace_times: dict[str, float | None] = {}
         self.background = BackgroundState()
         self.tasks = TaskManager(self)
 
@@ -582,6 +586,7 @@ class Runtime:
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, True))
 
     async def interrupt(self, reason="user"):
+        interrupt_started = time.perf_counter()
         self.generation += 1
         task = self.reply_task
         self.reply_task = None
@@ -592,8 +597,17 @@ class Runtime:
         self.playing = False
         self.audio_cache.clear()
         self.playback_references.clear()
+        self.playback_items.clear()
+        self.trace_times.clear()
+        self.playback_index = -1
+        self.active_audio_id = None
         self.echo.clear()
-        await self.emit("interrupt", {"reason": reason}, persist=False)
+        # Only the latest stop command can produce a receipt; it cannot restore state.
+        self.pending_stop = {"interrupt_id": uuid.uuid4().hex, "generation": self.generation,
+                             "session_id": self.session_id, "data_epoch": self.data_epoch,
+                             "started": interrupt_started}
+        await self.emit("interrupt", {"reason": reason, **{key: self.pending_stop[key]
+                        for key in ("interrupt_id", "generation", "session_id")}}, persist=False)
         await self.set_state("listening" if self.listening else "idle")
 
     def _build_context(self, message, config, proactive=False, semantic=None, tools=None):
@@ -838,6 +852,7 @@ class Runtime:
 
     async def _speak_worker(self, queue, trace, generation, speech_end, config, source_ids=None):
         index = 0
+        session_id = self.session_id
         while True:
             text = await queue.get()
             if text is None:
@@ -883,36 +898,85 @@ class Runtime:
                 reference = await asyncio.to_thread(decode_reference, result["audio"], result["mime"])
                 if generation != self.generation:
                     return False
-                self.playback_references[(trace, voice_text)] = (time.time(), reference)
+                self.playback_references[key] = (time.time(), reference)
             except (ValueError, RuntimeError):
                 await self.emit("echo_reference_unavailable", {"component": "tts"}, trace)
-            self.trace_times[trace] = speech_end
+            if generation != self.generation or session_id != self.session_id:
+                return False
+            self.trace_times.setdefault(trace, speech_end)
+            self.playback_items[key] = {"generation": generation, "session_id": session_id,
+                                        "index": index, "trace_id": trace, "text": voice_text,
+                                        "source_ids": list(source_ids or []), "created": time.time(),
+                                        "sequence": -1, "finished": False}
             await self.emit("audio", {"url": f"/api/audio/{key}", "mime": result["mime"], "text": voice_text,
-                                      "index": index}, trace, False)
+                                      "index": index, "audio_id": key, "generation": generation,
+                                      "session_id": session_id}, trace, False)
             await self.emit("metrics", {"component": "tts", "synthesis_ms": round((time.time()-started)*1000),
                                        "audio_ready_ms": round((time.time()-speech_end)*1000),
                                        "usage": result.get("usage", {}), "index": index}, trace)
             index += 1
 
-    async def playback(self, playing, text="", trace_id=""):
+    async def playback(self, playing, *, audio_id="", generation=None, session_id="",
+                       sequence=0, interrupt_id="", client_elapsed_ms=None, had_audio=False):
+        """Accept only issued clips and ordered receipts; stop acknowledgements are metadata only."""
+        if interrupt_id:
+            pending = self.pending_stop
+            if (playing or not pending or interrupt_id != pending["interrupt_id"]
+                    or generation != self.generation or generation != pending["generation"]
+                    or session_id != self.session_id or session_id != pending["session_id"]
+                    or pending["data_epoch"] != self.data_epoch):
+                return False
+            self.pending_stop = None
+            await self.emit("metrics", {"component": "playback", "session_id": session_id,
+                                       "interrupt_id": interrupt_id,
+                                       "interrupt_to_stop_ack_ms": round((time.perf_counter()-pending["started"])*1000),
+                                       "client_stop_ms": client_elapsed_ms, "had_audio": had_audio,
+                                       "measurement": "client_pause_ack_received"})
+            return True
+        item = self.playback_items.get(audio_id)
+        if (not item or generation != self.generation or generation != item["generation"]
+                or session_id != self.session_id or session_id != item["session_id"]
+                or item["finished"] or sequence <= item["sequence"]
+                or item["index"] < self.playback_index):
+            return False
+        item["sequence"] = sequence
+        item["finished"] = not playing
+        self.playback_index = item["index"]
+        already_playing = self.playing and self.active_audio_id == audio_id
+        self.active_audio_id = audio_id if playing else None
+        text, trace_id = item["text"], item["trace_id"]
         self.playing = playing
         if playing:
-            reference = self.playback_references.pop((trace_id, text), None)
+            if already_playing:
+                return True  # HTMLMediaElement may emit playing again after a buffering pause.
+            reference = self.playback_references.pop(audio_id, None)
+            self.echo.clear()
             if reference:
                 self.echo.set_reference(reference[1], time.time())
             self.played_texts.append((time.time(), text))
             await self.set_state("speaking", trace_id)
-            if trace_id in self.trace_times:
+            if self.trace_times.get(trace_id) is not None:
+                first_audio_ms = round((time.time()-self.trace_times[trace_id])*1000)
+                self.trace_times[trace_id] = None
                 await self.emit("metrics", {"component": "playback",
-                                           "first_audio_ms": round((time.time()-self.trace_times.pop(trace_id))*1000)}, trace_id)
+                                           "first_audio_ms": first_audio_ms,
+                                           "client_event_to_playing_ms": client_elapsed_ms,
+                                           "audio_id": audio_id, "source_ids": item["source_ids"],
+                                           "measurement": "client_playing_ack_received"}, trace_id)
         else:
+            self.audio_cache.pop(audio_id, None)
+            self.playback_references.pop(audio_id, None)
             self.echo.clear()
             await self.set_state("responding" if self.reply_task and not self.reply_task.done()
                                  else "listening" if self.listening else "idle", trace_id)
             if self.pending_desktop and not self.mic_speaking:
                 pending, self.pending_desktop = self.pending_desktop, None
                 await self._consider_proactive(*pending)
-        await self.emit("playback", {"playing": playing, "text": text}, trace_id)
+        await self.emit("playback", {"playing": playing, "text": text, "audio_id": audio_id,
+                                    "generation": generation, "session_id": session_id,
+                                    "index": item["index"], "sequence": sequence,
+                                    "source_ids": item["source_ids"]}, trace_id)
+        return True
 
     def _schedule_compression(self):
         if not self.compression_task or self.compression_task.done():
@@ -1114,6 +1178,9 @@ class Runtime:
                         path.unlink(missing_ok=True)
                 self.audio_cache = {k: v for k, v in self.audio_cache.items() if now-v[0] < 180}
                 self.playback_references = {k: v for k, v in self.playback_references.items() if now-v[0] < 180}
+                self.playback_items = {k: v for k, v in self.playback_items.items() if now-v["created"] < 180}
+                if self.pending_stop and time.perf_counter() - self.pending_stop["started"] > 60:
+                    self.pending_stop = None
                 next_cleanup = now + 60
             if not self._foreground_busy():
                 self._schedule_compression()

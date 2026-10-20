@@ -120,10 +120,15 @@ def test_inspector_reports_messages_context_and_memory_without_archived_bodies(c
 
 
 def test_validation_and_unavailable_audio(client):
-    session, _ = client
+    session, runtime = client
     assert session.post("/api/chat", json={"text": " "}).status_code == 400
     assert session.post("/api/listening", json={"enabled": "yes"}).status_code == 400
     assert session.post("/api/playback", json={"playing": "yes"}).status_code == 400
+    for extra in ({"generation": True}, {"sequence": -1}, {"audio_id": []},
+                  {"client_elapsed_ms": "5"}, {"had_audio": "yes"}):
+        assert session.post("/api/playback", json={"playing": True, **extra}).status_code == 400
+    assert session.post("/api/playback", json={"playing": True}).json()["accepted"] is False
+    assert not runtime.playing
     assert session.get("/api/recordings/not-a-uuid").status_code == 404
     assert session.get("/api/audio/expired-audio").status_code == 404
     assert session.get("/api/settings", headers={"Content-Length": "2000001"}).status_code == 413

@@ -2,6 +2,12 @@
 
 每个迁移切片记录修改、验证与剩余边界；版本交付见 [CHANGELOG](../CHANGELOG.md)，未来工作见[路线图](roadmap.md)。日志与对应改动同一提交，提交标识由 Git 历史追溯。
 
+## 2026-10-21 · 播放身份、迟到回执与真实事件计时
+
+- 复现并修复两处问题：打断后的旧起播回执复活 speaking；上一句迟到的 stop 清掉下一句播放状态。每句由后端签发 `audio_id/generation/session_id/index`，客户端带句内顺序号回执，后端拒绝旧代际、倒序、重复和终结后的状态；同文不同句的回声参考分开保存。
+- 打断使用一次性 `interrupt_id`，stop ack 只记指标，不修改新回复状态。`first_audio_ms` 表示 HTML `playing` 回执到达后端的上界，`interrupt_to_stop_ack_ms` 含本地消息传递；客户端另记事件至起播及 pause/reset 耗时，均不是声卡发声／静音实测。
+- 原实现 2 项回归明确失败；修复后 Runtime／HTTP 46 项通过，追加重复 playing 和无设备 AudioPlayer 检查后定向 8 项通过。前端语法通过，未调用模型或设备；没有因此重复全套历史评测。
+
 ## 2026-10-21 · 安装配置与桌面有界退出
 
 - 复用现有 electron-builder NSIS 模板，配置 x64 当前用户安装、卸载保留数据、不在安装完成后自动启动；构建脚本新增 `-Target nsis`，保留 `dir/zip`，禁止构建器自动发布。

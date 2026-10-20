@@ -170,9 +170,22 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def playback(body: dict):
         if not isinstance(body.get("playing"), bool):
             raise ValueError("playing 必须是布尔值。")
-        await runtime.playback(body["playing"], str(body.get("text", ""))[:10000],
-                               str(body.get("trace_id", ""))[:128])
-        return {"ok": True}
+        for field in ("audio_id", "session_id", "interrupt_id"):
+            if not isinstance(body.get(field, ""), str) or len(body.get(field, "")) > 128:
+                raise ValueError(f"{field} 必须是最多 128 个字符的文本。")
+        for field in ("generation", "sequence"):
+            if type(body.get(field, 0)) is not int or not 0 <= body.get(field, 0) <= 2**53:
+                raise ValueError(f"{field} 必须是非负整数。")
+        elapsed = body.get("client_elapsed_ms")
+        if elapsed is not None and (type(elapsed) not in (int, float) or not 0 <= elapsed <= 3600000):
+            raise ValueError("client_elapsed_ms 必须是有效的毫秒数。")
+        if not isinstance(body.get("had_audio", False), bool):
+            raise ValueError("had_audio 必须是布尔值。")
+        accepted = await runtime.playback(body["playing"], audio_id=body.get("audio_id", ""),
+            generation=body.get("generation"), session_id=body.get("session_id", ""),
+            sequence=body.get("sequence", 0), interrupt_id=body.get("interrupt_id", ""),
+            client_elapsed_ms=elapsed, had_audio=body.get("had_audio", False))
+        return {"ok": True, "accepted": accepted}
 
     @app.get("/api/audio/{key}", dependencies=api)
     async def audio(key: str):
