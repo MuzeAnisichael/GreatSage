@@ -190,6 +190,12 @@ class Runtime:
             return self.status()
         if enabled:
             config = self.settings.raw()
+            # Load framework/native modules before capture starts. Importing on
+            # the first PCM chunk stalls ingestion and can create artificial gaps.
+            from .voice_pipeline import SourceVoicePipeline
+            if config["asr"]["provider"] == "deepgram_streaming":
+                from .streaming_asr import _service_type
+                _service_type()
             if config["asr"]["provider"] == "faster_whisper":
                 await self.emit("model_loading", {"component": "asr", "message": "准备本地识别模型"})
                 await self.providers.load_local(self._provider("asr"))

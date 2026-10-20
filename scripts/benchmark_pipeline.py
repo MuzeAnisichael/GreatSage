@@ -194,7 +194,8 @@ def prepare(args):
     config.update(mode="conversation", global_prompt="你是 GreatSage 合成基准助手。仅用一句简短中文回答测试问题。",
                   output_language="zh-CN", voice_language="zh-CN", voice_enabled=True,
                   allow_proactive=False, microphone=True, microphone_device=None,
-                  desktop_source="none", desktop_process_id=None, record_audio=False)
+                  desktop_source="none", desktop_process_id=None, record_audio=False,
+                  tools_enabled=False, voice_approval=False, command_tool=False)
     config["llm"]["max_tokens"] = args.max_tokens
     if args.partial_interval is not None:
         config["partial_interval_seconds"] = args.partial_interval
@@ -245,6 +246,7 @@ async def run(args, *, providers=None, segmenter_factory=Segmenter) -> dict:
                        "effective_endpoint_silence_ms": math.ceil(config["endpoint_silence_ms"] / 30) * 30,
                        "timeout_seconds": args.timeout_seconds},
         "scope": {"synthetic_input": fixture is None, "hardware_capture": False, "websocket_transport": False,
+                  "tool_execution": False,
                   "actual_playback_measured": False, "human_asr_accuracy_measured": fixture is not None,
                   "timing_origin": "last PCM frame classified as speech by VAD, using the monotonic feed clock",
                   "first_text_boundary": "first nonempty Runtime response_delta received by an in-process subscriber",
