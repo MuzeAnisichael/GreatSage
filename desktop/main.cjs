@@ -229,8 +229,10 @@ async function startBackend() {
     ? path.join(process.resourcesPath, 'backend', 'greatsage-backend.exe')
     : path.join(projectRoot, '.venv', 'Scripts', 'python.exe');
   if (!fs.existsSync(executable)) throw new Error(app.isPackaged ? '找不到已打包的后端程序。请重新安装完整版本。' : '找不到项目 Python 环境。请先运行项目安装脚本，再启动 GreatSage。');
-  const args = [...(app.isPackaged ? [] : ['-m', 'greatsage']), '--port', String(port), '--data-dir', dataDir, '--exclude-pid', String(process.pid)];
-  backend = spawn(executable, args, { cwd: app.isPackaged ? dataDir : projectRoot, env: { ...process.env, GREATSAGE_TOKEN: connectionToken, PYTHONUNBUFFERED: '1' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const args = [...(app.isPackaged ? [] : ['-m', 'greatsage']), '--port', String(port), '--data-dir', dataDir, '--exclude-pid', String(process.pid), '--shutdown-stdin'];
+  backend = spawn(executable, args, { cwd: app.isPackaged ? dataDir : projectRoot, env: { ...process.env, GREATSAGE_TOKEN: connectionToken, PYTHONUNBUFFERED: '1' }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  // The private parent pipe requests normal ASGI shutdown; EOF also handles a lost desktop.
+  backend.stdin.on('error', error => writeLog(`Backend control pipe unavailable: ${error.message}`));
   pipeLog(backend.stdout, 'stdout'); pipeLog(backend.stderr, 'stderr');
   backend.on('error', error => { backendFailure = error; writeLog(`Backend launch failed: ${error.message}`); });
   backend.on('exit', (code, signal) => {
@@ -272,20 +274,43 @@ function showStartupPage(error) {
 }
 
 async function stopBackend() {
-  if (!backend || backend.exitCode !== null || backend.signalCode !== null) return;
+  if (!backend || !backend.pid || backend.exitCode !== null || backend.signalCode !== null) return;
   const child = backend;
   await new Promise(resolve => {
     let settled = false;
-    const finish = () => { if (!settled) { settled = true; clearTimeout(timer); resolve(); } };
+    let forceTimer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer); clearTimeout(forceTimer);
+      child.removeListener('exit', finish);
+      resolve();
+    };
     const timer = setTimeout(() => {
+      writeLog('Backend graceful shutdown exceeded 5 seconds; stopping the child process tree.');
+      forceTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) writeLog('Backend exit could not be confirmed before the desktop shutdown deadline.');
+        finish();
+      }, 1800);
       if (process.platform === 'win32' && child.pid) {
-        const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        killer.once('error', finish); killer.once('exit', finish);
-        setTimeout(finish, 1800);
-      } else { try { child.kill('SIGKILL'); } catch {} finish(); }
-    }, 1500);
+        try {
+          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          killer.once('error', error => writeLog(`Backend forced shutdown failed: ${error.message}`));
+          killer.once('exit', code => { if (code) writeLog(`Backend forced shutdown returned ${code}.`); });
+        } catch (error) { writeLog(`Backend forced shutdown failed: ${error.message}`); }
+      } else {
+        try { child.kill('SIGKILL'); } catch (error) { writeLog(`Backend forced shutdown failed: ${error.message}`); }
+      }
+    }, 5000);
     child.once('exit', finish);
-    try { child.kill('SIGTERM'); } catch { finish(); }
+    try {
+      if (child.stdin && !child.stdin.destroyed && child.stdin.writable) {
+        writeLog('Requesting graceful backend shutdown.');
+        child.stdin.end('shutdown\n');
+      } else {
+        writeLog('Backend control pipe is unavailable; waiting for exit before forced cleanup.');
+      }
+    } catch (error) { writeLog(`Backend shutdown request failed: ${error.message}`); }
   });
 }
 
