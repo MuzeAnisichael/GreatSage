@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — v0.4 framework migration (2026-10-17)
+## 0.4.0-alpha.1 — 2026-10-20
+
+- 将 v0.3 资料／产物／受控工具和 v0.4 通用框架迁移整合为 main 主干交付，保留各模块的小切片提交。
+- 发布完整 Windows x64 目录 ZIP 与 SHA256 校验清单；复用 electron-builder 生成归档。目录包没有安装器和发行签名，安装／升级／卸载及长时间运行仍属于后续验收。
+- 完成真实 OpenRouter + Microsoft Learn MCP 以及 Ollama `qwen3:8b` 的原生工具／逐次审批／结果回答闭环；记录预算和已装 `qwen3:4b` 模板限制。新增有界探针及可公开评测摘要，未修改用户模型。
+- 分离任务存储与执行依赖、按职责命名记忆界面；补齐开发方法、结构树、功能／函数索引、调用关系与经验记录，并统一最小充分验证约定。
+- 最新包内桌面组件 **32/32**、冻结后端 **14/14**；真实服务均为单例，未重复全量本机回归。完整范围及历史证据见 [v0.4 验证](docs/validation-v0.4.md)。
+- 下列此前 Unreleased 的迁移、v0.3、界面与文档改动均纳入本版本；历史日期和测量保留。
+
+## v0.4 framework migration — incorporated in 0.4.0-alpha.1 (2026-10-17)
 
 - 聊天改用 LangChain OpenAI 兼容与 Ollama 适配器；保留应用凭据、代理、取消、安全错误和实际用量，关闭隐式重试与继承的远端追踪。
 - 纪要和工具循环改用 LangGraph，SQLite checkpoint 只保存控制状态；逐工具 interrupt/resume 审批，等待释放执行位置，取消／重启撤销未执行授权；旧任务与原副作用账本继续有效。
@@ -10,7 +19,7 @@
 - 收尾补齐同批工具保护：已有工具结果未知时，拒绝同一条模型回复内尚未执行的后续工具，并记录原因。
 - 验证：最终源码 **229 passed、5 skipped**，源码桌面首片 **31/31**，PyInstaller 后端构建成功；迁移首片源码／冻结后端回环 HTTP、重启重新授权与三类产物各 **14/14**。真实 API／本地模型只做有限问答探测，未完成真实第三方 MCP、长时间或安装器验收。对应范围见 [v0.4 验证](docs/validation-v0.4.md)。
 
-## Unreleased — repository presentation (2026-10-01)
+## Repository presentation — incorporated in 0.4.0-alpha.1 (2026-10-01)
 
 - 重写 README，新增英文版 `README.en.md`。内容包括：
   - 居中标志与徽章，以及跟随浅色／深色模式的主截图。
@@ -21,7 +30,7 @@
 - 文档中 v0.3 的状态改为“已合入 main，尚未发版”，并记录 GitHub Windows CI 结果：211 passed、3 skipped。
 - 本段不改变运行时行为。
 
-## Unreleased — v0.3 task workflow (2026-09-30)
+## v0.3 task workflow — incorporated in 0.4.0-alpha.1 (2026-09-30)
 
 **资料与产物**
 
@@ -63,14 +72,14 @@
 - 本机无法创建符号链接，工作目录的符号链接逃逸检查被跳过；GitHub Windows CI 为 211 passed、3 skipped，这两项在 CI 上运行并通过。
 - 真实会议质量、真实桌面上的打开和命令操作、语音确认误识别、长时间运行、安装器和 MCP 尚未验证或实现。详见 [v0.3 验证](docs/validation-v0.3.md)。
 
-## Unreleased — interface (2026-09-30)
+## Interface — incorporated in 0.4.0-alpha.1 (2026-09-30)
 
 - 重新设计控制台：中性配色加单一强调色、系统字体，正文字号不小于 12 px；页面标题、运行状态和会话操作集中在顶栏；浅色／深色跟随 Windows 设置。
 - 更换为原创 Q 版猫头鹰桌宠（`ui/sage.svg`）和标志（`ui/mark.svg`）；聆听、思考、说话、摸摸各有对应动作。托盘图标和启动页使用同一标志。
 - 去掉装饰符号、英文眉题和渐变。元素 ID、接口调用和交互流程不变，本段不新增运行时功能。
 - 验证：`pytest` 187 passed、4 skipped；`npm run check` 与仓库检查通过；源码桌面 `smoke_desktop.cjs --parallel-sources` 25/25 通过（未开启麦克风，未调用模型）。
 
-## Unreleased — documentation (2026-09-29)
+## Documentation — incorporated in 0.4.0-alpha.1 (2026-09-29)
 
 - 统一 README、项目现状、需求和路线图对 v0.2 alpha 的已交付能力、测量边界与未完成验收的描述。
 - 将用户确认的 v0.3 主线记为资料检索、纪要／待办／文档产物和受控工具执行，并列出任务切换／恢复、Windows 安装及综合评测目标。

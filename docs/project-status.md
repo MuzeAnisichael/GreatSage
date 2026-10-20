@@ -1,6 +1,6 @@
 # 项目现状
 
-更新日期：2026-10-17。最近发布的版本仍为 **0.2.0-alpha.1**；v0.3 的资料、产物、任务和受控工具已合入 main，尚未发版。`codex/framework-migration` 分支完成 v0.4 模型、编排、MCP HTTP 首片和本地监控迁移，等待审阅与后续互操作验收，没有发布新版本。主要开发和验证环境是 Windows 11、Python 3.11。功能细节见[需求与验收](requirements.md)，后续顺序见[路线图](roadmap.md)，每片提交见[开发日志](development-log.md)。
+更新日期：2026-10-20。当前交付版本为 **0.4.0-alpha.1**，以 `main` 为交付主干，整合 v0.3 的资料、产物、任务与受控工具，以及 v0.4 的 LangChain 模型、LangGraph 编排／审批、MCP HTTP 和本地运行监控。Windows x64 目录 ZIP 与源码见 [Release](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1)。主要开发和验证环境是 Windows 11、Python 3.11。功能细节见[需求与验收](requirements.md)，后续顺序见[路线图](roadmap.md)，每片提交见[开发日志](development-log.md)。
 
 | 领域 | 当前进度 | 验证边界 |
 | --- | --- | --- |
@@ -8,12 +8,12 @@
 | 模型与资料 | OpenRouter／兼容 API 和 Ollama 可分别配置，聊天改用 LangChain 适配器；只读引用 Skill 文本；词法／可选语义混合检索；可导入带出处与版本的 `.md` 资料 | 只支持 `.md`；云端语义索引会发送文本；单次真实模型测试不代表通用质量或稳定延迟 |
 | 记忆 | 显式事实与偏好、跨会话原文、三级摘要、来源依赖、记忆冲突裁决、修正及删除传播；来源和部分对象有版本记录 | 普通陈述不会自动确认为用户事实；复杂关系保持、大规模历史和完整版本回滚尚未验证或实现 |
 | 审计与后台 | 动态事件、trace、默认元数据的请求快照、显式正文归档／导出；新监控页显示图节点、消息目录、上下文估算和记忆变更；后台有限批次与恢复 | 监控不展示内部思维链；尚无实体记忆、多 Agent 或远端追踪；估算不等于精确计费用量 |
-| 桌面交付 | Electron 主窗口、桌宠和托盘；本机 Windows x64 目录包可构建，包内组件通过桌面检查 | 尚无安装器、发行签名、干净电脑安装／升级／卸载验证或可下载的 GitHub Release 安装包 |
-| 任务与工具 | LangGraph 编排纪要和工具循环，SQLite checkpoint 与 interrupt/resume 审批；原权限层和账本保留；新增显式发现的 MCP HTTP 工具，逐次点击确认；Skill 仍只读 | 只用虚构会议评测过；MCP 实测为合成 HTTP 服务，第三方互操作未验收；stdio／OAuth 未接入，定时提醒不在范围内 |
+| 桌面交付 | Electron 主窗口、桌宠和托盘；提供完整 Windows x64 ZIP 与校验清单，新包内组件及冻结后端通过检查 | 目录包无安装器或发行签名；干净电脑启动／安装／升级／卸载和长期使用尚未验收 |
+| 任务与工具 | LangGraph 编排纪要和工具循环，SQLite checkpoint 与 interrupt/resume 审批；原权限层和账本保留；MCP HTTP 工具显式发现、逐次点击确认；真实 API／本地模型工具闭环通过 | 只用虚构会议评测过；第三方互操作验证限 Microsoft Learn 一次公开查询，不代表所有服务；stdio／OAuth 未接入，Skill 仍只读，定时提醒不在范围内 |
 
 ## 已有证据
 
-- v0.4 迁移首片及收尾修复：本机回归 **229 passed、5 skipped**；源码 Electron **31/31**；PyInstaller 后端构建成功，迁移首片源码／冻结后端经真实回环 HTTP 各 **14/14**，覆盖进程中断、重新授权与单次工具执行。真实 OpenRouter 与 Ollama `gemma3:4b` 简单问答通过；`qwen3:4b` 连通但回答质量未通过。各结果对应范围见 [v0.4 验证](validation-v0.4.md)。
+- v0.4 交付验收（2026-10-20）：OpenRouter `google/gemini-2.5-flash-lite` → Microsoft Learn MCP 与 Ollama `qwen3:8b` → 虚构文件的真实工具闭环通过；最新包内桌面组件 **32/32**、冻结后端重启／工具／产物 **14/14**。上下文预算和 4b 模型模板限制均已记录；这些是单例能力检查，审批走应用入口，不是人工点击／真实语音验收。CI、早期回归与本次产物边界见 [v0.4 验证](validation-v0.4.md)。
 
 - v0.2 本机自动回归 **187 passed、4 skipped**；Windows CI 对 0.2.0-alpha.1 提交通过。源码桌面 23 项、包内页面与冻结后端 29 项检查通过。测试没有打开真实麦克风。
 - 采用获得授权的公共真人朗读和真实 API 测量，完整语音管线三轮的首字 P50 约 **3.14 秒**，音频就绪 P50 约 **4.90 秒**。此前确定的首字 1–2 秒、实际语音起播 2–3 秒目标尚未达成；音频就绪也不能替代实际起播测量。
