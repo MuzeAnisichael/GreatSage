@@ -27,6 +27,7 @@ GreatSage/
 │  ├─ runtime.py                    前台交互与后台任务协调
 │  ├─ audio.py / winloopback.py      Windows 采集
 │  ├─ segmentation.py / echo.py     分段与回声抑制措施
+│  ├─ voice_pipeline.py             Pipecat 分音源生命周期、背压及固定身份
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
 │  ├─ settings.py / skills.py       配置、凭据与只读 Skill
 │  ├─ memory.py / semantic.py       记忆持久化、来源关系、向量检索
@@ -175,6 +176,8 @@ flowchart LR
 图为分支示意：需要确认的调用只有恢复并核对批准记录后才进入执行。MCP 每次调用必须点击；本地工具在线程执行。执行结果未知时停止后续工具，恢复任务也不自动重放未知操作。
 
 ## 快速定位与追溯
+
+语音管线入口：[voice_pipeline.py](../greatsage/voice_pipeline.py) 的 `VoiceIdentity`、`SourceVoicePipeline.start/feed/drain/close`；`_SegmentProcessor` 先传开始事件、后传 PCM、最后传结束事件，`_ResultProcessor` 仅回调固定身份和白名单端点信息。定向覆盖见 [test_voice_pipeline.py](../tests/test_voice_pipeline.py)；Runtime 接入状态见开发日志。
 
 真实模型／MCP 的有界验收入口是 [scripts/probe_agent_tools.py](../scripts/probe_agent_tools.py)：`run_case()` 复用 `Runtime.chat`、`TaskManager.resolve` 和工具账本；`MeasuredProviders.stream_chat()` 记录请求次数与用量。显式选择服务后才调用，公开结果见 [evals/results-v0.4.json](../evals/results-v0.4.json)。它不替代故障回归或真实鼠标／语音验收。
 

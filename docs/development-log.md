@@ -2,6 +2,12 @@
 
 每个迁移切片记录修改、验证与剩余边界；版本交付见 [CHANGELOG](../CHANGELOG.md)，未来工作见[路线图](roadmap.md)。日志与对应改动同一提交，提交标识由 Git 历史追溯。
 
+## 2026-10-21 · Pipecat 分音源管线
+
+- 固定 Pipecat 1.13.0 与 Deepgram SDK 7.14.0，复用新版 `PipelineWorker`／`WorkerRunner` 和官方语音服务。新增 `SourceVoicePipeline`，固定来源、会话及代际，串行处理 PCM、VAD、可选流式识别与结果；Windows 采集、回声和业务权限仍由 GreatSage 管理。
+- 关闭框架远端追踪、RTVI 和转写日志；队列有界，取消先使回调失效，再有界清理。PCM 与处理确认均在 Pipecat 的 SystemFrame 队列中，防止确认越过阻塞中的音频。
+- 实际 SDK 加合成 PCM 的 3 项定向检查通过（3.66 秒），覆盖来源身份、端点顺序、积压与迟到结果；未打开设备或调用远端识别。Runtime 接入与冻结兼容另行记录。
+
 ## 2026-10-21 · 播放身份、迟到回执与真实事件计时
 
 - 复现并修复两处问题：打断后的旧起播回执复活 speaking；上一句迟到的 stop 清掉下一句播放状态。每句由后端签发 `audio_id/generation/session_id/index`，客户端带句内顺序号回执，后端拒绝旧代际、倒序、重复和终结后的状态；同文不同句的回声参考分开保存。
