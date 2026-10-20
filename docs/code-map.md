@@ -40,6 +40,7 @@ GreatSage/
 │  ├─ audit.py / inspector.py       请求快照与监控聚合
 │  └─ evaluation.py                 评测辅助逻辑
 ├─ tests/                           按模块组织的回归用例
+├─ evals/                           固定评测样本与可公开的结果摘要
 ├─ scripts/                         启动、构建、评测与冒烟脚本
 ├─ docs/                            架构、需求、路线图、验证与开发记录
 ├─ .github/workflows/               CI
@@ -173,6 +174,8 @@ flowchart LR
 图为分支示意：需要确认的调用只有恢复并核对批准记录后才进入执行。MCP 每次调用必须点击；本地工具在线程执行。执行结果未知时停止后续工具，恢复任务也不自动重放未知操作。
 
 ## 快速定位与追溯
+
+真实模型／MCP 的有界验收入口是 [scripts/probe_agent_tools.py](../scripts/probe_agent_tools.py)：`run_case()` 复用 `Runtime.chat`、`TaskManager.resolve` 和工具账本；`MeasuredProviders.stream_chat()` 记录请求次数与用量。显式选择服务后才调用，公开结果见 [evals/results-v0.4.json](../evals/results-v0.4.json)。它不替代故障回归或真实鼠标／语音验收。
 
 在仓库根目录使用以下只读搜索；先缩小文件范围，不必打印整个仓库：
 
