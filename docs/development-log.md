@@ -2,6 +2,13 @@
 
 每个迁移切片记录修改、验证与剩余边界；版本交付见 [CHANGELOG](../CHANGELOG.md)，未来工作见[路线图](roadmap.md)。日志与对应改动同一提交，提交标识由 Git 历史追溯。
 
+## 2026-10-21 · 可选 Deepgram 流式识别
+
+- 新增 `deepgram_streaming` 设置与界面预设，固定 Nova-3、官方初始地址和中文／英语／日语语言范围；只使用显式配置的独立密钥。切换服务、地址或账号时清除旧组件密钥，防止旧服务凭据被转发；主动提供的新密钥仍可保存。
+- 复用 Pipecat 官方 Deepgram 服务和 SDK 连接／消息类型；薄适配关闭无限重连、禁止失败后切换提供方、保留空 Finalize 确认、仅报告安全错误码。SDK 的 TLS 重定向行为仍沿用上游，未宣称完全禁用重定向。
+- 设置页“测试连接”只验证一次鉴权 WebSocket 握手并有界关闭，不打开麦克风或发送音频，也不证明识别质量。未配置 `DEEPGRAM_API_KEY`，本轮没有真实 Deepgram 调用。
+- SDK 类型与模拟网络的 23 项检查通过（0.82 秒）；配置 42 项通过（0.50 秒）；新增 HTTP 探针检查 1 项通过（1.58 秒）。选择依据、许可证和配置边界见 [v0.5 方案](v0.5-plan.md)。
+
 ## 2026-10-21 · Pipecat 分音源管线
 
 - 固定 Pipecat 1.13.0 与 Deepgram SDK 7.14.0，复用新版 `PipelineWorker`／`WorkerRunner` 和官方语音服务。新增 `SourceVoicePipeline`，固定来源、会话及代际，串行处理 PCM、VAD、可选流式识别与结果；Windows 采集、回声和业务权限仍由 GreatSage 管理。

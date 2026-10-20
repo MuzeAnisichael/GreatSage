@@ -178,3 +178,25 @@ def test_audit_export_requires_auth_and_explicit_body_and_respects_source_deleti
     assert session.get(f'/api/records/{source["id"]}').json()['record']['text'] == source['text']
     assert session.delete(f'/api/history/{source["id"]}').status_code == 200
     assert 'snapshot private body' not in session.post(f'/api/audit/{id}/export', json={'include_content': True}).text
+
+
+def test_streaming_asr_test_only_probes_explicit_connection(client, monkeypatch):
+    from greatsage import streaming_asr
+    session, runtime = client
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "SERVER_STREAMING_FIXTURE")
+    runtime.settings.update({"asr": {"provider": "deepgram_streaming",
+        "base_url": "https://api.deepgram.com", "model": "nova-3", "language": "zh",
+        "api_key_env": "DEEPGRAM_API_KEY"}})
+    calls = []
+
+    async def probe(config):
+        calls.append(config["provider"])
+        assert config["api_key"] == "SERVER_STREAMING_FIXTURE"
+        return {"ok": True, "code": "streaming_asr_connected", "handshake_ms": 10}
+
+    monkeypatch.setattr(streaming_asr, "probe_streaming_connection", probe)
+    result = session.post("/api/providers/test", json={"component": "asr"})
+    assert result.status_code == 200 and result.json()["ok"]
+    assert "未打开麦克风" in result.json()["detail"]
+    assert calls == ["deepgram_streaming"] and not runtime.listening
+    assert "SERVER_STREAMING_FIXTURE" not in result.text

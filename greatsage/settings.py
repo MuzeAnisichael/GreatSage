@@ -245,7 +245,7 @@ def _validate(config: dict) -> dict:
         "tts": {"voice", "rate", "speed"},
         "embedding": {"enabled", "query_timeout_seconds"},
     }
-    providers = {"asr": ("openai", "openrouter", "faster_whisper"),
+    providers = {"asr": ("openai", "openrouter", "faster_whisper", "deepgram_streaming"),
                  "llm": ("openai", "openrouter", "ollama"),
                  "tts": ("openai", "openrouter", "system"),
                  "embedding": ("openai", "openrouter", "ollama")}
@@ -267,6 +267,10 @@ def _validate(config: dict) -> dict:
             language = _string(provider.get("language", ""), "asr.language", 24)
             if language and not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}", language):
                 raise ValueError("Invalid asr.language")
+            if provider["provider"] == "deepgram_streaming":
+                # Validate the same allowlist without loading the SDK or using credentials.
+                from .streaming_asr import _configuration
+                _configuration({**provider, "api_key": "configuration-validation-only"})
             if provider.get("device", "cpu") not in ("cpu", "cuda", "auto"):
                 raise ValueError("Invalid asr.device")
             if provider.get("compute_type", "int8") not in ("default", "auto", "int8", "int8_float16", "int8_float32", "int8_bfloat16", "int16", "float16", "float32", "bfloat16"):
@@ -423,6 +427,14 @@ class SettingsStore:
                 elif key.strip():
                     secret_changes[component] = key.strip()
             next_state = _validate(self._merge(clean))
+            for component in _COMPONENTS:
+                old, new = self._state[component], next_state[component]
+                if any(old.get(field) != new.get(field) for field in ("provider", "base_url", "api_key_env")):
+                    # A saved component key belongs to its previous service/account.
+                    # A provider switch must not forward it to the new destination.
+                    secret_changes.setdefault(component, None)
+                    if "api_key_env" not in clean.get(component, {}):
+                        new["api_key_env"] = ""
             old_file, next_file = self._secret_file, self._secret_file
             created: Path | None = None
             try:

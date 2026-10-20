@@ -147,6 +147,9 @@ async function saveSettings() {
 }
 
 function setupProviderExtras() {
+  const streamingNote = element('p', 'source-note', 'Deepgram 流式识别需要独立密钥，仅连接官方服务。支持中文、英语和日语；开始监听后才发送所选音源。连接失败不会自动切换服务，请停止后重新开启监听。切换服务或账号会清除该组件旧的已保存密钥。');
+  streamingNote.id = 'streaming-asr-note';
+  $('[data-provider="asr"]').append(streamingNote);
   const localAsr = element('div', 'local-provider-tools');
   localAsr.id = 'local-asr-tools';
   const prepare = element('button', 'button ghost full', '准备本地模型');
@@ -178,6 +181,11 @@ function setupProviderExtras() {
     const provider = $(`[name="${component}.provider"]`).value;
     if (provider === state.settings?.[component]?.provider) {
       for (const name of ['base_url', 'model', 'api_key_env', ...(component === 'tts' ? ['voice'] : [])]) $(`[name="${component}.${name}"]`).value = state.settings[component][name] || '';
+    } else if (component === 'asr' && provider === 'deepgram_streaming') {
+      $('[name="asr.base_url"]').value = 'https://api.deepgram.com';
+      $('[name="asr.model"]').value = 'nova-3';
+      $('[name="asr.api_key_env"]').value = 'DEEPGRAM_API_KEY';
+      $('[name="asr.language"]').value = 'zh';
     } else if (component === 'asr' && provider !== 'faster_whisper') {
       $('[name="asr.base_url"]').value = provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1';
       $('[name="asr.model"]').value = provider === 'openrouter' ? 'openai/whisper-large-v3-turbo' : 'whisper-1';
@@ -205,6 +213,7 @@ function setupProviderExtras() {
 
 function refreshProviderControls() {
   const localAsr = $('[name="asr.provider"]').value === 'faster_whisper';
+  $('#streaming-asr-note').hidden = $('[name="asr.provider"]').value !== 'deepgram_streaming';
   $('#local-asr-tools').hidden = !localAsr;
   $('#local-llm-note').hidden = $('[name="llm.provider"]').value !== 'ollama';
   for (const name of ['base_url', 'api_key_env', 'api_key']) $(`[name="asr.${name}"]`).closest('label').hidden = localAsr;

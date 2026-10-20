@@ -377,6 +377,12 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             elif component == "tts":
                 result = await runtime.providers.synthesize(config, "Great Sage is ready.", "en")
                 detail = f"已生成 {len(result['audio'])} 字节语音（未自动播放）。"
+            elif config["provider"] == "deepgram_streaming":
+                from .streaming_asr import probe_streaming_connection
+                result = await probe_streaming_connection(config)
+                if not result["ok"]:
+                    raise ProviderError("deepgram_streaming", result["code"])
+                detail = "已建立并关闭流式识别连接；未打开麦克风、发送音频或验证识别质量。"
             else:
                 sample = await runtime.providers.synthesize({"provider": "system", "voice": "", "cache_dir": str(runtime.data_dir / "models")}, "Great Sage is ready.", "en")
                 with wave.open(io.BytesIO(sample["audio"]), "rb") as wav:
