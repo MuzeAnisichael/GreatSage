@@ -8,6 +8,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '..');
+// An explicit data-directory override isolates Chromium state as well as the
+// backend. Set both paths before ready/single-instance initialization.
+if (process.env?.GREATSAGE_DATA_DIR) {
+  const profileDir = path.join(path.resolve(process.env.GREATSAGE_DATA_DIR), 'electron-profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+  app.setPath('userData', profileDir);
+  app.setPath('sessionData', profileDir);
+}
 const connectionToken = randomBytes(32).toString('hex');
 let baseUrl = '';
 let mainWindow = null;

@@ -178,6 +178,8 @@ flowchart LR
 
 ## 快速定位与追溯
 
+安装验收：[scripts/smoke_installer.ps1](../scripts/smoke_installer.ps1) 的 `Invoke-OwnedInstall`／`Invoke-OwnedUninstall`、`Assert-DataHashes` 及人工退出节点；运行前查看脚本头部边界。`desktop/main.cjs` 在 ready 前处理显式数据目录隔离，`stopBackend` 与后端 `_watch_desktop_pipe` 完成正常退出。
+
 语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
 
 语音管线入口：[voice_pipeline.py](../greatsage/voice_pipeline.py) 的 `VoiceIdentity`、`SourceVoicePipeline.start/feed/drain/close`；`_SegmentProcessor` 先传开始事件、后传 PCM、最后传结束事件，`_ResultProcessor` 仅回调固定身份和白名单端点信息。定向覆盖见 [test_voice_pipeline.py](../tests/test_voice_pipeline.py)；Runtime 接入状态见开发日志。
