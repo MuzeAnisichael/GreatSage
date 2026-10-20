@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import re
 import time
 import uuid
@@ -13,14 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .audio import AudioCaptureManager
+from .audio import AudioCaptureManager, AudioChunk
 from .background import BackgroundState
 from .budget import TokenCounter
 from .decisions import triage, default_reply, decision_messages, parse_decision, DECISION_SCHEMA, CONFLICT_SCHEMA
 from .echo import EchoGuard, decode_reference
 from .memory import MemoryStore
 from .providers import Providers
-from .segmentation import Segmenter
 from .settings import SettingsStore
 from .skills import SkillsManager
 from .semantic import chunks as embedding_chunks, fingerprint, text_hash
@@ -76,6 +76,11 @@ class Runtime:
         self.source_epochs = {}
         self.audio_gaps = {}
         self.continued_messages = {}
+        self.voice_pipelines = {}
+        self.voice_disabled = set()
+        self.voice_errors = {}
+        self.voice_closers: set[asyncio.Task] = set()
+        self.streaming_turns = {}
         self.partials: dict[str, asyncio.Task] = {}
         self.final_tasks: set[asyncio.Task] = set()
         self.locks: dict[str, asyncio.Lock] = {}
@@ -193,6 +198,8 @@ class Runtime:
             capture_generation = self.capture_generation
             config["exclude_process_id"] = self.exclude_pid
             self.segments.clear()
+            self.voice_disabled.clear()
+            self.voice_errors.clear()
             self.capture.on_state = lambda state: loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._capture_state(state, capture_generation)))
             self.capture.start(config,
@@ -216,6 +223,11 @@ class Runtime:
         if state['kind'] == 'all_sources_stopped':
             await self.set_listening(False)
             await self.emit('error', {'component': 'capture', 'message': '所有音源均已停止。请检查设备或目标进程，然后重新开启监听。'})
+        elif state["kind"] == "source_stopped":
+            label = state.get("source")
+            for source in list(self.voice_pipelines):
+                if source == label or (label == "microphone" and source.startswith("microphone")):
+                    await self._voice_failed(self._voice_identity(source), "voice_source_stopped")
 
     def _enqueue(self, chunk, capture_generation=None, epoch=None):
         if not self.listening or (capture_generation is not None and capture_generation != self.capture_generation):
@@ -231,6 +243,9 @@ class Runtime:
 
     async def _invalidate_audio(self):
         self.epoch += 1
+        pipelines = list(self.voice_pipelines.values())
+        self.voice_pipelines.clear()
+        self.streaming_turns.clear()
         tasks = list(self.partials.values()) + list(self.final_tasks)
         for task in tasks:
             task.cancel()
@@ -248,6 +263,9 @@ class Runtime:
             self.audio_queue.get_nowait()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if pipelines or self.voice_closers:
+            await asyncio.gather(*(self._close_voice_pipeline(pipeline) for pipeline in pipelines),
+                                 *list(self.voice_closers), return_exceptions=True)
 
     def _provider(self, name):
         config = self.settings.provider(name)
@@ -263,6 +281,8 @@ class Runtime:
                     continue
                 config = self.settings.raw()
                 source = chunk.source
+                if source in self.voice_disabled:
+                    continue
                 missing = self.audio_gaps.pop(source, 0)
                 sequence = getattr(chunk, 'sequence', None)
                 previous = self.audio_sequences.get(source)
@@ -271,61 +291,277 @@ class Runtime:
                     if previous is not None:
                         missing = max(missing, sequence - previous - len(chunk.pcm) // 2)
                 if missing > 0:
-                    self.source_epochs[source] = self.source_epochs.get(source, 0) + 1
-                    self.segments.pop(source, None)
-                    self.continued_messages.pop(source, None)
-                    partial = self.partials.pop(source, None)
-                    if partial: partial.cancel()
-                    self.segment_versions[source] = self.segment_versions.get(source, 0) + 1
-                    if source.startswith('microphone'): self.mic_speaking = False
-                    await self.emit('audio_gap', {'source': source, 'missing_ms': round(missing / 16), 'action': 'reset_segment'})
-                if source not in self.segments:
-                    self.segments[source] = Segmenter(
-                        config.get("endpoint_silence_ms", 550), config.get("min_speech_ms", 250),
-                        config.get("max_utterance_seconds", 20), config.get("partial_interval_seconds", 2.5))
+                    streaming = config["asr"]["provider"] == "deepgram_streaming"
+                    await self.emit('audio_gap', {'source': source, 'missing_ms': round(missing / 16),
+                        'action': 'restart_listening_required' if streaming else 'reset_segment'})
+                    if streaming:
+                        await self._voice_failed(self._voice_identity(source), "voice_source_audio_gap")
+                        continue
+                    await self._retire_voice_source(source)
+                pipeline = self.voice_pipelines.get(source)
+                if pipeline is None:
+                    from .voice_pipeline import SourceVoicePipeline
+                    identity = self._voice_identity(source)
+                    stt = None
+                    if config["asr"]["provider"] == "deepgram_streaming":
+                        from .streaming_asr import create_streaming_asr
+                        stt = create_streaming_asr(self._provider("asr"),
+                            lambda code, scope=identity: self._voice_failed(scope, code))
+                        self.streaming_turns[source] = {
+                            "origin": chunk.timestamp - len(chunk.pcm) / 32000,
+                            "settled_end": -1.0, "turn": None}
+                    pipeline = SourceVoicePipeline(identity, config, self._handle_segment,
+                        stt_processor=stt, on_transcript=self._streaming_transcript,
+                        on_error=self._voice_failed)
+                    if source in self.segments:  # Deterministic/replay instrumentation uses the same pipeline.
+                        pipeline.segmenter = self.segments[source]
+                    self.segments[source] = pipeline.segmenter
+                    self.voice_pipelines[source] = pipeline
+                    await pipeline.start()
+                    if not self._voice_current(identity):
+                        continue
                 pcm = chunk.pcm
                 if source.startswith("microphone"):
                     pcm = self.echo.filter(pcm, chunk.timestamp)
                     if self.echo.last_suppressed and time.time() - self.last_echo_audit > 1:
                         self.last_echo_audit = time.time()
                         await self.emit("echo_gate", {"source": source, **self.echo.last_decision})
-                for event in self.segments[source].feed(pcm, chunk.timestamp):
-                    if event.kind == "start":
-                        self.segment_versions[source] = self.segment_versions.get(source, 0) + 1
-                        self.continued_messages.pop(source, None)
-                        if source.startswith("microphone"):
-                            self.mic_speaking = True
-                            await self.pause_background()
-                            await self.interrupt("microphone_speech")
-                        await self.emit("speech_start", {"source": source}, persist=False)
-                    elif event.kind == "discard":
-                        if source.startswith("microphone"):
-                            self.mic_speaking = False
-                        pending = self.continued_messages.pop(source, None)
-                        if pending and pending[2] == self.segment_versions.get(source, 0):
-                            await self._route_message(pending[0], pending[1])
-                    elif event.kind == "partial":
-                        task = self.partials.get(source)
-                        if not task or task.done():
-                            self.partials[source] = asyncio.create_task(self._transcribe(
-                                source, event.pcm, False, event.speech_end,
-                                self.segment_versions.get(source, 0), epoch=epoch, session_id=self.session_id))
-                    elif event.kind == "final":
-                        if source.startswith("microphone") and not event.continued:
-                            self.mic_speaking = False
-                        task = self.partials.pop(source, None)
-                        if task:
-                            task.cancel()
-                        task = asyncio.create_task(self._transcribe(
-                            source, event.pcm, True, event.speech_end,
-                            self.segment_versions.get(source, 0), event.continued,
-                            epoch=epoch, session_id=self.session_id))
-                        self.final_tasks.add(task)
-                        task.add_done_callback(self.final_tasks.discard)
+                if not await pipeline.feed(AudioChunk(source, pcm, chunk.sample_rate, chunk.channels,
+                                                       chunk.timestamp, chunk.sequence)):
+                    await self._voice_failed(pipeline.identity, "voice_source_backpressure")
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                await self.emit("error", {"message": str(exc), "component": "audio_pipeline"})
+            except Exception:
+                if epoch == self.epoch:
+                    await self._voice_failed(self._voice_identity(chunk.source), "voice_pipeline_start_or_feed_failed")
+
+    def _voice_identity(self, source):
+        from .voice_pipeline import VoiceIdentity
+        return VoiceIdentity(source, self.session_id, self.epoch, self.source_epochs.get(source, 0))
+
+    def _voice_current(self, identity):
+        return (self.listening and identity.generation == self.epoch
+                and identity.session_id == self.session_id and identity.source not in self.voice_disabled
+                and identity.source_generation == self.source_epochs.get(identity.source, 0))
+
+    async def _close_voice_pipeline(self, pipeline):
+        try:
+            await pipeline.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self.emit("error", {"component": "audio_pipeline", "code": "voice_pipeline_cleanup_failed",
+                                     "source": pipeline.identity.source})
+
+    async def _retire_voice_source(self, source):
+        """Invalidate immediately; close outside the processor's own callback."""
+        self.source_epochs[source] = self.source_epochs.get(source, 0) + 1
+        self.segments.pop(source, None)
+        self.streaming_turns.pop(source, None)
+        self.continued_messages.pop(source, None)
+        partial = self.partials.pop(source, None)
+        if partial:
+            partial.cancel()
+        for task in self.final_tasks:
+            if getattr(task, "voice_source", None) == source and task is not asyncio.current_task():
+                task.cancel()
+        if source.startswith("microphone"):
+            self.mic_speaking = False
+        pipeline = self.voice_pipelines.pop(source, None)
+        if pipeline:
+            task = asyncio.create_task(self._close_voice_pipeline(pipeline))
+            self.voice_closers.add(task)
+            task.add_done_callback(self.voice_closers.discard)
+
+    async def _voice_failed(self, identity, code):
+        if not self._voice_current(identity):
+            return
+        source = identity.source
+        self.voice_disabled.add(source)
+        await self._retire_voice_source(source)
+        safe_code = code if re.fullmatch(r"(?:voice|streaming_asr)_[a-z_]{1,80}", str(code)) else "voice_pipeline_failed"
+        self.voice_errors[source] = safe_code
+        await self.emit("error", {"component": "audio_pipeline", "code": safe_code, "source": source,
+                                 "message": "此音源已停止处理。请关闭并重新开启监听后重试。",
+                                 "action": "restart_listening_required"})
+
+    async def _handle_segment(self, identity, event):
+        if not self._voice_current(identity):
+            return
+        source = identity.source
+        streaming = source in self.streaming_turns
+        if event.kind == "start":
+            self.segment_versions[source] = self.segment_versions.get(source, 0) + 1
+            self.continued_messages.pop(source, None)
+            if streaming:
+                state = self.streaming_turns[source]
+                if state["turn"] is not None:
+                    await self._voice_failed(identity, "streaming_asr_turn_overlap")
+                    return
+                state["turn"] = {"text": [], "chars": 0, "end_offset": state["settled_end"],
+                                 "local_end": False, "remote_end": False, "discard": False,
+                                 "remote_end_offset": -1.0,
+                                 "speech_end": 0, "pcm": bytearray(), "recording_overflow": False,
+                                 "version": self.segment_versions[source], "has_segment": False,
+                                 "timeout": None}
+            if source.startswith("microphone"):
+                self.mic_speaking = True
+                await self.pause_background()
+                await self.interrupt("microphone_speech")
+            if self._voice_current(identity):
+                await self.emit("speech_start", {"source": source}, persist=False)
+        elif streaming:
+            await self._streaming_segment(identity, event)
+        elif event.kind == "discard":
+            if source.startswith("microphone"):
+                self.mic_speaking = False
+            pending = self.continued_messages.pop(source, None)
+            if pending and pending[2] == self.segment_versions.get(source, 0):
+                await self._route_message(pending[0], pending[1])
+        elif event.kind == "partial":
+            task = self.partials.get(source)
+            if not task or task.done():
+                self.partials[source] = asyncio.create_task(self._transcribe(
+                    source, event.pcm, False, event.speech_end, self.segment_versions.get(source, 0),
+                    epoch=identity.generation, session_id=identity.session_id))
+        elif event.kind == "final":
+            if source.startswith("microphone") and not event.continued:
+                self.mic_speaking = False
+            task = self.partials.pop(source, None)
+            if task:
+                task.cancel()
+            task = asyncio.create_task(self._transcribe(
+                source, event.pcm, True, event.speech_end, self.segment_versions.get(source, 0),
+                event.continued, epoch=identity.generation, session_id=identity.session_id))
+            task.voice_source = source
+            self.final_tasks.add(task)
+            task.add_done_callback(self.final_tasks.discard)
+
+    async def _streaming_segment(self, identity, event):
+        state = self.streaming_turns.get(identity.source)
+        turn = state and state["turn"]
+        if not turn:
+            return
+        if event.kind == "final":
+            turn["has_segment"] = True
+            turn["speech_end"] = event.speech_end
+            if self.settings.raw().get("record_audio") and not turn["recording_overflow"]:
+                limit = int(self.settings.raw().get("max_utterance_seconds", 20) * 32000)
+                if len(turn["pcm"]) + len(event.pcm) <= limit:
+                    turn["pcm"].extend(event.pcm)
+                else:
+                    turn["pcm"].clear()
+                    turn["recording_overflow"] = True
+            if event.continued:
+                turn["remote_end"] = False
+                return
+            turn["local_end"] = True
+        elif event.kind == "discard":
+            # Short/noisy utterances cannot become commands through cloud recognition.
+            turn["local_end"] = True
+            if not turn["has_segment"]:
+                turn["discard"] = True
+                turn["text"].clear()
+                turn["pcm"].clear()
+        else:
+            return
+        if identity.source.startswith("microphone"):
+            self.mic_speaking = False
+        if not turn["timeout"]:
+            task = asyncio.create_task(self._streaming_finalize_timeout(identity, turn))
+            task.voice_source = identity.source
+            turn["timeout"] = task
+            self.final_tasks.add(task)
+            task.add_done_callback(self.final_tasks.discard)
+        await self._flush_streaming_turn(identity)
+
+    async def _streaming_finalize_timeout(self, identity, turn):
+        await asyncio.sleep(15)
+        state = self.streaming_turns.get(identity.source)
+        if self._voice_current(identity) and state and state["turn"] is turn:
+            await self._voice_failed(identity, "streaming_asr_finalize_timeout")
+
+    async def _streaming_transcript(self, identity, text, final, timestamp, extra):
+        """Cloud is_final means stable words, not authorization to end a local turn."""
+        if not self._voice_current(identity):
+            return
+        state = self.streaming_turns.get(identity.source)
+        turn = state and state["turn"]
+        if not turn:
+            return
+        text = text.strip()
+        if len(text) + turn["chars"] > 24000:
+            await self._voice_failed(identity, "streaming_asr_turn_too_large")
+            return
+        endpoint = final and any(extra.get(name) is True for name in ("speech_final", "from_finalize", "finalized"))
+        if text or endpoint:
+            start, duration = extra.get("start"), extra.get("duration")
+            if (type(start) not in (int, float) or type(duration) not in (int, float)
+                    or not math.isfinite(start) or not math.isfinite(duration) or min(start, duration) < 0):
+                await self._voice_failed(identity, "streaming_asr_timestamp_missing")
+                return
+            end = start + duration
+            if end <= state["settled_end"]:
+                return  # A duplicated/late interval from an already committed turn.
+        if text:
+            if final and start < turn["end_offset"] - .001:
+                await self._voice_failed(identity, "streaming_asr_segment_overlap")
+                return
+            if final:
+                if not turn["discard"]:
+                    turn["text"].append(text)
+                    turn["chars"] += len(text)
+                turn["end_offset"] = end
+            if not final:
+                await self.emit("transcript", {"text": " ".join([*turn["text"], text]),
+                    "source": identity.source, "final": False}, persist=False)
+            turn["remote_end"] = endpoint
+        elif endpoint:
+            turn["remote_end"] = True  # An empty Finalize acknowledgement must release prior stable words.
+        if final and endpoint:
+            turn["remote_end"] = True
+            turn["remote_end_offset"] = end
+            turn["end_offset"] = max(turn["end_offset"], end)
+        await self._flush_streaming_turn(identity)
+
+    async def _flush_streaming_turn(self, identity):
+        if not self._voice_current(identity):
+            return
+        state = self.streaming_turns.get(identity.source)
+        turn = state and state["turn"]
+        if not turn or not turn["local_end"] or not turn["remote_end"]:
+            return
+        if not turn["discard"] and turn["remote_end_offset"] + .3 < turn["speech_end"] - state["origin"]:
+            return  # A cloud boundary before the last locally voiced audio cannot end this turn.
+        state["turn"] = None
+        state["settled_end"] = max(state["settled_end"], turn["end_offset"])
+        if turn["timeout"] and turn["timeout"] is not asyncio.current_task():
+            turn["timeout"].cancel()
+        if turn["discard"] or not turn["text"]:
+            return
+        task = asyncio.create_task(self._commit_streaming_turn(identity, turn, self.data_epoch))
+        task.voice_source = identity.source
+        self.final_tasks.add(task)
+        task.add_done_callback(self.final_tasks.discard)
+
+    async def _commit_streaming_turn(self, identity, turn, data_epoch):
+        try:
+            if not self._voice_current(identity) or data_epoch != self.data_epoch:
+                return
+            await self.emit("metrics", {"component": "asr", "streaming": True, "final": True,
+                "source": identity.source,
+                "speech_end_to_stable_transcript_ms": max(0, round((time.time()-turn["speech_end"])*1000)),
+                "measurement": "local_vad_end_and_remote_finalize"})
+            await self._accept_transcript(identity.source, " ".join(turn["text"]), True,
+                turn["speech_end"], turn["version"], False,
+                pcm=bytes(turn["pcm"]) if not turn["recording_overflow"] else None,
+                epoch=identity.generation, data_epoch=data_epoch, session_id=identity.session_id,
+                source_epoch=identity.source_generation, trace_id=uuid.uuid4().hex,
+                extra={"streaming": True, "recording_truncated": turn["recording_overflow"]})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self._voice_failed(identity, "streaming_asr_commit_failed")
 
     async def _transcribe(self, source, pcm, final, speech_end, version, continued=False, *, epoch=None, session_id=None):
         epoch = self.epoch if epoch is None else epoch
@@ -338,66 +574,16 @@ class Runtime:
         try:
             lock = self.locks.setdefault(source, asyncio.Lock())
             async with lock:
-                if epoch != self.epoch or not self.listening:
+                if epoch != self.epoch or not self.listening or source in self.voice_disabled:
                     return
                 invoked = True
                 result = await self.providers.transcribe(self._provider("asr"), pcm)
             await self.emit('metrics', {'component': 'asr', 'final': final, 'latency_ms': round((time.time()-started)*1000),
                                        'audio_seconds': len(pcm)/32000, 'usage': result.get('usage', {})}, trace_id,
                             persist=data_epoch == self.data_epoch)
-            if epoch != self.epoch or data_epoch != self.data_epoch or session_id != self.session_id:
-                return
-            if not final and version != self.segment_versions.get(source, 0):
-                return
-            if not self.listening:
-                return
-            if source_epoch != self.source_epochs.get(source, 0):
-                await self.emit('suppressed', {'reason': 'audio_gap', 'source': source}, trace_id)
-                return
-            text = result.get("text", "").strip()
-            if not text:
-                return
-            await self.emit("transcript", {"text": text, "source": source, "final": final},
-                            trace_id, persist=False)
-            if not final:
-                return
-            now = time.time()
-            normalized = re.sub(r"\W", "", text).casefold()
-            own = [(t, re.sub(r"\W", "", s).casefold()) for t, s in self.played_texts]
-            # A user may deliberately quote or repeat us. Never drop microphone
-            # speech based on text similarity alone; the acoustic gate handles
-            # only high-confidence reference copies before VAD.
-            if not source.startswith("microphone") and len(normalized) > 5 and any(now - t < 20 and normalized in s for t, s in own):
-                await self.emit("suppressed", {"reason": "assistant_audio_echo", "source": source}, trace_id)
-                return
-            if any(now - t < 3 and normalized == s and oldsource != source
-                   for t, s, oldsource in self.recent_transcripts):
-                await self.emit("suppressed", {"reason": "duplicate_sources", "source": source}, trace_id)
-                return
-            self.recent_transcripts.append((now, normalized, source))
-            message = self.memory.add_message("user" if source.startswith("microphone") else "observation",
-                                             text, source, session_id, trace_id,
-                                             {"speech_end": speech_end, "asr_model": self._provider("asr")["model"]})
-            await self.emit("user_message" if message["role"] == "user" else "observation_message",
-                            {**message, "source_ids": [message["id"]]}, trace_id)
-            await self._remember_explicit(message)
-            if self.settings.raw().get("record_audio"):
-                recording = self.data_dir / "recordings" / f"{message['id']}.wav"
-                recording.parent.mkdir(exist_ok=True)
-                with wave.open(str(recording), "wb") as output:
-                    output.setnchannels(1); output.setsampwidth(2); output.setframerate(16000)
-                    output.writeframes(pcm)
-                await self.emit("recording_saved", {"message_id": message["id"], "source_ids": [message["id"]]}, trace_id)
-            if continued:
-                segment = self.segments.get(source)
-                if segment is None or segment.active:
-                    self.continued_messages[source] = (message, speech_end, version)
-                    await self.emit("decision", {"action": "observe", "reason": "speaker_continues",
-                                                 "source_ids": [message["id"]]}, trace_id)
-                    self._schedule_compression()
-                    return
-            self.continued_messages.pop(source, None)
-            await self._route_message(message, speech_end)
+            await self._accept_transcript(source, result.get("text", "").strip(), final, speech_end,
+                version, continued, pcm=pcm, epoch=epoch, data_epoch=data_epoch, session_id=session_id,
+                source_epoch=source_epoch, trace_id=trace_id)
         except asyncio.CancelledError:
             if invoked and data_epoch == self.data_epoch:
                 await self.emit('usage', {'component': 'asr', 'final': final, 'audio_seconds': len(pcm)/32000,
@@ -406,6 +592,65 @@ class Runtime:
         except Exception as exc:
             if epoch == self.epoch:
                 await self.emit("error", {"message": str(exc), "component": "asr", "source": source}, trace_id)
+
+    async def _accept_transcript(self, source, text, final, speech_end, version, continued, *,
+                                 pcm, epoch, data_epoch, session_id, source_epoch, trace_id, extra=None):
+        def current():
+            return (epoch == self.epoch and data_epoch == self.data_epoch and session_id == self.session_id
+                    and self.listening and source not in self.voice_disabled
+                    and source_epoch == self.source_epochs.get(source, 0)
+                    and (not extra or not extra.get("streaming")
+                         or version == self.segment_versions.get(source, 0)))
+        if not current() or not text or (not final and version != self.segment_versions.get(source, 0)):
+            return
+        await self.emit("transcript", {"text": text, "source": source, "final": final}, trace_id, persist=False)
+        if not current() or not final:
+            return
+        now = time.time()
+        normalized = re.sub(r"\W", "", text).casefold()
+        own = [(t, re.sub(r"\W", "", s).casefold()) for t, s in self.played_texts]
+        # A user may quote us; only desktop observations use text echo suppression.
+        if not source.startswith("microphone") and len(normalized) > 5 and any(now-t < 20 and normalized in s for t, s in own):
+            await self.emit("suppressed", {"reason": "assistant_audio_echo", "source": source}, trace_id)
+            return
+        if any(now-t < 3 and normalized == s and oldsource != source for t, s, oldsource in self.recent_transcripts):
+            await self.emit("suppressed", {"reason": "duplicate_sources", "source": source}, trace_id)
+            return
+        self.recent_transcripts.append((now, normalized, source))
+        message = self.memory.add_message("user" if source.startswith("microphone") else "observation",
+            text, source, session_id, trace_id,
+            {"speech_end": speech_end, "asr_model": self._provider("asr")["model"], **(extra or {})})
+        await self.emit("user_message" if message["role"] == "user" else "observation_message",
+                        {**message, "source_ids": [message["id"]]}, trace_id)
+        if not current():
+            return
+        await self._remember_explicit(message)
+        if not current():
+            return
+        if self.settings.raw().get("record_audio"):
+            if pcm:
+                recording = self.data_dir / "recordings" / f"{message['id']}.wav"
+                recording.parent.mkdir(exist_ok=True)
+                with wave.open(str(recording), "wb") as output:
+                    output.setnchannels(1); output.setsampwidth(2); output.setframerate(16000)
+                    output.writeframes(pcm)
+                await self.emit("recording_saved", {"message_id": message["id"], "source_ids": [message["id"]]}, trace_id)
+            elif extra and extra.get("recording_truncated"):
+                await self.emit("recording_skipped", {"reason": "streaming_turn_exceeds_buffer",
+                    "message_id": message["id"], "source_ids": [message["id"]]}, trace_id)
+        if not current():
+            return
+        if continued:
+            segment = self.segments.get(source)
+            if segment is None or segment.active:
+                self.continued_messages[source] = (message, speech_end, version)
+                await self.emit("decision", {"action": "observe", "reason": "speaker_continues",
+                                             "source_ids": [message["id"]]}, trace_id)
+                if current():
+                    self._schedule_compression()
+                return
+        self.continued_messages.pop(source, None)
+        await self._route_message(message, speech_end)
 
     async def _route_message(self, message, speech_end):
         if message["source"].startswith("microphone"):

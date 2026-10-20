@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -218,6 +219,9 @@ class SourceVoicePipeline:
         return "running" if self._started else "starting"
 
     async def start(self) -> None:
+        # Upstream debugger hooks execute arbitrary files from this environment
+        # variable. GreatSage only loads Skills as text and never opts into hooks.
+        os.environ.pop("PIPECAT_SETUP_FILES", None)
         if self._closed:
             raise RuntimeError("Cannot restart a closed voice pipeline")
         if self._runner_task is None:

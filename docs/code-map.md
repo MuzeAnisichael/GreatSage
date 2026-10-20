@@ -200,4 +200,23 @@ git blame -L '/async def _call/,+25' -- greatsage/tasks.py
 
 一次问题优先关联 `trace_id` → `task_id` / `call_id` → 请求快照与事件；快照全文默认关闭，监控页不等于完整请求档案。排查源码时不打印运行目录中的密钥、录音或私人会话。结论、原因、修复和验证边界写入 [development-log.md](development-log.md)，架构取舍回链到对应设计文档。
 
-当前尚未实现：Pipecat 语音迁移、LangMem / 实体记忆、Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth、原生安装器。上述目录或符号不能被当成这些能力已经交付的证据；新增能力时同步本页对应行和调用链。
+当前尚未实现：LangMem / 实体记忆、Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
+
+### v0.5 音源、话轮与取消链
+
+```mermaid
+flowchart LR
+    Capture[Windows capture] --> Queue[Runtime._enqueue / _audio_consumer]
+    Queue --> Pipe[SourceVoicePipeline.feed]
+    Pipe --> Segment[Runtime._handle_segment]
+    Segment --> Batch[Providers.transcribe]
+    Pipe --> STT[Deepgram 官方流式服务]
+    STT --> Turn[Runtime._streaming_transcript / _flush_streaming_turn]
+    Batch --> Accept[Runtime._accept_transcript]
+    Turn --> Accept
+    Accept --> Route[记忆 / _route_message / 原权限入口]
+    Cancel[停听 / 删除 / 会话切换] --> Invalidate[_invalidate_audio]
+    Invalidate --> Close[SourceVoicePipeline.close]
+```
+
+丢帧／积压排障从 `_voice_failed`、`_retire_voice_source` 和 `voice_errors` 开始；流式端点排障看 `_streaming_segment`／`_streaming_finalize_timeout`。`_voice_current` 与提交阶段 `current()` 核验固定身份；后台任务不能通过旧身份写回。相关覆盖：[test_voice_runtime.py](../tests/test_voice_runtime.py)。

@@ -1,5 +1,6 @@
 """Real Pipecat lifecycle checks; no hardware, service, or recorded speech."""
 import asyncio
+import os
 import struct
 
 import pytest
@@ -58,7 +59,11 @@ class RecordingSTT(FrameProcessor):
 
 
 @pytest.mark.asyncio
-async def test_real_pipeline_segments_each_source_with_immutable_identity():
+async def test_real_pipeline_segments_each_source_with_immutable_identity(tmp_path, monkeypatch):
+    marker = tmp_path / "unexpected-hook.txt"
+    hook = tmp_path / "setup-hook.py"
+    hook.write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+    monkeypatch.setenv("PIPECAT_SETUP_FILES", str(hook))
     events = []
 
     async def capture(identity, event):
@@ -71,6 +76,8 @@ async def test_real_pipeline_segments_each_source_with_immutable_identity():
     first.segmenter.vad = second.segmenter.vad = DeterministicVAD()
     try:
         await asyncio.gather(first.start(), second.start())
+        assert "PIPECAT_SETUP_FILES" not in os.environ
+        assert not marker.exists()
         await first.feed(AudioChunk(microphone.source, VOICE * 4, timestamp=10))
         await second.feed(AudioChunk(desktop.source, VOICE * 3, timestamp=20))
         await first.feed(AudioChunk(microphone.source, QUIET * 3, timestamp=10.1))
