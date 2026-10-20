@@ -178,6 +178,8 @@ flowchart LR
 
 ## 快速定位与追溯
 
+语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
+
 语音管线入口：[voice_pipeline.py](../greatsage/voice_pipeline.py) 的 `VoiceIdentity`、`SourceVoicePipeline.start/feed/drain/close`；`_SegmentProcessor` 先传开始事件、后传 PCM、最后传结束事件，`_ResultProcessor` 仅回调固定身份和白名单端点信息。定向覆盖见 [test_voice_pipeline.py](../tests/test_voice_pipeline.py)；Runtime 接入状态见开发日志。
 
 流式服务配置：[settings.py](../greatsage/settings.py) 的 `_validate`／`SettingsStore.update` → [streaming_asr.py](../greatsage/streaming_asr.py) 的 `_configuration`；实例化由 `create_streaming_asr` 完成，`probe_streaming_connection` 负责无音频连接检查。界面入口为“设置 → 语音识别 → Deepgram 流式识别”，对应 `setupProviderExtras` 与 `/api/providers/test`；[test_streaming_asr.py](../tests/test_streaming_asr.py) 覆盖单连接、空 Finalize、错误／取消和无正文日志。
