@@ -12,19 +12,22 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+
+from langgraph.types import interrupt
 
 from .budget import TokenCounter
 from .materials import chunk_label
 from .providers import ProviderError
-from .tools import (EFFECT_LABELS, NO_STANDING_ALLOW, SPECS, VOICE_APPROVABLE, ToolError, ToolRunner, decide,
+# Re-export the store and timestamp helper for existing task/graph imports.
+from .task_store import ACTIVE, TaskStoreMixin, _now
+from .tools import (EFFECT_LABELS, NO_STANDING_ALLOW, SPECS, VOICE_APPROVABLE, ToolError, ToolOutcomeUnknown, ToolRunner, decide,
                     definitions, validate_arguments, voice_intent)
 from .workflows import (EXTRACT_SCHEMA, SUMMARY_SCHEMA, clean_extraction, clean_markers, document_messages,
                         extract_messages, keep_sources, language_name, merge_extractions, render_minutes,
                         summary_messages)
 from .artifacts import todo_line
 
-ACTIVE = ("queued", "running", "waiting_approval")
 FINISHED_CALLS = ("succeeded", "failed", "denied", "unknown", "undone")
 MAX_ROUNDS = 4
 # A model call has no side effects, so a transient provider failure is retried
@@ -33,14 +36,6 @@ MAX_ROUNDS = 4
 RETRY_DELAYS = (1.0, 3.0)
 RETRYABLE = {"upstream_error", "upstream_stream_error", "upstream_unavailable", "rate_limited",
              "stream_ended_before_completion", "connection_failed"}
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
-
-def _json(value) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 class TaskError(RuntimeError):
@@ -53,186 +48,26 @@ def assistant_calls(text: str, calls: list[dict]) -> dict:
                             "function": {"name": call["name"], "arguments": call["arguments"]}} for call in calls]}
 
 
-class TaskStoreMixin:
-    def _init_tasks(self):
-        self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
-                origin TEXT NOT NULL, session_id TEXT NOT NULL, trace_id TEXT NOT NULL, params TEXT NOT NULL,
-                state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS task_steps (
-                task_id TEXT NOT NULL, ordinal INTEGER NOT NULL, name TEXT NOT NULL, title TEXT NOT NULL,
-                status TEXT NOT NULL, detail TEXT NOT NULL, result TEXT, started_at TEXT, finished_at TEXT,
-                PRIMARY KEY(task_id, ordinal));
-            CREATE TABLE IF NOT EXISTS tool_calls (
-                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, call_key TEXT NOT NULL, tool TEXT NOT NULL,
-                arguments TEXT NOT NULL, effect TEXT NOT NULL, target TEXT NOT NULL, decision TEXT NOT NULL,
-                reason TEXT NOT NULL, status TEXT NOT NULL, approval TEXT, result TEXT, undo TEXT, error TEXT,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, call_key));
-        """)
-
-    @staticmethod
-    def _decode(row, *fields) -> dict:
-        value = dict(row)
-        for field in fields:
-            if value.get(field) is not None:
-                value[field] = json.loads(value[field])
-        return value
-
-    def create_task(self, kind: str, title: str, origin: str, session_id: str, trace_id: str, params: dict,
-                    steps: list[tuple[str, str]], state: dict | None = None) -> str:
-        id, stamp = uuid.uuid4().hex, _now()
-        with self._lock, self._db:
-            self._db.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                             (id, kind, title[:120], "queued", origin, session_id, trace_id, _json(params),
-                              _json(state or {}), None, stamp, stamp))
-            self._db.executemany("INSERT INTO task_steps VALUES (?,?,?,?,?,?,?,?,?)",
-                                 [(id, ordinal, name, step_title, "pending", "{}", None, None, None)
-                                  for ordinal, (name, step_title) in enumerate(steps)])
-        return id
-
-    def update_task(self, id: str, **fields) -> None:
-        for key in ("params", "state"):
-            if key in fields:
-                fields[key] = _json(fields[key])
-        with self._lock, self._db:
-            assignments = ",".join(f"{key}=?" for key in fields)
-            self._db.execute(f"UPDATE tasks SET {assignments},updated_at=? WHERE id=?", [*fields.values(), _now(), id])
-
-    def update_step(self, task_id: str, name: str, **fields) -> None:
-        for key in ("detail", "result"):
-            if key in fields and fields[key] is not None:
-                fields[key] = _json(fields[key])
-        with self._lock, self._db:
-            assignments = ",".join(f"{key}=?" for key in fields)
-            self._db.execute(f"UPDATE task_steps SET {assignments} WHERE task_id=? AND name=?", [*fields.values(), task_id, name])
-
-    def step(self, task_id: str, name: str) -> dict:
-        with self._lock:
-            row = self._db.execute("SELECT * FROM task_steps WHERE task_id=? AND name=?", (task_id, name)).fetchone()
-            if not row:
-                raise KeyError(f"{task_id}:{name}")
-            return self._decode(row, "detail", "result")
-
-    def task(self, id: str) -> dict:
-        with self._lock:
-            row = self._db.execute("SELECT * FROM tasks WHERE id=?", (id,)).fetchone()
-            if not row:
-                raise KeyError(id)
-            steps = [self._decode(item, "detail") for item in self._db.execute(
-                "SELECT task_id,ordinal,name,title,status,detail,started_at,finished_at FROM task_steps WHERE task_id=? ORDER BY ordinal", (id,))]
-            calls = [self.tool_call(item[0]) for item in self._db.execute(
-                "SELECT id FROM tool_calls WHERE task_id=? ORDER BY created_at", (id,))]
-        return {**self._decode(row, "params", "state"), "steps": steps, "tool_calls": calls,
-                "artifacts": self.artifacts(task_id=id)}
-
-    def task_summary(self, id: str) -> dict:
-        task = self.task(id)
-        current = next((step for step in task["steps"] if step["status"] in ("running", "pending")), None)
-        done = sum(step["status"] == "succeeded" for step in task["steps"])
-        pending = sum(call["status"] == "awaiting_approval" for call in task["tool_calls"])
-        return {key: task[key] for key in ("id", "kind", "title", "status", "origin", "session_id", "trace_id", "error",
-                                           "created_at", "updated_at")} | {
-            "steps_done": done, "steps_total": len(task["steps"]), "pending_approvals": pending,
-            "current_step": current["title"] if current else "", "progress": (current or {}).get("detail", {}).get("progress", ""),
-            "artifact_ids": [item["id"] for item in task["artifacts"]]}
-
-    def tasks(self, limit: int = 50) -> list[dict]:
-        with self._lock:
-            ids = [row[0] for row in self._db.execute("SELECT id FROM tasks ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),))]
-        return [self.task_summary(id) for id in ids]
-
-    def finish_task(self, id: str, status: str, error: str | None) -> None:
-        with self._lock, self._db:
-            self._db.execute("UPDATE task_steps SET status=?,finished_at=? WHERE task_id=? AND status='running'",
-                             (status if status != "succeeded" else "succeeded", _now(), id))
-            self._db.execute("UPDATE tasks SET status=?,error=?,updated_at=? WHERE id=?", (status, error, _now(), id))
-
-    def reset_unfinished_steps(self, id: str) -> None:
-        with self._lock, self._db:
-            self._db.execute("UPDATE task_steps SET status='pending',detail='{}',started_at=NULL,finished_at=NULL WHERE task_id=? AND status!='succeeded'", (id,))
-            self._db.execute("UPDATE tasks SET status='queued',error=NULL,updated_at=? WHERE id=?", (_now(), id))
-
-    def recover_tasks(self) -> list[str]:
-        """After a restart nothing is running: mark work interrupted, never replay it."""
-        with self._lock, self._db:
-            ids = [row[0] for row in self._db.execute(f"SELECT id FROM tasks WHERE status IN {ACTIVE}")]
-            self._db.execute("UPDATE task_steps SET status='interrupted' WHERE status='running'")
-            self._db.execute("UPDATE tool_calls SET status='unknown',error='应用在执行期间关闭，结果未知，不会自动重试。',updated_at=? WHERE status='running'", (_now(),))
-            self._db.execute("UPDATE tool_calls SET status='expired',updated_at=? WHERE status IN ('awaiting_approval','proposed','approved')", (_now(),))
-            self._db.execute(f"UPDATE tasks SET status='interrupted',updated_at=? WHERE status IN {ACTIVE}", (_now(),))
-        return ids
-
-    def purge_task_bodies(self, id: str | None = None) -> None:
-        """Drop intermediate copies of source text; artifacts and call metadata remain."""
-        where, args = ("WHERE task_id=?", [id]) if id else ("", [])
-        with self._lock, self._db:
-            self._db.execute(f"UPDATE task_steps SET result=NULL {where} {'AND' if id else 'WHERE'} name IN ('collect','extract','act')", args)
-            if id:
-                self._db.execute("UPDATE tasks SET state='{}' WHERE id=?", (id,))
-            else:
-                self._db.execute(f"UPDATE tasks SET state='{{}}' WHERE status NOT IN {ACTIVE}")
-
-    def _clear_task_history(self) -> None:
-        self._db.execute("UPDATE task_steps SET result=NULL WHERE name IN ('collect','extract','act')")
-        self._db.execute("UPDATE tasks SET state='{}'")
-        self._db.execute("""UPDATE tool_calls SET arguments='{"redacted":true}',result=NULL
-                            WHERE tool IN ('write_file','create_minutes_task','search_materials','run_command')""")
-
-    def delete_task(self, id: str) -> None:
-        with self._lock, self._db:
-            row = self._db.execute("SELECT status FROM tasks WHERE id=?", (id,)).fetchone()
-            if not row:
-                raise KeyError(id)
-            if row[0] in ACTIVE:
-                raise ValueError("请先取消正在进行的任务。")
-            for table in ("task_steps", "tool_calls"):
-                self._db.execute(f"DELETE FROM {table} WHERE task_id=?", (id,))
-            self._db.execute("DELETE FROM tasks WHERE id=?", (id,))
-
-    def add_tool_call(self, task_id: str, call_key: str, tool: str, arguments: dict, effect: str, target: str,
-                      decision: str, reason: str, status: str, error: str | None = None) -> dict:
-        id, stamp = uuid.uuid4().hex, _now()
-        with self._lock, self._db:
-            self._db.execute("INSERT INTO tool_calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                             (id, task_id, call_key, tool, _json(arguments), effect, target[:1000], decision, reason,
-                              status, None, None, None, error, stamp, stamp))
-        return self.tool_call(id)
-
-    def update_tool_call(self, id: str, **fields) -> dict:
-        for key in ("approval", "result", "undo"):
-            if key in fields and fields[key] is not None:
-                fields[key] = _json(fields[key])
-        with self._lock, self._db:
-            assignments = ",".join(f"{key}=?" for key in fields)
-            self._db.execute(f"UPDATE tool_calls SET {assignments},updated_at=? WHERE id=?", [*fields.values(), _now(), id])
-        return self.tool_call(id)
-
-    def tool_call(self, id: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute("SELECT * FROM tool_calls WHERE id=?", (id,)).fetchone()
-            return self._decode(row, "arguments", "approval", "result", "undo") if row else None
-
-    def tool_call_by_key(self, task_id: str, call_key: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute("SELECT id FROM tool_calls WHERE task_id=? AND call_key=?", (task_id, call_key)).fetchone()
-        return self.tool_call(row[0]) if row else None
-
-    def pending_tool_calls(self) -> list[dict]:
-        with self._lock:
-            ids = [row[0] for row in self._db.execute("SELECT id FROM tool_calls WHERE status='awaiting_approval' ORDER BY created_at")]
-        return [self.tool_call(id) for id in ids]
-
-
 class TaskManager:
     def __init__(self, runtime):
+        from .agent_graph import AgentGraphs
+        from .mcp_tools import MCPTools
         self.runtime = runtime
         self.jobs: dict[str, asyncio.Task] = {}
-        self.approvals: dict[str, asyncio.Future] = {}
+        self.approvals: set[str] = set()
+        self.approval_lock = asyncio.Lock()
         self.grants: dict[str, set[str]] = {}
         self.slot = asyncio.Semaphore(1)
         self.closing = False
         self.runner = ToolRunner(runtime.data_dir, runtime.memory, runtime.settings.raw)
+        self.graphs = AgentGraphs(self)
+        self.mcp = MCPTools(runtime.settings.raw)
+
+    def specs(self):
+        return SPECS | self.mcp.specs
+
+    def tool_definitions(self):
+        return definitions(self.runtime.settings.raw(), self.mcp.specs.values())
 
     @property
     def memory(self):
@@ -248,15 +83,37 @@ class TaskManager:
         for job in jobs:
             job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
+        for call_id in tuple(self.approvals):
+            call = self.memory.tool_call(call_id)
+            if call:
+                self.memory.finish_task(call["task_id"], "interrupted", None)
+                self._expire_approvals(call["task_id"])
+        await self.graphs.close()
 
     async def changed(self, id: str) -> None:
         summary = self.memory.task_summary(id)
         await self.runtime.emit("task_updated", summary, summary["trace_id"], persist=False)
 
-    def _schedule(self, id: str) -> None:
-        job = asyncio.create_task(self._run(id))
+    def _schedule(self, id: str, approval=None) -> None:
+        job = asyncio.create_task(self._run(id, approval))
         self.jobs[id] = job
-        job.add_done_callback(lambda _: self.jobs.pop(id, None))
+        def completed(done):
+            if self.jobs.get(id) is done:
+                self.jobs.pop(id, None)
+        job.add_done_callback(completed)
+
+    def _expire_approvals(self, id: str) -> None:
+        for call in self.memory.task(id)["tool_calls"]:
+            self.approvals.discard(call["id"])
+            if call["status"] in ("proposed", "awaiting_approval", "approved"):
+                self.memory.update_tool_call(call["id"], status="expired", approval=None)
+        self.grants.pop(id, None)
+
+    async def invalidate(self) -> None:
+        ids = set(self.jobs) | {call["task_id"] for call in self.memory.pending_tool_calls()}
+        for id in ids:
+            if self.memory.task(id)["status"] in ACTIVE:
+                await self.cancel(id)
 
     async def cancel(self, id: str) -> dict:
         task = self.memory.task(id)
@@ -266,9 +123,10 @@ class TaskManager:
         if job:
             job.cancel()
             await asyncio.gather(job, return_exceptions=True)
-        else:
+        if self.memory.task(id)["status"] in ACTIVE:
             self.memory.finish_task(id, "cancelled", None)
             await self.changed(id)
+        self._expire_approvals(id)
         return self.memory.task_summary(id)
 
     async def resume(self, id: str) -> dict:
@@ -277,13 +135,17 @@ class TaskManager:
             raise ValueError("只有中断、失败或已取消的任务可以继续。")
         if task["kind"] == "action" and not task["state"].get("messages"):
             raise ValueError("这项操作的上下文已清除，请重新发起请求。")
+        if any(call["status"] == "expired" for call in task["tool_calls"]):
+            # Drop obsolete resume values after cancellation/restart. Canonical
+            # task cursors and the execution ledger retain completed work.
+            await self.graphs.delete(id)
         self.memory.reset_unfinished_steps(id)
         await self.changed(id)
         self._schedule(id)
         return self.memory.task_summary(id)
 
-    async def _run(self, id: str) -> None:
-        status, error = "succeeded", None
+    async def _run(self, id: str, approval=None) -> None:
+        status, error, waiting = "succeeded", None, False
         try:
             async with self.slot:
                 task = self.memory.task(id)
@@ -291,7 +153,7 @@ class TaskManager:
                     return
                 self.memory.update_task(id, status="running", error=None)
                 await self.changed(id)
-                await (self._run_minutes if task["kind"] == "minutes" else self._run_action)(task)
+                waiting = await self.graphs.run(task, approval)
         except asyncio.CancelledError:
             status = "interrupted" if self.closing else "cancelled"
             raise
@@ -302,13 +164,9 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001 - reported as a task failure, never swallowed silently
             status, error = "failed", f"任务失败：{type(exc).__name__}"
         finally:
-            for call_id in [key for key, future in self.approvals.items() if not future.done()]:
-                call = self.memory.tool_call(call_id)
-                if call and call["task_id"] == id:
-                    self.approvals.pop(call_id).cancel()
-                    self.memory.update_tool_call(call_id, status="expired")
-            self.grants.pop(id, None)
-            if self.memory.task(id)["status"] in ACTIVE:
+            if not waiting:
+                self._expire_approvals(id)
+            if not waiting and self.memory.task(id)["status"] in ACTIVE:
                 self.memory.finish_task(id, status, error)
                 if status == "succeeded":
                     self.memory.purge_task_bodies(id)
@@ -567,52 +425,17 @@ class TaskManager:
                                                    task["id"], note=note)
         return {"artifact_ids": [artifact["id"]], "unknown_markers": unknown}
 
-    async def _run_minutes(self, task: dict) -> None:
-        collected = await self._step(task["id"], "collect", lambda: self._collect(task))
-        extraction = await self._step(task["id"], "extract", lambda: self._extract(task, collected))
-        await self._step(task["id"], "compose", lambda: self._compose(task, collected, extraction))
-        if task["params"].get("document"):
-            await self._step(task["id"], "document", lambda: self._document(task, collected, extraction))
-
     # ---- tool actions ----------------------------------------------------
     async def start_action(self, message: dict, messages: list, text: str, calls: list[dict], trace_id: str) -> dict:
         origin = "user_voice" if message["source"].startswith("microphone") else "user_text"
-        names = "、".join(SPECS[call["name"]].title if call["name"] in SPECS else call["name"] for call in calls)
+        specs = self.specs()
+        names = "、".join(specs[call["name"]].title if call["name"] in specs else call["name"] for call in calls)
         state = {"messages": messages + [assistant_calls(text, calls)], "calls": calls, "round": 0}
         id = self.memory.create_task("action", f"操作：{names}"[:80], origin, message["session_id"], trace_id,
                                      {"reply_to": message["id"]}, [("act", "执行操作"), ("reply", "回复结果")], state)
         await self.changed(id)
         self._schedule(id)
         return self.memory.task_summary(id)
-
-    async def _run_action(self, task: dict) -> None:
-        if not task["state"].get("messages"):
-            raise TaskError("这项操作的上下文已清除，请重新发起请求。")
-        outcome = await self._step(task["id"], "act", lambda: self._act(task))
-        await self._step(task["id"], "reply", lambda: self._reply(task, outcome))
-
-    async def _act(self, task: dict) -> dict:
-        state = self.memory.task(task["id"])["state"]
-        messages, calls = state["messages"], state["calls"]
-        for round_index in range(state.get("round", 0), MAX_ROUNDS):
-            results = []
-            for call in calls:
-                outcome = await self._call(task, f"{round_index}:{call['id']}", call)
-                results.append({"role": "tool", "tool_call_id": call["id"], "name": call["name"],
-                                "content": json.dumps(outcome, ensure_ascii=False)[:8000]})
-            messages = messages + results
-            config = self.runtime._provider("llm")
-            settings = self.runtime.settings.raw()
-            if settings.get("tools_enabled", True):
-                config["tools"] = definitions(settings)
-            reply_to = task["params"].get("reply_to")
-            sources = [reply_to] if reply_to and self.memory.record(reply_to) else []
-            text, calls = await self._model(task, "act", "task_action", messages, config, sources)
-            if not calls:
-                return {"text": text}
-            messages = messages + [assistant_calls(text, calls)]
-            self.memory.update_task(task["id"], state={"messages": messages, "calls": calls, "round": round_index + 1})
-        raise TaskError(f"连续操作超过 {MAX_ROUNDS} 轮，已停止。")
 
     def _outcome(self, call: dict) -> dict:
         if call["status"] == "succeeded":
@@ -624,19 +447,26 @@ class TaskManager:
         if row and row["status"] in FINISHED_CALLS:
             return self._outcome(row)
         settings = self.runtime.settings.raw()
-        spec = SPECS.get(call["name"])
+        spec = self.specs().get(call["name"])
         try:
             if not spec:
                 raise ToolError("未知工具。")
             arguments = validate_arguments(spec, call["arguments"] if row is None else row["arguments"])
-            target = self.runner.target(spec, arguments)
+            target = self.mcp.target(spec.name) if spec.effect == "external" else self.runner.target(spec, arguments)
+            if row and spec.effect == "external" and row["target"] != target:
+                raise ToolError("MCP 工具定义或服务配置已改变，请发起新请求。")
         except ToolError as exc:
             row = row or self.memory.add_tool_call(task["id"], key, call["name"][:64], {}, spec.effect if spec else "unknown",
                                                    "", "deny", "参数无效。", "failed")
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc))
             await self._call_changed(row)
             return self._outcome(row)
-        decision, reason = decide(spec, target, task["origin"], settings, self.grants.get(task["id"], set()))
+        if any(item["status"] == "unknown" for item in self.memory.task(task["id"])["tool_calls"]):
+            # The model may have requested several tools in one reply. Removing
+            # tools from the next model call cannot protect this existing batch.
+            decision, reason = "deny", "上一项操作结果未知，已停止后续工具；请先检查结果。"
+        else:
+            decision, reason = decide(spec, target, task["origin"], settings, self.grants.get(task["id"], set()))
         if row is None:
             row = self.memory.add_tool_call(task["id"], key, spec.name, arguments, spec.effect, target, decision, reason, "proposed")
         else:
@@ -658,12 +488,16 @@ class TaskManager:
         try:
             if spec.effect == "internal":
                 result, undo = await self._internal(task, spec, arguments), None
+            elif spec.effect == "external":
+                result, undo = await self.mcp.call(spec.name, arguments), None
             else:
                 result, undo = await asyncio.to_thread(self.runner.run, row["id"], spec, arguments)
             row = self.memory.update_tool_call(row["id"], status="succeeded", result=result, undo=undo)
         except asyncio.CancelledError:
             self.memory.update_tool_call(row["id"], status="unknown", error="任务在执行期间被取消，结果未知。")
             raise
+        except ToolOutcomeUnknown as exc:
+            row = self.memory.update_tool_call(row["id"], status="unknown", error=str(exc))
         except (ToolError, ValueError, KeyError) as exc:
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc)[:500])
         except OSError as exc:
@@ -682,7 +516,7 @@ class TaskManager:
         task = self.memory.task(call["task_id"])
         settings = self.runtime.settings.raw()
         return {"id": call["id"], "task_id": call["task_id"], "task_title": task["title"], "tool": call["tool"],
-                "title": SPECS[call["tool"]].title if call["tool"] in SPECS else call["tool"], "effect": call["effect"],
+                "title": self.specs()[call["tool"]].title if call["tool"] in self.specs() else call["tool"], "effect": call["effect"],
                 "effect_label": EFFECT_LABELS.get(call["effect"], call["effect"]), "target": call["target"],
                 "arguments": arguments, "reason": call["reason"], "origin": task["origin"], "created_at": call["created_at"],
                 "task_scope": call["effect"] not in NO_STANDING_ALLOW,
@@ -692,34 +526,50 @@ class TaskManager:
         return [self.approval_view(call) for call in self.memory.pending_tool_calls() if call["id"] in self.approvals]
 
     async def _ask(self, task: dict, row: dict) -> dict:
-        future = asyncio.get_running_loop().create_future()
-        self.approvals[row["id"]] = future
+        self.approvals.add(row["id"])
         row = self.memory.update_tool_call(row["id"], status="awaiting_approval")
         self.memory.update_task(task["id"], status="waiting_approval")
         await self.changed(task["id"])
         await self.runtime.emit("approval_requested", self.approval_view(row), task["trace_id"])
-        try:
-            answer = await future
-        finally:
-            self.approvals.pop(row["id"], None)
+        # Exactly one tool per graph node keeps interrupt ordering stable.
+        # Only identifiers enter the checkpoint; approval previews remain local.
+        answer = interrupt({"call_id": row["id"]})
+        saved = self.memory.tool_call(row["id"])["approval"]
+        if not isinstance(answer, dict) or answer.get("call_id") != row["id"] or saved != answer:
+            raise TaskError("工具授权已失效，请继续任务并重新确认。")
+        self.approvals.discard(row["id"])
         self.memory.update_task(task["id"], status="running")
         await self.changed(task["id"])
         return answer
 
     async def resolve(self, call_id: str, approved: bool, scope: str = "once", via: str = "click") -> dict:
+        # A click may arrive before the interrupted node's checkpoint is written.
         call = self.memory.tool_call(call_id)
-        future = self.approvals.get(call_id)
-        if not call or call["status"] != "awaiting_approval" or not future or future.done():
+        job = self.jobs.get(call["task_id"]) if call else None
+        if job:
+            await asyncio.gather(asyncio.shield(job), return_exceptions=True)
+        async with self.approval_lock:
+            return await self._resolve(call_id, approved, scope, via)
+
+    async def _resolve(self, call_id: str, approved: bool, scope: str, via: str) -> dict:
+        call = self.memory.tool_call(call_id)
+        if not call or call["status"] != "awaiting_approval" or call_id not in self.approvals:
             raise ValueError("这项操作已经处理过，或者任务已中断。")
+        task = self.memory.task(call["task_id"])
+        saved = await self.graphs.inspect(task)
+        if task["status"] != "waiting_approval" or call_id not in saved["pending_calls"]:
+            raise ValueError("审批状态已改变，请刷新后重试。")
         if scope not in ("once", "task") or (scope == "task" and call["effect"] in NO_STANDING_ALLOW):
-            raise ValueError("删除和命令类操作只能逐次确认。")
+            raise ValueError("删除、命令和外部工具只能逐次确认。")
         if via == "voice" and (not self.runtime.settings.raw().get("voice_approval") or call["effect"] not in VOICE_APPROVABLE):
             raise ValueError("这项操作需要在控制台点击确认。")
-        approval = {"approved": bool(approved), "scope": scope, "via": via, "at": _now()}
+        approval = {"call_id": call_id, "approved": bool(approved), "scope": scope, "via": via, "at": _now()}
         self.memory.update_tool_call(call_id, status="approved" if approved else "denied", approval=approval)
-        future.set_result(approval)
+        self.approvals.discard(call_id)
+        self.memory.update_task(call["task_id"], status="queued")
         await self.runtime.emit("approval_resolved", {"id": call_id, "task_id": call["task_id"], **approval},
                                 self.memory.task(call["task_id"])["trace_id"])
+        self._schedule(call["task_id"], approval)
         return approval
 
     async def handle_voice(self, message: dict) -> bool:

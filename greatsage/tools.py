@@ -24,12 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EFFECTS = ("internal", "read", "write", "launch", "destructive", "execute")
+EFFECTS = ("internal", "read", "write", "launch", "destructive", "execute", "external")
 EFFECT_LABELS = {"internal": "应用内", "read": "只读", "write": "写入", "launch": "打开",
-                 "destructive": "删除", "execute": "命令"}
+                 "destructive": "删除", "execute": "命令", "external": "外部工具"}
 DEFAULT_ACTIONS = {"internal": "allow", "read": "allow", "write": "ask", "launch": "ask",
-                   "destructive": "ask", "execute": "ask"}
-NO_STANDING_ALLOW = {"destructive", "execute"}
+                   "destructive": "ask", "execute": "ask", "external": "ask"}
+NO_STANDING_ALLOW = {"destructive", "execute", "external"}
 VOICE_APPROVABLE = {"write", "launch"}
 TRUSTED_ORIGINS = {"user_text", "user_voice", "console"}
 TEXT_SUFFIXES = {".md", ".txt"}
@@ -40,6 +40,10 @@ _DENY = {"取消执行", "取消執行", "拒绝执行", "拒絕執行", "不要
 
 class ToolError(ValueError):
     """A safe, user-facing tool failure."""
+
+
+class ToolOutcomeUnknown(ToolError):
+    """A dispatched external operation may have taken effect; never replay it."""
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,9 @@ def validate_arguments(spec: ToolSpec, raw) -> dict:
     arguments = {} if arguments is None else arguments
     if not isinstance(arguments, dict):
         raise ToolError("工具参数必须是对象。")
+    if spec.effect == "external":
+        from .mcp_tools import validate_mcp_arguments
+        return validate_mcp_arguments(spec, arguments)
     properties = spec.parameters["properties"]
     if set(arguments) - set(properties):
         raise ToolError("工具参数包含未知字段：" + "、".join(sorted(set(arguments) - set(properties))))
@@ -151,14 +158,14 @@ def decide(spec: ToolSpec, target: str, origin: str, settings: dict, granted: se
     return action, "默认允许：不改变电脑状态。" if action == "allow" else "默认需要你确认。"
 
 
-def definitions(settings: dict) -> list[dict]:
+def definitions(settings: dict, extra=()) -> list[dict]:
     """Tool schemas offered to the model; unavailable tools are not offered at all."""
     hidden = set() if settings.get("command_tool") else {"run_command"}
     if not settings.get("app_launchers"):
         hidden.add("launch_app")
     return [{"type": "function", "function": {"name": spec.name, "description": spec.description,
                                               "parameters": spec.parameters}}
-            for spec in SPECS.values() if spec.name not in hidden]
+            for spec in (*SPECS.values(), *extra) if spec.name not in hidden]
 
 
 class Workspace:

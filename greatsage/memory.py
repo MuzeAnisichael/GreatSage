@@ -15,7 +15,7 @@ from .semantic import VectorIndexMixin, fuse
 from .audit import AuditMixin
 from .artifacts import ArtifactsMixin
 from .materials import MaterialsMixin, chunk_label
-from .tasks import TaskStoreMixin
+from .task_store import TaskStoreMixin
 
 
 def _now() -> str:

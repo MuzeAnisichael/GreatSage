@@ -95,6 +95,30 @@ def test_memory_revision_session_persistence_and_explicit_clear(client):
     assert session.get("/api/memories").json() == []
 
 
+def test_inspector_reports_messages_context_and_memory_without_archived_bodies(client):
+    session, runtime = client
+    assert session.get("/api/inspector", headers={"Authorization": ""}).status_code == 401
+    source = runtime.memory.add_message("user", "PRIVATE_INSPECTOR_BODY", session_id=runtime.session_id)
+    memory = runtime.memory.add_memory("PRIVATE_INSPECTOR_FACT", [source["id"]])
+    config = {"llm": {"provider": "fixture", "model": "fixture", "context_tokens": 8192, "max_tokens": 768,
+                       "tools": [{"type": "function", "function": {"name": "fixture"}}]}}
+    snapshot = runtime.memory.save_snapshot("inspector-test", "fixture", config,
+        [{"role": "user", "content": source["text"]}], [source["id"], memory["id"]], retain_content=True)
+    response = session.get("/api/inspector")
+    assert response.status_code == 200 and "PRIVATE_INSPECTOR" not in response.text
+    record = next(row for row in response.json()["requests"] if row["id"] == snapshot)
+    assert "content" not in record
+    assert record["metadata"]["message_manifest"][0]["role"] == "user"
+    assert record["metadata"]["context"]["tools_estimated"] > 0
+    assert {row["kind"] for row in record["metadata"]["source_manifest"]} == {"memory", "message"}
+    assert response.json()["memory"]["active_memories"] == 1
+    assert response.json()["entity_memory"] == response.json()["multi_agent"] == "planned"
+    session.delete(f"/api/history/{source['id']}")
+    record = next(row for row in session.get("/api/inspector").json()["requests"] if row["id"] == snapshot)
+    assert record["metadata"]["content_status"] == "source_deleted"
+    assert session.get("/api/inspector").json()["memory"]["active_memories"] == 0
+
+
 def test_validation_and_unavailable_audio(client):
     session, _ = client
     assert session.post("/api/chat", json={"text": " "}).status_code == 400

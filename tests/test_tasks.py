@@ -279,3 +279,174 @@ async def test_chat_can_start_a_minutes_task_and_regeneration_versions_artifacts
     await until(status(runtime, again["id"], "succeeded", "failed"))
     assert runtime.memory.artifact(artifact_id)["version"] == 3
     assert "负责人写全名" in runtime.memory.task(again["id"])["params"]["instructions"]
+
+
+async def test_graph_restart_resumes_model_without_replaying_completed_tool(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "once.md", "content": "only once"})
+    await runtime.chat("保存 once.md")
+    call = await pending_call(runtime)
+    runtime.providers.gate = asyncio.Event()
+    await runtime.tasks.resolve(call["id"], True)
+    await until(lambda: len(runtime.providers.calls) == 2)
+    await runtime.tasks.cancel(call["task_id"])
+    graph_state = await runtime.tasks.graphs.inspect(runtime.memory.task(call["task_id"]))
+    assert graph_state["next"] == ["model"] and graph_state["checkpoint_id"]
+    restarted = Runtime(tmp_path, providers=Scripted())
+    try:
+        await restarted.start()
+        def never_replay(*args):
+            raise AssertionError("a completed write must not run twice")
+        restarted.tasks.runner.run = never_replay
+        await restarted.tasks.resume(call["task_id"])
+        await until(status(restarted, call["task_id"], "succeeded", "failed"))
+        assert restarted.memory.task(call["task_id"])["status"] == "succeeded"
+        assert restarted.providers.calls[0][1][-1]["role"] == "tool"
+        assert (tmp_path / "workspace" / "once.md").read_text() == "only once"
+    finally:
+        await restarted.close()
+
+
+async def test_graph_checkpoints_exclude_bodies_and_exception_messages(runtime, tmp_path, monkeypatch):
+    import sqlite3
+    secret = "private-fixture-body-never-checkpoint"
+    say(runtime, secret)
+    async def fail(*args):
+        raise tasks.TaskError(secret)
+    monkeypatch.setattr(runtime.tasks, "_extract", fail)
+    task = await runtime.tasks.start_minutes({}, "console", runtime.session_id)
+    await until(status(runtime, task["id"], "failed"))
+    view = await runtime.tasks.graphs.inspect(runtime.memory.task(task["id"]))
+    assert view["next"] == ["extract"] and view["checkpoint_content"] == "control_only"
+    with sqlite3.connect(tmp_path / "agent-checkpoints.sqlite3") as db:
+        for table in ("checkpoints", "writes"):
+            rows = db.execute(f"SELECT * FROM {table}").fetchall()
+            assert rows and secret.encode() not in repr(rows).encode()
+    await runtime.tasks.graphs.delete(task["id"])
+    assert (await runtime.tasks.graphs.inspect(runtime.memory.task(task["id"])))["checkpoint_id"] is None
+
+
+async def test_pre_migration_task_without_checkpoint_can_resume(runtime):
+    say(runtime, "新版界面下周二内部试用。")
+    params = {"session_ids": [runtime.session_id], "material_ids": [], "instructions": "", "document": False}
+    task_id = runtime.memory.create_task("minutes", "旧任务", "console", runtime.session_id, "legacy", params,
+                                        [("collect", "收集"), ("extract", "抽取"), ("compose", "生成")])
+    collected = await runtime.tasks._collect(runtime.memory.task(task_id))
+    runtime.memory.update_step(task_id, "collect", status="succeeded", result=collected)
+    runtime.memory.update_task(task_id, status="interrupted")
+    await runtime.tasks.resume(task_id)
+    await until(status(runtime, task_id, "succeeded", "failed"))
+    assert runtime.memory.task(task_id)["status"] == "succeeded"
+
+
+async def test_graph_pauses_each_tool_individually_and_releases_task_slot(runtime, tmp_path):
+    runtime.providers.turns = [[{"tool_calls": [
+        {"id": "a", "name": "write_file", "arguments": '{"path":"a.md","content":"A"}'},
+        {"id": "b", "name": "write_file", "arguments": '{"path":"b.md","content":"B"}'}]}], [{"text": "完成"}]]
+    await runtime.chat("写入两个文件")
+    first = await pending_call(runtime)
+    await until(lambda: first["task_id"] not in runtime.tasks.jobs)
+    assert not runtime.tasks.slot.locked()
+    snapshot = await runtime.tasks.graphs.inspect(runtime.memory.task(first["task_id"]))
+    assert snapshot["pending_calls"] == [first["id"]]
+    await runtime.tasks.resolve(first["id"], True)
+    second = await pending_call(runtime)
+    assert second["id"] != first["id"] and second["target"] == "b.md"
+    assert (tmp_path / "workspace" / "a.md").exists()
+    assert not (tmp_path / "workspace" / "b.md").exists()
+    await runtime.tasks.resolve(second["id"], False)
+    await until(status(runtime, first["task_id"], "succeeded", "failed"))
+    assert runtime.memory.task(first["task_id"])["status"] == "succeeded"
+    assert not (tmp_path / "workspace" / "b.md").exists()
+
+
+async def test_cancel_revokes_an_approved_but_queued_graph_command(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "later.md", "content": "fixture"})
+    await runtime.chat("写入 later.md")
+    call = await pending_call(runtime)
+    await until(lambda: call["task_id"] not in runtime.tasks.jobs)
+    await runtime.tasks.slot.acquire()
+    try:
+        await runtime.tasks.resolve(call["id"], True)
+        await runtime.tasks.cancel(call["task_id"])
+    finally:
+        runtime.tasks.slot.release()
+    assert runtime.memory.tool_call(call["id"])["status"] == "expired"
+    assert runtime.memory.tool_call(call["id"])["approval"] is None
+    await runtime.tasks.resume(call["task_id"])
+    again = await pending_call(runtime)
+    assert not (tmp_path / "workspace" / "later.md").exists()
+    await runtime.tasks.resolve(again["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert (tmp_path / "workspace" / "later.md").exists()
+
+
+async def test_source_deletion_cancels_graph_and_revokes_pending_approval(runtime, tmp_path):
+    tool_turns(runtime, "write_file", {"path": "deleted.md", "content": "deleted source"})
+    await runtime.chat("保存这段原文")
+    call = await pending_call(runtime)
+    await runtime.before_delete()
+    runtime.memory.clear_history()
+    assert runtime.memory.task(call["task_id"])["status"] == "cancelled"
+    assert not runtime.tasks.approvals_pending()
+    with pytest.raises(ValueError):
+        await runtime.tasks.resolve(call["id"], True)
+    with pytest.raises(ValueError, match="上下文已清除"):
+        await runtime.tasks.resume(call["task_id"])
+    assert not (tmp_path / "workspace" / "deleted.md").exists()
+
+
+@pytest.mark.parametrize("disconnected", [False, True])
+async def test_mcp_runs_only_after_click_and_unknown_results_stop_further_tools(runtime, tmp_path, monkeypatch, disconnected):
+    from test_mcp import registry
+    mcp, seen, _, _ = registry(tmp_path, monkeypatch, mode="disconnect" if disconnected else "ok")
+    runtime.settings.update({"mcp_servers": mcp.settings()["mcp_servers"], "voice_approval": True})
+    mcp.settings = runtime.settings.raw
+    runtime.tasks.mcp = mcp
+    await mcp.discover("fixture")
+    name = next(iter(mcp.specs))
+    tool_turns(runtime, name, {"value": 2})
+    if disconnected:
+        runtime.providers.turns[-1] = [{"tool_calls": [{"id": "retry", "name": name, "arguments": '{"value":2}'}]}]
+    await runtime.chat("调用测试服务")
+    call = await pending_call(runtime)
+    assert call["effect"] == "external" and "tools/call" not in seen
+    with pytest.raises(ValueError, match="逐次确认"):
+        await runtime.tasks.resolve(call["id"], True, "task")
+    with pytest.raises(ValueError, match="点击确认"):
+        await runtime.tasks.resolve(call["id"], True, via="voice")
+    await runtime.tasks.resolve(call["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert seen.count("tools/call") == 1
+    if disconnected:
+        assert runtime.memory.tool_call(call["id"])["status"] == "unknown"
+        assert "tools" not in runtime.providers.calls[-1][0]
+        assert runtime.memory.task(call["task_id"])["status"] == "failed"
+    else:
+        assert runtime.memory.tool_call(call["id"])["status"] == "succeeded"
+
+
+async def test_unknown_tool_result_blocks_remaining_calls_in_same_model_reply(runtime, tmp_path, monkeypatch):
+    from test_mcp import registry
+    mcp, seen, _, _ = registry(tmp_path, monkeypatch, mode="disconnect")
+    runtime.settings.update({"mcp_servers": mcp.settings()["mcp_servers"]})
+    mcp.settings = runtime.settings.raw
+    runtime.tasks.mcp = mcp
+    await mcp.discover("fixture")
+    name = next(iter(mcp.specs))
+    executed = []
+    def local_tool(*args):
+        executed.append(args[1].name)
+        return {"text": "must not run"}, None
+    monkeypatch.setattr(runtime.tasks.runner, "run", local_tool)
+    runtime.providers.turns = [[{"tool_calls": [
+        {"id": "external", "name": name, "arguments": '{"value":2}'},
+        {"id": "later", "name": "read_file", "arguments": '{"path":"later.md"}'}]}],
+        [{"text": "外部操作结果未知，请检查服务。"}]]
+    await runtime.chat("执行测试服务后读取测试文件")
+    call = await pending_call(runtime)
+    await runtime.tasks.resolve(call["id"], True)
+    await until(status(runtime, call["task_id"], "succeeded", "failed"))
+    assert not executed, "unknown results must also block tools already present in this model reply"
+    assert seen.count("tools/call") == 1
+    assert [row["status"] for row in runtime.memory.task(call["task_id"])["tool_calls"]] == ["unknown", "denied"]
+    assert "tools" not in runtime.providers.calls[-1][0]

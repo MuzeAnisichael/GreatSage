@@ -122,6 +122,11 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
     await until(() => evaluate("document.querySelector('#toasts').textContent.includes('设置已保存')"), 'settings save');
     check(true, 'Settings load and save through the UI');
+    await evaluate("document.querySelector('#mcp-id').value='fixture';document.querySelector('#mcp-url').value='http://127.0.0.1:1/mcp';document.querySelector('#mcp-form').requestSubmit()");
+    await until(async () => (await request('/api/settings')).mcp_servers.length === 1, 'MCP settings save');
+    await evaluate("document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
+    await until(() => evaluate("!document.querySelector('#save-settings').disabled"), 'general settings save after MCP');
+    check((await request('/api/settings')).mcp_servers.length === 1 && (await request('/api/mcp/servers'))[0].tools.length === 0, 'MCP config survives general settings save without auto-connection');
 
     // A fixture is generated inside this run; no personal Skill directory is read.
     const fixtureDir = path.join(runDir, 'fixture-skill');
@@ -165,6 +170,18 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 0"), 'resolve memory conflict');
     check((await request('/api/memories')).filter(row => row.text.startsWith('SYNTHETIC preference')).length === 2, 'Conflict stays pending until explicit keep-both choice');
     await screenshot(main, 'memory-v02.png');
+    if (!live) {
+      const task = await request('/api/tasks', 'POST', { title: 'SYNTHETIC GRAPH INSPECTION', use_session: true });
+      await until(async () => ['failed', 'succeeded'].includes((await request(`/api/tasks/${task.id}`)).status), 'graph fixture completion');
+      const inspection = await request('/api/inspector');
+      check(inspection.tasks.some(row => row.id === task.id && row.graph.checkpoint_id && row.graph.engine === 'langgraph'), 'Task graph checkpoints appear in inspector');
+    }
+    await evaluate("document.querySelector('[data-view=inspector]').click()");
+    await until(() => evaluate("[...document.querySelector('#inspector-request').options].some(option=>option.textContent.includes('fixture_audit'))"), 'inspector requests');
+    await evaluate("const select=document.querySelector('#inspector-request');select.value=[...select.options].find(option=>option.textContent.includes('fixture_audit')).value;select.dispatchEvent(new Event('change'));document.querySelector('#toasts').replaceChildren()");
+    check(await evaluate("document.querySelectorAll('#inspector-messages tr').length===1 && !document.querySelector('#view-inspector').textContent.includes('SYNTHETIC PRIVATE REQUEST BODY')"), 'Inspector displays message metadata without archived body');
+    check(await evaluate('document.body.scrollWidth <= document.documentElement.clientWidth + 1'), 'Inspector has no horizontal overflow');
+    await screenshot(main, 'inspector-v04.png');
     await evaluate("document.querySelector('[data-view=logs]').click();document.querySelector('#audit-refresh').click()");
     await until(() => evaluate("[...document.querySelectorAll('#audit-list button')].some(node=>node.textContent.includes('fixture_audit'))"), 'audit fixture');
     await evaluate("[...document.querySelectorAll('#audit-list button')].find(node=>node.textContent.includes('fixture_audit')).click()");

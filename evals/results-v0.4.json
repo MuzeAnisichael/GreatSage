@@ -1,0 +1,72 @@
+{
+  "version": "0.4.0-alpha.1",
+  "date": "2026-10-20",
+  "runtime_revision": "1f3689e",
+  "scope": "Two bounded real model/tool cases on Windows. Public documentation and generated fictional files only. Approvals call the application's click entry point, not a physical mouse. No audio, commands, background model calls or personal files. Single samples, not latency benchmarks.",
+  "dependencies": {
+    "langchain-openai": "1.7.2",
+    "langchain-ollama": "1.1.0",
+    "langgraph": "1.2.15",
+    "mcp": "2.3.0",
+    "httpx2": "2.13.1"
+  },
+  "configuration": {
+    "context_tokens": 16384,
+    "max_tokens": 1024,
+    "approval_scope": "once",
+    "allowed_tool_calls_per_case": 1,
+    "model_requests_per_case": 2,
+    "other_tools": "denied by explicit probe rules"
+  },
+  "cases": [
+    {
+      "provider": "openrouter",
+      "model": "google/gemini-2.5-flash-lite",
+      "mcp_url": "https://learn.microsoft.com/api/mcp",
+      "discovered_tools": 3,
+      "tool": "microsoft_docs_search",
+      "query": "PowerShell Get-Process command documentation",
+      "approval_wait_observed": true,
+      "tool_calls": 1,
+      "tool_result_returned_to_model": true,
+      "citation_matches_tool_result": true,
+      "status": "passed",
+      "discovery_ms": 1809,
+      "model_request_ms": [3495, 922],
+      "total_ms": 8416,
+      "reported_cost_usd": 0.0005393,
+      "tool_result_sha256": "8008e7413c8c97d7fa2e59835fcf800c29db5e60361f762ee9599a6ae0900d0f",
+      "evidence_note": "Original run succeeded, but the harness read a purged intermediate step. The durable final message and citation were rechecked offline; no cloud or MCP request was repeated."
+    },
+    {
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "tool": "read_file",
+      "fixture": "Fresh fictional Markdown file containing a random verification code",
+      "approval_wait_observed": true,
+      "tool_calls": 1,
+      "tool_result_returned_to_model": true,
+      "answer_matches_fixture": true,
+      "status": "passed",
+      "model_request_ms": [11904, 260],
+      "total_ms": 12282,
+      "reported_cost_usd": null,
+      "evidence_note": "First request includes local model loading; cloud pricing does not apply."
+    }
+  ],
+  "unsuccessful_configurations": [
+    {
+      "case": "Learn MCP with 8192 context budget",
+      "result": "Discovery succeeded; conservative application budgeting stopped before any model or tools/call request. Explicitly raising the context budget resolved it."
+    },
+    {
+      "case": "Installed qwen3:4b with 256 and 1024 output budgets",
+      "result": "Neither attempt proposed a native tool. This installed template enters thinking unconditionally. An already installed qwen3:8b template supports the Think flag and passed; no model was downloaded or modified."
+    }
+  ],
+  "limits": [
+    "Does not certify every MCP server, model or custom Ollama template.",
+    "No physical-click, microphone, speech-output or long-running workload acceptance.",
+    "Transport failure, changed descriptors, unknown outcomes and stale approvals use existing isolated regression coverage, not faults injected into the public service."
+  ]
+}

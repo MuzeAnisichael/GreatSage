@@ -36,7 +36,7 @@ async def test_structured_decision_schema_uses_provider_native_protocol(name):
         payload = json.loads(request.content)
         if name == 'ollama':
             assert payload['format'] == DECISION_SCHEMA
-            return httpx.Response(200, text='{"message":{"content":"{}"},"done":true}\n')
+            return httpx.Response(200, text='{"message":{"role":"assistant","content":"{}"},"done":true}\n')
         assert payload['response_format']['json_schema']['schema'] == DECISION_SCHEMA
         return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
     provider = service(handler)
@@ -114,8 +114,8 @@ async def test_ollama_ndjson_disables_thinking_and_only_yields_spoken_content():
         assert request.url == "http://127.0.0.1:11434/api/chat"
         assert json.loads(request.content)["think"] is False
         return httpx.Response(200, stream=ByteStream(
-            b'{"message":{"thinking":"internal","content":"hello"},"done":false}\n'
-            b'{"message":{"content":""},"done":true,"prompt_eval_count":4,"eval_count":1}\n'))
+            b'{"message":{"role":"assistant","thinking":"internal","content":"hello"},"done":false}\n'
+            b'{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":4,"eval_count":1}\n'))
 
     provider = service(handler)
     events = [item async for item in provider.stream_chat(
@@ -159,13 +159,14 @@ async def test_ollama_tool_history_is_translated_and_tool_calls_are_parsed():
     def handler(request):
         messages = json.loads(request.content)["messages"]
         assert messages[1]["tool_calls"] == [{"function": {"name": "read_file", "arguments": {"path": "a.md"}}}]
-        assert messages[2] == {"role": "tool", "content": "{}", "tool_name": "read_file"}
-        return httpx.Response(200, text='{"message":{"content":"","tool_calls":[{"function":{"name":"list_files","arguments":{"path":""}}}]},"done":false}\n'
-                                        '{"message":{"content":""},"done":true}\n')
+        assert {key: messages[2][key] for key in ("role", "content", "tool_name")} == {"role": "tool", "content": "{}", "tool_name": "read_file"}
+        return httpx.Response(200, text='{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"list_files","arguments":{"path":""}}}]},"done":false}\n'
+                                        '{"message":{"role":"assistant","content":""},"done":true}\n')
 
     provider = service(handler)
     events = [item async for item in provider.stream_chat({"provider": "ollama", "model": "local"}, history)]
-    assert events[-1] == {"tool_calls": [{"id": "call_0", "name": "list_files", "arguments": '{"path": ""}'}]}
+    call = events[-1]["tool_calls"][0]
+    assert call["id"] and call["name"] == "list_files" and json.loads(call["arguments"]) == {"path": ""}
     await provider.close()
 
 
@@ -173,7 +174,7 @@ async def test_ollama_tool_history_is_translated_and_tool_calls_are_parsed():
 @pytest.mark.parametrize("content,code", [
     (b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', "stream_ended_before_completion"),
     (b'data: {"error":{"message":"secret-test-key"}}\n\n', "upstream_error"),
-    (b'event: error\ndata: secret-test-key\n\n', "upstream_stream_error"),
+    (b'event: error\ndata: secret-test-key\n\n', "invalid_json_response"),
     (b'data: not-json-secret-test-key\n\n', "invalid_json_response"),
 ])
 async def test_incomplete_and_failed_streams_are_not_reported_as_success(content, code):
@@ -183,6 +184,51 @@ async def test_incomplete_and_failed_streams_are_not_reported_as_success(content
     assert error.value.code == code
     assert "secret-test-key" not in str(error.value)
     await provider._client.aclose()
+
+
+@pytest.mark.parametrize("name", ["openai_compatible", "ollama"])
+async def test_framework_chat_does_not_retry_http_failures_or_expose_response(name):
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(429, json={"error": "private-key-and-transcript"})
+    provider = service(handler)
+    try:
+        with pytest.raises(ProviderError) as error:
+            _ = [event async for event in provider.stream_chat({"provider": name, "model": "fixture"}, [])]
+        assert error.value.status == 429 and error.value.code == "rate_limited"
+        assert "private" not in str(error.value) and len(seen) == 1
+    finally:
+        await provider._client.aclose()
+
+
+async def test_framework_chat_does_not_inherit_keys_accounts_or_remote_tracing(monkeypatch):
+    from langsmith.run_helpers import get_tracing_context
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-secret")
+    monkeypatch.setenv("OPENAI_ORG_ID", "ambient-org")
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "ambient-project")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "ambient-tracing-key")
+    def handler(request):
+        assert get_tracing_context()["enabled"] is False
+        assert all(key not in request.headers for key in ("authorization", "openai-organization", "openai-project"))
+        return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+    provider = service(handler)
+    try:
+        assert [event async for event in provider.stream_chat({"provider": "openai_compatible", "model": "fixture"}, [])] == [{"text": "ok"}]
+    finally:
+        await provider._client.aclose()
+
+
+async def test_incomplete_ollama_stream_fails_and_closes_response():
+    stream = ByteStream(b'{"message":{"role":"assistant","content":"partial"},"done":false}\n')
+    provider = service(lambda _: httpx.Response(200, stream=stream))
+    try:
+        with pytest.raises(ProviderError, match="stream_ended_before_completion"):
+            _ = [event async for event in provider.stream_chat({"provider": "ollama", "model": "fixture"}, [])]
+        assert stream.closed
+    finally:
+        await provider._client.aclose()
 
 
 @pytest.mark.asyncio

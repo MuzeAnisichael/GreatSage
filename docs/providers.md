@@ -2,11 +2,23 @@
 
 GreatSage 将 LLM、语音识别（ASR）和语音合成（TTS）分别配置。每个阶段只调用所选服务，失败时记录错误，不自动把音频或文本转交给另一个服务。
 
+2026-10-17 起，LLM 聊天协议由 LangChain 的 `ChatOpenAI` / `ChatOllama` 及官方 SDK 处理，依赖版本固定在 `pyproject.toml`。GreatSage 保留事件格式、权限、预算、审计和错误脱敏。框架在后端启动时加载；流的取消会立即关闭响应。SDK 不自行重试，任务层按既有规则重试。OpenRouter 的实际费用继续记录；不继承 SDK 环境中的其他账号配置，不自动启用 LangSmith 远端追踪。ASR、TTS 和嵌入接口尚未迁移。
+
 v0.2 另有独立 embedding 设置，默认关闭。已在 2026-09-27 验证 OpenRouter `openai/text-embedding-3-small` 和本机 Ollama `bge-m3:latest`。云端可复用 OPENROUTER_API_KEY，本地默认地址 `http://127.0.0.1:11434`；不自动拉取模型。建索引单次网络超时 60 秒，前台检索默认最多 1.5 秒，可在 UI 调整；本机 bge-m3 普通查询约 2.3–2.6 秒，默认上限下可能回退关键词。
 
 旁听判断和记忆冲突使用当前 LLM 的结构化输出：API `response_format.json_schema`、Ollama `format`，温度为 0，且仍验证字段与允许的 ID。服务不支持格式、输出异常或超时会记录降级；不会静默改用另一家服务。真实 Gemini 2.5 Flash Lite 的固定 20 场景复测通过；本机 qwen3:4b 在 3 秒判断上限下有 6 次超时、2 个漏答。优先低延迟 API，或对本地配置关闭语义判断并使用明确叫名。详见 [验证](validation-v0.2.md)。
 
 ## 已验证的配置
+
+### v0.4 工具调用配置（2026-10-20）
+
+OpenRouter `google/gemini-2.5-flash-lite` 与本机 Ollama `qwen3:8b` 分别通过一次“原生工具提议 → 应用审批 → 执行 → 有效回答”。测试设置为上下文 **16384**、最大输出 **1024**，只允许目标工具进入逐次审批，其余拒绝。这是工具链可用性证据，不代表语音时延或所有任务质量；详见 [v0.4 验证](validation-v0.4.md)。
+
+已验证的公开 MCP 示例是 [Microsoft Learn](https://learn.microsoft.com/en-us/training/support/mcp)，URL 为 `https://learn.microsoft.com/api/mcp`，无需密钥；在设置中添加服务、保存并显式发现，再按次确认文档搜索调用。工具描述也占上下文；本次 8192 的保守预算在模型请求前拒绝了请求，提高到 16384 后通过。实际需要取决于工具目录与用户上下文，不应无条件放大所有模型的预算。
+
+本机 `qwen3:4b` 在 256／1024 输出预算下均没有提出工具调用；检查发现其已安装模板固定进入思考，而 `qwen3:8b` 模板支持关闭思考。模型名称相同也可能使用不同模板，不能把一个安装实例的结果当成整类模型能力。不要为了成功探测静默下载或替换用户模型。
+
+### 早期语音与问答配置
 
 以下验证日期为 **2026-09-04**。模型目录会变化，安装时可运行 `scripts/probe_providers.py --catalog` 复核。
 

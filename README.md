@@ -27,9 +27,10 @@
 </picture>
 
 > [!NOTE]
-> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准，目前需要从源码运行，还没有安装包。
+> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。可以下载 Windows x64 目录 ZIP，或从源码运行；尚无安装器。
 >
-> - **版本**：最近发布的是 0.2.0-alpha.1。v0.3 的资料库、纪要任务和受控工具已合入 main，尚未发版。
+> - **版本**：[0.4.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) 从 `main` 交付，包含此前 v0.3 的资料库、纪要任务和受控工具。
+> - **框架迁移**：LangChain、LangGraph、MCP HTTP 和本地运行监控已纳入本版；实际验证范围见[v0.4 验证](docs/validation-v0.4.md)，逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
 
@@ -52,6 +53,9 @@
 - **可以审计**
   - 每次交互都有 trace ID，记录实际使用的来源、Skill 版本、各阶段耗时和服务返回的用量。
   - 请求快照默认只保存元数据。
+- **通用框架（v0.4）**
+  - LangChain 连接云端／Ollama，LangGraph 编排任务与审批；MCP HTTP 外部工具显式发现、逐次确认。
+  - “运行监控”显示任务节点、消息目录、上下文估算和记忆变更，可直达请求证据。
 - **桌宠**
   - Q 版猫头鹰显示运行状态、简化的任务进度和待确认提示，也可以摸摸它。
 
@@ -68,12 +72,31 @@
   </tr>
 </table>
 
+<details>
+  <summary>本地运行监控</summary>
+  <img src="docs/assets/inspector.webp" alt="运行监控：LangGraph 任务节点、长期记忆统计、模型请求消息目录和上下文估算">
+  <p>使用合成数据展示。消息正文需要事先开启归档，再到请求证据中单独查看。</p>
+</details>
+
 <p align="center">
   <img src="docs/assets/pet.webp" width="300" alt="桌宠气泡提示：一项写入文件的操作需要在控制台确认"><br>
   <sub>桌宠气泡只显示简化提示，详细内容在控制台。</sub>
 </p>
 
 ## 快速开始
+
+### 下载 Windows 目录包
+
+从 [v0.4.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+
+```powershell
+Get-FileHash -LiteralPath '.\GreatSage-0.4.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-Content -LiteralPath '.\SHA256SUMS.txt'
+```
+
+完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
+
+### 从源码运行
 
 需要 Windows、Python 3.11 和 Node.js/npm。以下是 API 优先的开发安装方式，不会下载大型语音模型：
 
@@ -110,7 +133,14 @@ npm.cmd start
 npm.cmd run package
 ```
 
-构建结果是 `release/win-unpacked/GreatSage.exe`，要保留同目录的全部文件。它是 Windows x64 目录包，还没有安装器和发行签名。可以用环境变量 `GREATSAGE_DATA_DIR` 指定独立的数据目录。
+默认构建结果是 `release/win-unpacked/GreatSage.exe`，要保留同目录的全部文件。需要 ZIP 时运行 `.\scripts\build.ps1 -Target zip`，由 electron-builder 打包到 `release/`；ZIP 仍是目录包，不是安装器。可以用环境变量 `GREATSAGE_DATA_DIR` 指定独立的数据目录。
+
+如果本机策略禁止运行 PowerShell 脚本，可以直接调用已安装的构建工具：
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm greatsage-backend.spec
+.\node_modules\.bin\electron-builder.cmd --win zip
+```
 
 ## 工作方式
 
@@ -122,12 +152,12 @@ flowchart LR
     Text[文字输入] --> Runtime
     Docs[Markdown 资料] --> Memory[(记忆与资料<br/>SQLite)]
     Runtime <--> Memory
-    Runtime --> LLM[语言模型<br/>云端或本地]
+    Runtime --> LLM[LangChain 适配<br/>云端或本地]
     LLM --> Output[文字、语音与桌宠]
-    Runtime --> Tasks[后台任务<br/>纪要、待办、文档]
+    Runtime --> Tasks[LangGraph 任务<br/>纪要、待办、文档]
     Tasks --> Policy{权限层}
-    Policy -->|你确认后| Tools[工作目录内的工具]
-    Runtime -.-> Audit[事件与审计]
+    Policy -->|你确认后| Tools[本地工具与 MCP HTTP]
+    Runtime -.-> Audit[事件、审计与本地监控]
 ```
 
 Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负责音频、模型、记忆、任务和事件。桌面音频按旁听内容保存，只有你的文字、麦克风请求和控制台操作才能发起工具调用。模块和数据流见[实现架构](docs/architecture.md)。
@@ -152,9 +182,10 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **自身回声**：用进程排除、播放参考和文本去重来减少，不是完整的声学回声消除（AEC）。用耳机代替扬声器可以减少回声干扰。
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
-- **分发**：只有本机验证过的目录包，还没有安装器、发行签名和跨电脑验证。
+- **v0.4 验证范围**：真实模型、MCP 服务及打包对象的具体覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth、实体记忆和多 Agent 尚未接入。
+- **分发**：提供 Windows x64 目录 ZIP；尚无安装器、发行签名，干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
 
-测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)和 [v0.3 验证](docs/validation-v0.3.md)。
+测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
 
 ## 路线图
 
@@ -162,8 +193,9 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | --- | --- | --- |
 | v0.1 alpha | 已发布 | 语音秘书基础：三种预设、云端／本地模型、记忆、日志和桌宠 |
 | v0.2 alpha | 已发布 | 回应质量评测、混合检索、分层摘要、请求审计与后台恢复 |
-| v0.3 | 已合入 main，未发版 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；安装器和 MCP 待实现 |
-| v0.4 及以后 | 规划中 | 屏幕和窗口等更多电脑信息输入，更多平台和桌宠表现 |
+| v0.3 | 随 v0.4 alpha 交付 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；真实场景验收继续保留 |
+| v0.4 alpha | 已从 main 交付 | LangChain、LangGraph、MCP HTTP、本地监控与 Windows x64 目录 ZIP |
+| v0.5–v0.7 | 分阶段规划 | Pipecat 语音与安装、LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 
@@ -172,6 +204,8 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | 文档 | 内容 |
 | --- | --- |
 | [项目现状](docs/project-status.md) | 已实现、已验证、仍待验收和未来目标的快速索引 |
+| [开发方法指导](agent.md) · [代码导航](docs/code-map.md) · [经验记录](docs/lessons-learned.md) | 开发约定、按功能找文件／函数、结构树与调用链、已知问题的原因和处理 |
+| [迁移方案](docs/v0.4-plan.md) · [开发日志](docs/development-log.md) · [迁移验证](docs/validation-v0.4.md) | 本轮范围、每个切片的改动和实际证据 |
 | [使用说明](docs/usage.md) | 音源、预设、记忆、资料、任务和工具授权的操作方法 |
 | [需求与验收](docs/requirements.md) | 已确认的范围、实现状态和尚待完成的验收 |
 | [实现架构](docs/architecture.md) | 模块、实时管线、事件、接口与数据边界 |

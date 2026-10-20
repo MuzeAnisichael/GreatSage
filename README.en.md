@@ -27,9 +27,10 @@ It hears what you say and can also listen in on meeting audio from your computer
 </picture>
 
 > [!NOTE]
-> GreatSage is an **alpha**. It is developed on Windows 11 with Python 3.11 and runs from source; there is no installer yet.
+> GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Download the Windows x64 folder ZIP or run from source; there is no installer yet.
 >
-> - **Versions:** the latest release is 0.2.0-alpha.1. The v0.3 materials library, minutes tasks and controlled tools are merged into main but not released.
+> - **Version:** [0.4.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) ships from `main`, including the v0.3 materials library, minutes tasks and controlled tools.
+> - **Frameworks:** LangChain, LangGraph, MCP HTTP and local runtime inspection are included. See [v0.4 validation](docs/validation-v0.4.md) for the actual coverage and the [development log](docs/development-log.md) for individual changes (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
@@ -52,6 +53,9 @@ It hears what you say and can also listen in on meeting audio from your computer
 - **Auditable**
   - Every interaction has a trace ID with the sources actually used, Skill versions, stage timings and the usage reported by each service.
   - Request snapshots keep metadata only unless you opt in.
+- **Shared frameworks (v0.4)**
+  - LangChain connects cloud models and Ollama; LangGraph runs task graphs and approvals. MCP HTTP tools require explicit discovery and a click for each call.
+  - The local inspector shows task nodes, message metadata, context estimates and memory changes, with links to request evidence.
 - **Desktop pet**
   - A chibi owl shows its status, simplified task progress and pending approvals. You can pat it.
 
@@ -68,12 +72,31 @@ It hears what you say and can also listen in on meeting audio from your computer
   </tr>
 </table>
 
+<details>
+  <summary>Local runtime inspector</summary>
+  <img src="docs/assets/inspector.webp" alt="Local runtime inspector showing task graph nodes, memory counts and model request metadata">
+  <p>Synthetic data only. Request bodies require prior opt-in and a separate inspection action.</p>
+</details>
+
 <p align="center">
   <img src="docs/assets/pet.webp" width="300" alt="Desktop pet bubble saying a file write needs approval in the console"><br>
   <sub>The pet shows short prompts; details stay in the console.</sub>
 </p>
 
 ## Quick start
+
+### Download the Windows folder build
+
+Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.4.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
+
+```powershell
+Get-FileHash -LiteralPath '.\GreatSage-0.4.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-Content -LiteralPath '.\SHA256SUMS.txt'
+```
+
+Extract the entire ZIP into a new folder and run `GreatSage.exe`, keeping all accompanying files. Python and Node.js are bundled; configure your own model services and credentials. The build is unsigned and has not passed clean-machine install, upgrade or uninstall acceptance. Existing users should quit the old app and back up their data before using the new folder; keep the existing data directory.
+
+### Run from source
 
 You need Windows, Python 3.11 and Node.js/npm. This API-first setup does not download large speech models:
 
@@ -107,7 +130,14 @@ Listening, spoken replies and recording are all off on first launch.
 npm.cmd run package
 ```
 
-This produces `release/win-unpacked/GreatSage.exe`; keep every file in that folder. It is an unsigned Windows x64 folder build, not an installer. Set `GREATSAGE_DATA_DIR` to use a separate data directory.
+The default produces `release/win-unpacked/GreatSage.exe`; keep every file in that folder. To create a ZIP with electron-builder, run `.\scripts\build.ps1 -Target zip`; the archive is written to `release/` and remains a folder build, not an installer. Set `GREATSAGE_DATA_DIR` to use a separate data directory.
+
+If local policy prevents PowerShell scripts from running, invoke the installed build tools directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm greatsage-backend.spec
+.\node_modules\.bin\electron-builder.cmd --win zip
+```
 
 ## How it works
 
@@ -119,12 +149,12 @@ flowchart LR
     Text[Typed input] --> Runtime
     Docs[Markdown notes] --> Memory[(Memory and materials<br/>SQLite)]
     Runtime <--> Memory
-    Runtime --> LLM[Language model<br/>cloud or local]
+    Runtime --> LLM[LangChain adapters<br/>cloud or local]
     LLM --> Output[Text, speech and pet]
-    Runtime --> Tasks[Background tasks<br/>minutes, todos, documents]
+    Runtime --> Tasks[LangGraph tasks<br/>minutes, todos, documents]
     Tasks --> Policy{Permission layer}
-    Policy -->|after you approve| Tools[Tools inside the workspace]
-    Runtime -.-> Audit[Events and audit]
+    Policy -->|after you approve| Tools[Local tools and MCP HTTP]
+    Runtime -.-> Audit[Events, audit and inspector]
 ```
 
 Electron runs the windows, pet and tray. The Python backend listens only on 127.0.0.1 and handles audio, models, memory, tasks and events. Desktop audio is stored as overheard content; only your typed text, microphone requests and console actions can start a tool call.
@@ -149,9 +179,10 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 - **Echo:** echo handling combines process exclusion, playback references and text de-duplication. It is not full acoustic echo cancellation; headphones help.
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
-- **Distribution:** only a locally verified folder build exists. There is no installer, code signing or cross-machine testing yet.
+- **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth, entity memory and multi-agent execution are not implemented yet.
+- **Distribution:** a Windows x64 folder ZIP is available. There is no installer or code signing; clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified.
 
-Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md) and [v0.3 validation](docs/validation-v0.3.md) (Chinese).
+Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
 
 ## Roadmap
 
@@ -159,12 +190,15 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md) and [
 | --- | --- | --- |
 | v0.1 alpha | Released | Voice secretary basics: presets, cloud/local models, memory, logs and the pet |
 | v0.2 alpha | Released | Response-quality evaluation, hybrid search, layered summaries, request audits and background recovery |
-| v0.3 | Merged, unreleased | Materials library, cited minutes/todos/documents, controlled tools, task cancel and resume; installer and MCP pending |
-| v0.4 and later | Planned | Screen and window input, more platforms, richer pet |
+| v0.3 | Included in v0.4 alpha | Materials, cited minutes/todos/documents, controlled tools and task recovery; real-world validation remains pending |
+| v0.4 alpha | Released from main | LangChain, LangGraph, MCP HTTP, local inspection and a Windows x64 folder ZIP |
+| v0.5–v0.7 | Planned in stages | Pipecat voice and installation, LangMem/entity memory, Deep Agents/multi-agent; richer inputs and pet later |
 
 ## Contributing
 
 Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first:
+
+Developer references (Chinese): [working method](agent.md), [feature-to-code map and call graphs](docs/code-map.md), [lessons learned](docs/lessons-learned.md), and [development log](docs/development-log.md).
 
 - Tests use fictional data only.
 - Never commit runtime data, recordings, transcripts or credentials.

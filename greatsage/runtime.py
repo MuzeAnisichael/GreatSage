@@ -25,7 +25,6 @@ from .settings import SettingsStore
 from .skills import SkillsManager
 from .semantic import chunks as embedding_chunks, fingerprint, text_hash
 from .tasks import TaskManager
-from .tools import definitions as tool_definitions
 
 
 def redact(value):
@@ -723,7 +722,7 @@ class Runtime:
         first_text = False
         snapshot = None
         # Only the user's own direct requests may reach tools; proactive and observed turns never do.
-        tools = tool_definitions(config) if (config.get("tools_enabled", True) and not proactive
+        tools = self.tasks.tool_definitions() if (config.get("tools_enabled", True) and not proactive
                                              and message["role"] == "user") else []
         tool_calls = []
         messages = []
@@ -732,7 +731,10 @@ class Runtime:
             if generation != self.generation or data_epoch != self.data_epoch:
                 raise asyncio.CancelledError()
             messages, source_ids, selected_skills = self._build_context(message, config, proactive, semantic, tools)
-            snapshot = await self.snapshot_request(trace, 'proactive' if proactive else 'response', messages, source_ids, selected_skills)
+            llm = self._provider("llm")
+            if tools:
+                llm["tools"] = tools
+            snapshot = await self.snapshot_request(trace, 'proactive' if proactive else 'response', messages, source_ids, selected_skills, provider=llm)
             await self.emit("context", {"source_ids": source_ids, "skills": selected_skills,
                                         "settings_version": self.settings.version(),
                                         "model": config["llm"]["model"], "proactive": proactive,
@@ -748,9 +750,6 @@ class Runtime:
             gate_open = not proactive
             silent = False
             started = time.time()
-            llm = self._provider("llm")
-            if tools:
-                llm["tools"] = tools
             async for delta in self.providers.stream_chat(llm, messages):
                 if generation != self.generation or data_epoch != self.data_epoch:
                     raise asyncio.CancelledError()
@@ -1084,6 +1083,7 @@ class Runtime:
         self.data_epoch += 1
         self.epoch += 1
         # Idle tasks keep no intermediate copies of text that is about to be deleted.
+        await self.tasks.invalidate()
         self.memory.purge_task_bodies()
         for queue in tuple(self.subscribers):
             while not queue.empty():

@@ -11,6 +11,8 @@ logs/
 *.key
 *.pem
 settings.local.json
+connection.json
+/.claude/worktrees/
 # Build and dependencies
 .venv/
 venv/

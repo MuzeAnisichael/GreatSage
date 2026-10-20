@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-01。最近发布的版本是 v0.2 alpha；v0.3 的资料库、纪要任务和受控工具已合入 main，尚未发版。[项目现状](project-status.md)区分已实现、已验证与尚未交付。简要的贡献规则见仓库根目录的 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-20。当前版本为从 `main` 交付的 **0.4.0-alpha.1**，包含 v0.3 功能和 v0.4 框架迁移，提供 Windows x64 目录 ZIP。[项目现状](project-status.md)区分已实现、已验证与尚未交付；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -37,6 +37,7 @@ Electron 启动开发环境下的 Python 后端并管理本地连接。单独开
 | --- | --- |
 | .runtime/ | 源码桌面运行数据，已从版本控制排除 |
 | memory.sqlite3 | 历史、记忆、摘要、依赖关系和审计事件 |
+| agent-checkpoints.sqlite3 | LangGraph 控制状态；正文与工具执行账本仍在 memory.sqlite3 |
 | settings.json、secrets-*.bin | 配置快照与 DPAPI 密文文件引用 |
 | skills.json | 用户本地 Skill 注册路径与启用状态 |
 | models/ | 用户明确准备的模型缓存 |
@@ -51,7 +52,9 @@ Electron 启动开发环境下的 Python 后端并管理本地连接。单独开
 
 ## 3. 日常验证
 
-运行完整自动化回归：
+按 [agent.md](../agent.md) 的验证决策表选择最小充分检查。先用[代码导航](code-map.md)找到对应测试；文档只核对链接和描述，机械整理检查引用／导入，行为变更运行相关用例。只在跨模块风险或发布门槛需要时扩大范围，已有适用的 CI／报告可直接引用。
+
+需要完整自动化回归时：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
@@ -69,6 +72,15 @@ npm.cmd run check
 
 mock 提供商测试不能接收真实用户密钥，也不应联网。测试临时数据放在测试目录／临时目录，不与 .runtime 共用真实用户历史。
 
+迁移后的模型／MCP／任务图还可以通过真实回环 HTTP 做黑盒检查，不需要外部服务、密钥或麦克风：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/smoke_backend.py
+.\.venv\Scripts\python.exe scripts/smoke_backend.py --executable dist/greatsage-backend/greatsage-backend.exe
+```
+
+第一条已加入 Windows CI；第二条在冻结构建后检查动态依赖。脚本用独立目录和合成服务，验证请求、逐次审批、进程中断后重新授权、工具不重复执行、纪要／待办／文档和监控元数据。原始报告在 `.runtime/backend-smoke/`。它主动终止自己启动的测试后端来模拟中断，不代替桌面正常退出或安装器验收。
+
 ## 4. 真实模型与音频测试
 
 `scripts/probe_providers.py` 提供受控的本地／云端探测参数。先查看帮助，再明确选择要测试的服务和组件：
@@ -78,6 +90,15 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 ```
 
 探测本地模型与云端服务可能触发模型加载、语音合成或付费请求。使用用户授权的服务和测试范围；只记录模型、参数、样本、耗时、结果与必要的用量，不记录凭据。
+
+只有需要核实真实原生工具调用或 MCP 互操作时，使用 `scripts/probe_agent_tools.py`。它读取既有配置／环境凭据，在隔离目录中每种配置最多发出两次模型请求、批准一个预期工具；脚本调用应用的点击审批入口，不模拟物理鼠标，也不打开麦克风。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/probe_agent_tools.py --cloud --mcp-learn
+.\.venv\Scripts\python.exe scripts/probe_agent_tools.py --ollama --local-model qwen3:8b
+```
+
+云端示例要求现有 LLM 配置为 OpenRouter，只查询 Microsoft Learn 的公共文档；本地示例只读取临时生成的虚构文件。可用 `--settings-dir` 选择配置目录、`--cloud-model` 指定云端模型，更多参数见 `--help`。默认配置目录为 `.runtime`，Ollama 使用本机 `127.0.0.1:11434`。报告保存在 `.runtime/probe-agent-tools/`；一次通过不代表该模型的普遍能力，实际结果见[v0.4 验证](validation-v0.4.md)。不要把这个按需检查加入每次提交的默认测试。
 
 验证结果至少区分：
 
@@ -93,11 +114,11 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 5. 贡献流程
 
-1. 阅读仓库 AGENTS.md、[需求](requirements.md)和相关架构文档，确认变更属于当前版本范围。
+1. 阅读仓库 [AGENTS.md](../AGENTS.md)和[方法指导](../agent.md)，按[代码导航](code-map.md)定位功能、检索[经验记录](lessons-learned.md)，确认变更属于当前版本范围。
 2. 新功能先说明使用场景和预期行为；涉及用户需求或操作权限的新边界，先明确范围。
 3. 围绕一个可审查的问题修改，实现与文档保持同步。
 4. 运行相关回归；仅为具体剩余风险扩大验证，不无边界重复测试。
-5. 提交前检查 `git status --short`、`git diff --cached` 和仓库检查脚本，确认没有运行数据、凭据或个人 Skills。
+5. 每个切片提交前检查 `git status --short`、`git diff --cached`；本轮推送前运行仓库检查脚本，确认没有运行数据、凭据或个人 Skills。
 6. 提交说明写清问题、最终行为、验证和限制；开发期间持续推送有意义的里程碑。
 
 工程保持独立仓库，不把父工作区或其他项目加入提交。不得为了让测试通过删除真实用户数据，也不能用生产会话数据库作为测试 fixture。
@@ -105,6 +126,7 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 ## 6. 增加适配器与改动数据格式
 
 - 新服务沿用 providers 层的流式、取消和受控错误接口，不在 UI 中散落凭据。
+- 聊天适配复用 `chat_models.py` 的 LangChain 入口；升级固定版本时重点核对费用字段、Ollama 工具名称、取消、错误脱敏和隐式 tracing。任务图控制状态不得复制业务正文，所有本地／MCP 工具必须经过 `tools.py`。
 - 增加配置字段时同步字段校验、默认值、界面和文档；未知字段目前会被拒绝。
 - 增加音源时保持来源身份、时间戳和代际失效机制，采集线程不能等待模型调用。
 - 增加记忆写入或新的派生数据时登记 source_ids，并验证删除与旧任务提交不能复活内容。
@@ -113,7 +135,13 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二者一致，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。已用 PyInstaller 和 Electron Builder 生成本机目录包；构建流程见[README](../README.md)，实际验证见[v0.2 验证](validation-v0.2.md)。GitHub 尚无可下载的安装器发行资产；目录包也未做跨电脑安装验证。
+Python 与桌面包分别使用对应的 alpha 表示：本版为 `0.4.0a1` 与 `0.4.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
+
+PyInstaller 冻结后端，electron-builder 生成桌面目录与 ZIP。`scripts/build.ps1` 默认 `-Target dir`，发布 ZIP 使用 `-Target zip`；若脚本执行受限，直接调用两个构建工具，命令见[README](../README.md)。将整个目录分发，不能只复制 `GreatSage.exe`。GitHub [v0.4.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1)提供 Windows x64 ZIP 与 `SHA256SUMS.txt`；发布前对最终 ZIP 计算 SHA256，上传后核对资产名、大小与摘要。它没有安装器或发行签名，跨电脑安装／升级／卸载仍待验收。
+
+本次构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
+
+本版继续使用原 `settings.json` 格式和 `memory.sqlite3`，新增 `agent-checkpoints.sqlite3` 保存图控制状态。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.4 验证](validation-v0.4.md)。
 
 可重复的桌面 smoke test 使用独立运行目录：
 
@@ -121,7 +149,7 @@ Python 与桌面包分别使用对应的 alpha 版本表示。发布时检查二
 .\node_modules\electron\dist\electron.exe scripts/smoke_desktop.cjs --parallel-sources
 ```
 
-默认只操作本地合成数据和界面，不录音、不调用模型。加 `--live` 才会发送固定的合成模型请求，并用静音播放验证系统语音链路。报告和截图保存在 `.runtime/desktop-smoke/`。`GREATSAGE_DATA_DIR` 可隔离测试与日常数据。
+默认只操作本地合成数据和界面，不录音、不调用模型。构建后使用 `--packaged` 读取 `release/win-unpacked` 中的桌面代码和冻结后端，避免拿源码通过代替构建验收。加 `--live` 才会发送固定的合成模型请求，并用静音播放验证系统语音链路。报告和截图保存在 `.runtime/desktop-smoke/`。`GREATSAGE_DATA_DIR` 可隔离测试与日常数据。
 
 README 截图和社交预览图用下面的脚本重新生成：
 
@@ -146,6 +174,9 @@ README 截图和社交预览图用下面的脚本重新生成：
 | memory-design.md | 检索、压缩、来源和删除语义变化 |
 | roadmap.md | 阶段结束、优先级或范围变化；标出已确认目标与仍待设计的细节 |
 | development.md | 依赖、贡献、测试和发布流程变化 |
+| agent.md、AGENTS.md | 开发方法或项目约束变化；AGENTS.md 保持入口，方法只维护一份 |
+| code-map.md | 文件／符号／功能入口变化；同步结构树、功能表与相关调用链 |
+| development-log.md、lessons-learned.md | 每个切片的结果；新增或修正有证据的故障原因、复用经验 |
 
 最终测试数量、云端模型名单和性能结论以实际验证记录为准，不在工作完成前预填。
 
