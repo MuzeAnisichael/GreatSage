@@ -2,6 +2,12 @@
 
 每个迁移切片记录修改、验证与剩余边界；版本交付见 [CHANGELOG](../CHANGELOG.md)，未来工作见[路线图](roadmap.md)。日志与对应改动同一提交，提交标识由 Git 历史追溯。
 
+## 2026-10-20 · 按职责命名界面与共享忽略约定
+
+- `ui/v02.js`／`setupV02` 改为 `ui/memory.js`／`setupMemoryPanel`，同步主界面导入、调用及语法检查配置；控件与交互保持原样。历史测试及报告名称保留。
+- 把原来只在本机 Git 排除配置中的 `.claude/worktrees/` 写入仓库 `.gitignore`，并显式忽略 `connection.json`；fork 后也能继承这些规则。未删除本地工作树、运行数据、依赖或构建目录。
+- 验证：一次 `npm.cmd run check` 通过，旧入口引用与新导入／导出核对通过；`git check-ignore` 确认连接信息、工作树、运行与构建路径受保护。纯命名整理未重复桌面截图／冒烟或 Python 全量回归。
+
 ## 2026-10-20 · 分离任务存储与执行依赖
 
 - 结构审查发现 `MemoryStore` 为获取 `TaskStoreMixin` 导入整个任务执行模块，间接加载模型、LangGraph 和工具执行依赖。

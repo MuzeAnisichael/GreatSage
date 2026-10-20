@@ -1,6 +1,6 @@
-// v0.2 controls for semantic memory, request budgets and auditable background work.
+// Memory sources, conflicts, semantic indexing, request budgets and audit controls.
 import { setupAudit } from './audit.js';
-export function setupV02({ client, state, toast, busy, confirmAction, refreshMemory }) {
+export function setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory }) {
   const audit = setupAudit({ client, busy, toast, confirmAction });
   const $ = selector => document.querySelector(selector);
   const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className; if (text !== undefined) el.textContent = text; return el; };

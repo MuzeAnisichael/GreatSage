@@ -1,5 +1,5 @@
 import { SageClient, stateLabels, sourceLabel, timeLabel, safeString, redact } from './client.js';
-import { setupV02 } from './v02.js';
+import { setupMemoryPanel } from './memory.js';
 import { setupWork } from './work.js';
 import { setupMCP } from './mcp.js';
 import { setupInspector } from './inspector.js';
@@ -723,7 +723,7 @@ async function loadInitial() {
   state.initialized = true;
 }
 
-enhancements = setupV02({ client, state, toast, busy, confirmAction, refreshMemory });
+enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory });
 work = setupWork({ client, toast, busy, confirmAction });
 mcp = setupMCP({ client, toast, busy });
 inspector = setupInspector({ client, busy, toast });
