@@ -2,6 +2,13 @@
 
 每个迁移切片记录修改、验证与剩余边界；版本交付见 [CHANGELOG](../CHANGELOG.md)，未来工作见[路线图](roadmap.md)。日志与对应改动同一提交，提交标识由 Git 历史追溯。
 
+## 2026-10-20 · 分离任务存储与执行依赖
+
+- 结构审查发现 `MemoryStore` 为获取 `TaskStoreMixin` 导入整个任务执行模块，间接加载模型、LangGraph 和工具执行依赖。
+- 将 mixin、任务活动状态及存储助手原样移入 `greatsage/task_store.py`，记忆层直接导入；`tasks.py` 保留 `TaskStoreMixin`、`ACTIVE` 与 `_now` 的兼容入口，继续负责运行协调。
+- AST 比较确认存储方法、SQL 和助手未变，复用原数据库、锁、事务及恢复语义。没有新增一套存储实现。
+- 最小验证：仅运行一次 `pytest tests/test_tasks.py tests/test_memory.py tests/test_memory_v02.py -q --basetemp .runtime/pytest-structure-20261020`，**35 passed**（6.88 秒），一个已有 `audioop` 弃用警告。未重跑全量回归、真实模型、音频或冻结构建；旧构建证据不覆盖本次结构调整。
+
 ## 2026-10-17 · 模型适配迁移
 
 - 使用 `langchain-openai` / `langchain-ollama` 及其官方 SDK，替换自写 SSE／NDJSON 聊天协议解析；ASR、TTS、嵌入接口保持现有实现。
