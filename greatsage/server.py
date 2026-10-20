@@ -98,6 +98,9 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         # Validate first, then stop/reconfigure the active pipeline.
         previous_mcp = runtime.settings.raw()["mcp_servers"]
         updated = runtime.settings.update(patch)
+        if was_listening:
+            # Disable old voice identities before any asynchronous cleanup can yield.
+            await runtime.set_listening(False)
         if updated["mcp_servers"] != previous_mcp:
             runtime.tasks.mcp.clear()
             await runtime.tasks.invalidate()
@@ -106,7 +109,6 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         await runtime.pause_background()
         runtime.background.retry()
         if was_listening:
-            await runtime.set_listening(False)
             await runtime.set_listening(True)
         await runtime.emit("settings_updated", {"version": runtime.settings.version()})
         runtime._schedule_compression()

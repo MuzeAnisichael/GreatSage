@@ -200,3 +200,45 @@ def test_streaming_asr_test_only_probes_explicit_connection(client, monkeypatch)
     assert "未打开麦克风" in result.json()["detail"]
     assert calls == ["deepgram_streaming"] and not runtime.listening
     assert "SERVER_STREAMING_FIXTURE" not in result.text
+
+
+def test_settings_stop_old_voice_before_async_cleanup_and_restore_listening(client, monkeypatch):
+    session, runtime = client
+    runtime.settings.update({"asr": {"provider": "deepgram_streaming",
+        "base_url": "https://api.deepgram.com", "model": "nova-3", "language": "zh"}})
+    capture_actions, routed = [], []
+
+    class Capture:
+        def start(self, *_):
+            capture_actions.append("start")
+
+        def stop(self):
+            capture_actions.append("stop")
+
+    runtime.capture = Capture()
+    runtime.listening = True
+    identity = runtime._voice_identity("microphone:fixture")
+    runtime.segment_versions[identity.source] = 1
+    original_interrupt = runtime.interrupt
+
+    async def route(message, _speech_end):
+        routed.append(message)
+
+    async def interrupt_with_late_transcript(reason="user"):
+        if reason == "settings_changed":
+            # Simulate a final cloud callback arriving while response cleanup yields.
+            await runtime._commit_streaming_turn(identity, {
+                "text": ["请解释旧语音内容。"], "speech_end": 0, "version": 1,
+                "pcm": bytearray(), "recording_overflow": False,
+            }, runtime.data_epoch)
+        await original_interrupt(reason)
+
+    monkeypatch.setattr(runtime, "_route_message", route)
+    monkeypatch.setattr(runtime, "interrupt", interrupt_with_late_transcript)
+    response = session.put("/api/settings", json={"asr": {"model": "nova-3-general"}})
+    assert response.status_code == 200
+    assert session.get("/api/history").json() == []
+    assert routed == []
+    assert runtime.listening and session.get("/api/status").json()["listening"]
+    assert not runtime._voice_current(identity)
+    assert capture_actions == ["stop", "start"]
