@@ -15,6 +15,10 @@ class SpeechEvent:
     pcm: bytes = b""
     speech_end: float = 0.0
     continued: bool = False
+    speech_start: float = 0.0
+    media_start: float | None = None
+    media_end: float | None = None
+    media_voice_end: float | None = None
 
 
 class Segmenter:
@@ -61,7 +65,7 @@ class Segmenter:
                 self.since_partial = len(self.frames)
                 self.quiet = 0
                 self.last_voice = frame_time
-                events.append(SpeechEvent("start"))
+                events.append(SpeechEvent("start", speech_start=frame_time - self.start_hits * .03))
                 continue
             self.frames.append(frame)
             self.since_partial += 1

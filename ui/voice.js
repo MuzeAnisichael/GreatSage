@@ -21,11 +21,18 @@ const reasons = {
   streaming_asr_segment_overlap: '转写时间范围重叠，已停止本音源以避免重复内容。',
   streaming_asr_timestamp_missing: '识别结果缺少时间信息，无法安全归入当前话轮。',
   streaming_asr_turn_too_large: '当前话轮超出处理上限，请分段说话。',
+  streaming_asr_turn_queue_full: '待确认语音已积压，已停止本音源。请稍后重试并重新说出未完成的内容。',
 };
 
 export function describeVoiceSource(source) {
+  const active = source.state === 'running';
+  const phases = { speaking: source.source?.startsWith('microphone') ? '正在听你说话' : '正在接收语音', finalizing: '正在确认转写', idle: '等待语音' };
+  const pending = Number.isInteger(source.pending_turns) && source.pending_turns >= 0 ? source.pending_turns : null;
   return {
-    label: source.source === 'microphone:default' ? '麦克风 · 默认设备' : sourceLabel(source.source), state: states[source.state] || '等待音频',
+    label: source.source === 'microphone:default' ? '麦克风 · 默认设备' : sourceLabel(source.source),
+    state: active && phases[source.speech_phase] || states[source.state] || '等待音频',
+    pending,
+    progress: active && pending > 0 ? `${pending} 段语音等待确认；可以继续说话。` : '',
     reason: source.error_code ? reasons[source.error_code] || '本音源识别已中断，请查看运行日志。' : '',
   };
 }
@@ -81,6 +88,7 @@ export function setupVoiceHealth({ client, busy, toast, openAsrSettings, openAud
       : !snapshot.listening ? '尚未聆听。选择音源后点击“开始聆听”。'
       : !sources.length ? '等待所选音源的音频。'
       : sources.some(source => source.recovery_action) ? '需要处理的音源见下方。重试只接收新音频，不重放旧语音。'
+      : sources.some(source => source.speech_phase === 'finalizing') ? '正在确认转写；秘书会按顺序整理，确认后再作回应。'
       : '所选音源分别处理，桌面声音仅作为观察信息。';
     list.replaceChildren();
     for (const source of sources) {
@@ -90,6 +98,10 @@ export function setupVoiceHealth({ client, busy, toast, openAsrSettings, openAud
       const label = document.createElement('strong'); label.textContent = detail.label;
       const state = document.createElement('span'); state.className = 'tag'; state.textContent = detail.state;
       title.append(label, state); row.append(title);
+      if (detail.progress) {
+        const progress = document.createElement('p'); progress.className = 'voice-health-progress'; progress.textContent = detail.progress;
+        row.append(progress);
+      }
       if (detail.reason) {
         const reason = document.createElement('p'); reason.className = 'voice-health-reason'; reason.textContent = detail.reason;
         if (source.recovery_action === 'restart_listening') reason.textContent += ' 暂停聆听并检查后，再重新开启。';
@@ -122,7 +134,7 @@ export function setupVoiceHealth({ client, busy, toast, openAsrSettings, openAud
     subscribe(callback) { subscribers.add(callback); },
     setConnected(value) { connected = value; if (!value) { ++epoch; clearTimeout(timer); } notify(); },
     onEvent(event) {
-      if (['audio_source', 'audio_recovery', 'audio_gap', 'listening', 'state', 'error', 'session', 'stream_reset'].includes(event.kind)) schedule();
+      if (['audio_source', 'audio_recovery', 'audio_gap', 'voice_turn', 'listening', 'state', 'error', 'session', 'stream_reset'].includes(event.kind)) schedule();
     },
   };
 }

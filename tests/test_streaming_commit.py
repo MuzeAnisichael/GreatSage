@@ -57,13 +57,19 @@ async def test_confirmed_turn_commits_when_next_turn_starts_during_event_deliver
             await commit
 
         assert [row["text"] for row in runtime.memory.history()] == ["已经说完的第一句。"]
-        assert [row["text"] for row in routed] == ["已经说完的第一句。"]
+        assert not routed  # Retain history, but do not answer over newer speech.
         # A duplicated old interval must still stay out of the newly active turn.
         await runtime._streaming_transcript(identity, "重复的第一句。", True, "", {
             "start": 0, "duration": 1, "from_finalize": True,
         })
         assert runtime.streaming_turns[source]["turn"]["text"] == []
-        assert len(runtime.memory.history()) == len(routed) == 1
+        assert len(runtime.memory.history()) == 1 and not routed
+        await runtime._handle_segment(identity, SpeechEvent("discard", media_end=2))
+        await runtime._streaming_transcript(identity, "", True, "", {
+            "start": 1, "duration": 1, "from_finalize": True,
+        })
+        assert [row["text"] for row in routed] == ["已经说完的第一句。"]
+        assert routed[0]["_voice_deferred"]
     finally:
         release.set()
         await runtime.close()

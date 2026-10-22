@@ -117,7 +117,8 @@ async def test_streaming_endpoint_flags_and_continued_segments_keep_the_turn_ope
         await pipeline.feed(AudioChunk("system", VOICE * 4, timestamp=20))
         await pipeline.drain()
         assert pipeline.segmenter.active
-        assert stt.frames == ["VADUserStartedSpeakingFrame", "InputAudioRawFrame"]
+        assert stt.frames == ["InputAudioRawFrame", "InputAudioRawFrame",
+                              "VADUserStartedSpeakingFrame", "InputAudioRawFrame", "InputAudioRawFrame"]
         await stt.push_frame(InterimTranscriptionFrame(
             "部分", "untrusted-remote-user", "t1", result={"is_final": False}),
             FrameDirection.DOWNSTREAM)
@@ -165,6 +166,31 @@ async def test_backpressure_covers_stt_and_close_rejects_late_results():
         assert not transcripts and stt.cleaned
         with pytest.raises(RuntimeError, match="closed"):
             await pipeline.start()
+    finally:
+        await pipeline.close()
+
+
+async def test_streaming_boundaries_use_submitted_pcm_even_with_capture_clock_jitter():
+    events = []
+
+    async def capture(identity, event):
+        events.append(event)
+
+    stt = RecordingSTT()
+    pipeline = SourceVoicePipeline(VoiceIdentity("system", "pcm-clock", 1), CONFIG, capture,
+        stt_processor=stt, on_transcript=noop)
+    pipeline.segmenter.vad = DeterministicVAD()
+    try:
+        await pipeline.start()
+        await pipeline.feed(AudioChunk("system", VOICE * 4, timestamp=100))
+        # Callback delay is unrelated to submitted media time.
+        await pipeline.feed(AudioChunk("system", QUIET * 3, timestamp=120))
+        await pipeline.drain()
+        start, final = events
+        assert start.media_start == pytest.approx(0)
+        assert final.media_voice_end == pytest.approx(.12)
+        assert final.media_end == pytest.approx(.21)  # Includes trailing quiet sent before Finalize.
+        assert stt.frames[-2:] == ["InputAudioRawFrame", "VADUserStoppedSpeakingFrame"]
     finally:
         await pipeline.close()
 

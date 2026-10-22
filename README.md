@@ -27,14 +27,14 @@
 </picture>
 
 > [!NOTE]
-> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。可以下载 Windows x64 目录 ZIP，或从源码运行；最近发布包不含安装器。
+> 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。提供 Windows x64 目录 ZIP、实验性 NSIS 安装器和源码运行方式。
 >
-> - **版本**：[0.4.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) 从 `main` 交付，包含此前 v0.3 的资料库、纪要任务和受控工具。
+> - **版本**：[0.5.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) 从 `main` 交付，包含自然连续语音、转写状态、单音源恢复，以及此前的资料库、纪要任务和受控工具。
 > - **框架迁移**：LangChain、LangGraph、MCP HTTP 和本地运行监控已纳入本版；实际验证范围见[v0.4 验证](docs/validation-v0.4.md)，逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
 
-当前源码已推进 **v0.5 功能完善**：Pipecat 语音管线、可选 Deepgram 流式识别、播放／打断计时、语音监控及 NSIS 构建；首页与监控可查看故障原因、单独重试失败的识别音源。它尚未作为 v0.5 发布；真实新服务、设备与安装链验收仍待完成。配置与证据见[使用说明](docs/usage.md)和[v0.5 验证](docs/validation-v0.5.md)，上面的 v0.4 下载不包含这些改动。
+**v0.5 的日常语音体验**：上一句等待最终识别时可以继续下一句；已确认原文按顺序保存，用户继续说话时暂缓旧回答。界面区分临时、确认和未提交转写，显示音源阶段并提供单独重试。Pipecat、可选 Deepgram、播放／打断计时和语音监控均已接入。配置与证据见[使用说明](docs/usage.md)和[v0.5 验证](docs/validation-v0.5.md)；真实新服务、设备和人工安装链仍待验收，性能指标作为优化参考。
 
 ## 它能做什么
 
@@ -89,14 +89,16 @@
 
 ### 下载 Windows 目录包
 
-从 [v0.4.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+从 [v0.5.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.4.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.5.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
+
+同页提供实验性 `GreatSage-0.5.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
 
 ### 从源码运行
 
@@ -185,7 +187,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
 - **v0.4 验证范围**：真实模型、MCP 服务及打包对象的具体覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth、实体记忆和多 Agent 尚未接入。
-- **分发**：提供 Windows x64 目录 ZIP；v0.5 已有 NSIS 构建、尚未发布安装器或发行签名，干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
+- **分发**：提供 Windows x64 目录 ZIP 和实验性 NSIS 安装器，没有受信任发行签名；干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
 
 测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
 
@@ -197,7 +199,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.2 alpha | 已发布 | 回应质量评测、混合检索、分层摘要、请求审计与后台恢复 |
 | v0.3 | 随 v0.4 alpha 交付 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；真实场景验收继续保留 |
 | v0.4 alpha | 已从 main 交付 | LangChain、LangGraph、MCP HTTP、本地监控与 Windows x64 目录 ZIP |
-| v0.5 | 首轮集成，真实验收待完成 | Pipecat、可选流式识别、语音监控与 NSIS 构建 |
+| v0.5 alpha | 功能从 main 交付，真实验收继续保留 | Pipecat、连续话轮、单源恢复、转写进度、语音监控、ZIP／实验性 NSIS |
 | v0.6–v0.7 | 分阶段规划 | LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。

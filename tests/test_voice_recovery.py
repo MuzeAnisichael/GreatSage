@@ -222,6 +222,7 @@ async def test_device_failure_before_pcm_survives_all_sources_stopped(runtime):
     assert not status["listening"]
     assert status["sources"] == [{"source": "microphone:default", "state": "stopped", "streaming": None,
                                   "pending_frames": None, "error_code": "voice_source_stopped",
+                                  "speech_phase": "idle", "pending_turns": 0,
                                   "recovery_action": "restart_listening"}]
     with pytest.raises(ValueError):
         await runtime.retry_voice_source("microphone:default")

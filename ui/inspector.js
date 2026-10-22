@@ -27,7 +27,9 @@ export function setupInspector({ client, busy, toast, voiceHealth }) {
       const detail = describeVoiceSource(source);
       const mode = source.streaming === true ? '实时流式' : source.streaming === false ? '分段识别' : '待恢复';
       const pending = Number.isInteger(source.pending_frames) && source.pending_frames >= 0 ? source.pending_frames.toLocaleString() : '待测';
-      for (const value of [detail.label, detail.state, mode, pending]) row.append(element('td', value));
+      const phase = element('td', detail.state);
+      if (source.streaming === true) phase.append(element('small', detail.pending === null ? '待确认语音：待测' : `待确认语音：${detail.pending} 段`, 'voice-turn-count'));
+      row.append(element('td', detail.label), phase, element('td', mode), element('td', pending));
       const reason = element('td', detail.reason || '—');
       if (source.error_code) reason.append(element('small', source.error_code, 'voice-error-code'));
       const action = element('td'); const button = voiceHealth?.actionButton(source); if (button) action.append(button);
@@ -119,7 +121,7 @@ export function setupInspector({ client, busy, toast, voiceHealth }) {
   };
   voiceHealth?.subscribe(() => { if (data) renderVoice(); });
   return { refresh, onEvent(event) {
-    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated', 'metrics', 'audio_source', 'audio_gap', 'audio_recovery', 'listening', 'error'].includes(event.kind)) return;
+    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated', 'metrics', 'audio_source', 'audio_gap', 'audio_recovery', 'voice_turn', 'listening', 'error'].includes(event.kind)) return;
     // Invalidate an older in-flight response immediately, before the debounce.
     epoch++; clearTimeout(timer); timer = setTimeout(() => refresh().catch(error => toast(error.message, 'error')), 250);
   } };

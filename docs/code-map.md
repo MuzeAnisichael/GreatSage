@@ -29,6 +29,7 @@ GreatSage/
 │  ├─ audio.py / winloopback.py      Windows 采集
 │  ├─ segmentation.py / echo.py     分段与回声抑制措施
 │  ├─ voice_pipeline.py             Pipecat 分音源生命周期、背压及固定身份
+│  ├─ voice_turns.py                本地话轮记录、稳定身份与有界待确认队列
 │  ├─ voice_status.py               首页与监控共享的音源元数据／恢复动作
 │  ├─ streaming_asr.py              可选 Deepgram 官方 SDK 薄适配、连接探针
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
@@ -63,7 +64,8 @@ GreatSage/
 | 设置、密钥、模型切换 | [ui/app.js](../ui/app.js): `saveSettings`, `saveQuickSettings`；`PUT /api/settings` | [greatsage/settings.py](../greatsage/settings.py): `SettingsStore.update`, `provider`, `read_env`；服务端 `update_settings` | [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
 | 音源列表、开始 / 停止监听 | [ui/app.js](../ui/app.js): `loadSources`；`GET /api/audio/sources`, `POST /api/listening` | [runtime.py](../greatsage/runtime.py): `Runtime.set_listening`, `_enqueue`, `_audio_consumer`；[audio.py](../greatsage/audio.py): `AudioCaptureManager.sources`, `start`, `stop`；进程采集再看 [winloopback.py](../greatsage/winloopback.py) | [test_audio.py](../tests/test_audio.py), [test_runtime.py](../tests/test_runtime.py) |
 | 单音源故障与识别重试 | [ui/voice.js](../ui/voice.js): `setupVoiceHealth`, `describeVoiceSource`；`GET /api/audio/status`, `POST /api/audio/retry` | [voice_status.py](../greatsage/voice_status.py): `audio_status`；[runtime.py](../greatsage/runtime.py): `Runtime.retry_voice_source`, `_capture_state`, `_retire_voice_source` | [test_voice_recovery.py](../tests/test_voice_recovery.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
-| 流式话轮与最终转写提交 | `transcript`、`speech_start` 事件 | [runtime.py](../greatsage/runtime.py): `_streaming_transcript` → `_flush_streaming_turn` → `_commit_streaming_turn` → `_accept_transcript`；[voice_pipeline.py](../greatsage/voice_pipeline.py): `SourceVoicePipeline.close`, `_cleanup` | [test_voice_runtime.py](../tests/test_voice_runtime.py), [test_streaming_commit.py](../tests/test_streaming_commit.py), [test_voice_pipeline.py](../tests/test_voice_pipeline.py) |
+| 连续语音、待确认话轮与最终转写 | `transcript`、`speech_start`、`voice_turn` 事件；[ui/app.js](../ui/app.js): `addTranscript`, `markUnfinishedTranscripts`, `resetTranscripts` | [voice_turns.py](../greatsage/voice_turns.py): `make_turn`, `records`, `activity`, `turn_id`；[voice_pipeline.py](../greatsage/voice_pipeline.py): `_SegmentProcessor.process_frame`, `_audio`；[runtime.py](../greatsage/runtime.py): `_handle_segment`, `voice_activity`；转写回调 `_streaming_transcript` → `_flush_streaming_turn` → `_commit_streaming_turn` → `_accept_transcript` | [test_voice_turns.py](../tests/test_voice_turns.py), [test_voice_runtime.py](../tests/test_voice_runtime.py), [test_streaming_commit.py](../tests/test_streaming_commit.py), [test_voice_pipeline.py](../tests/test_voice_pipeline.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
+| 继续说话时延后回应 | `voice_turn`、`decision` 事件；首页音源状态 | [runtime.py](../greatsage/runtime.py): `_route_voice_message`, `_voice_busy`, `_defer_voice_message`, `_flush_pending_voice` → `_route_message`；已确认原文先存储，延后的回应触发只保留最新一轮 | [test_voice_turns.py](../tests/test_voice_turns.py), [test_streaming_commit.py](../tests/test_streaming_commit.py) |
 | 识别、断句、打断与回声 | `POST /api/interrupt`；`transcript`, `speech_start`, `interrupt` 事件 | [segmentation.py](../greatsage/segmentation.py): `Segmenter.feed`；[runtime.py](../greatsage/runtime.py): `_transcribe`, `interrupt`；[providers.py](../greatsage/providers.py): `Providers.transcribe`；[echo.py](../greatsage/echo.py) | [test_segmentation.py](../tests/test_segmentation.py), [test_echo.py](../tests/test_echo.py), [test_runtime.py](../tests/test_runtime.py) |
 | 文字回答、旁听与主动回应 | [ui/app.js](../ui/app.js) 的消息提交监听器；`POST /api/chat` | [runtime.py](../greatsage/runtime.py): `chat`, `_route_message`, `_should_reply`, `_consider_proactive`, `submit_message`, `_respond`；策略辅助在 [decisions.py](../greatsage/decisions.py) | [test_runtime.py](../tests/test_runtime.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
 | API / Ollama 流式聊天 | `POST /api/providers/test`；服务端 `test_provider` | [providers.py](../greatsage/providers.py): `Providers.stream_chat` → [chat_models.py](../greatsage/chat_models.py): `stream_chat`；`MeteredChatOpenAI`, `NamedToolChatOllama` | [test_providers.py](../tests/test_providers.py), [test_probe_providers.py](../tests/test_probe_providers.py) |
@@ -102,8 +104,12 @@ flowchart LR
     A -. "VAD / _handle_segment" .-> T["Runtime._transcribe → Providers.transcribe"]
     A -. "流式帧" .-> STT["Deepgram → _streaming_transcript → _flush_streaming_turn"]
     T --> Accept["Runtime._accept_transcript"]
-    STT --> Accept
-    Accept --> R["Runtime._route_message"]
+    STT -. "逐轮串行提交" .-> Commit["Runtime._commit_streaming_turn"]
+    Commit --> Accept
+    Accept --> Gate["Runtime._route_voice_message → _defer_voice_message"]
+    Gate -. "仍在说话 / 待确认：延后触发" .-> Pending["pending_voice → _flush_pending_voice"]
+    Gate --> R["Runtime._route_message"]
+    Pending --> R
     U["POST /api/chat → Runtime.chat"] --> S["Runtime.submit_message"]
     R --> S
     S -. "reply_task" .-> O["Runtime._respond"]
@@ -116,6 +122,8 @@ flowchart LR
 ```
 
 旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音统一经 Pipecat 管线；原服务保留分段快照，Deepgram 可选原生流式。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
+
+`transcript.turn_id` 固定到原话轮，迟到的上一轮 final 更新原行，不覆盖下一轮临时文字。`voice_turn` 只携带身份、`speech_phase` 和 `pending_turns` 元数据；首页与监控从 `voice_status.audio_status` 刷新共享快照。流式 `pending_turns` 统计已本地结束但仍在确认或提交的话轮，不含仍在说话的当前轮次。停止或失败后的临时文字标为“未完成，未提交”，会话切换清空实时列表。
 
 ```mermaid
 flowchart LR
@@ -238,12 +246,21 @@ flowchart LR
     Pipe --> Segment[Runtime._handle_segment]
     Segment --> Batch[Providers.transcribe]
     Pipe --> STT[Deepgram 官方流式服务]
+    Segment --> Records[voice_turns.make_turn / records]
     STT --> Turn[Runtime._streaming_transcript / _flush_streaming_turn]
+    Records --> Turn
     Batch --> Accept[Runtime._accept_transcript]
-    Turn --> Accept
-    Accept --> Route[记忆 / _route_message / 原权限入口]
+    Turn -. 逐轮串行提交 .-> Commit[Runtime._commit_streaming_turn]
+    Commit --> Accept
+    Accept --> History[记忆原文 / 显式记忆]
+    Accept --> Gate[_route_voice_message / _defer_voice_message]
+    Gate -. 仍在说话或等待确认 .-> Pending[pending_voice / _flush_pending_voice]
+    Gate --> Route[_route_message / 原权限入口]
+    Pending --> Route
     Cancel[停听 / 删除 / 会话切换] --> Invalidate[_invalidate_audio]
     Invalidate --> Close[SourceVoicePipeline.close]
 ```
 
-丢帧／积压排障从 `_voice_failed`、`_retire_voice_source` 和 `voice_errors` 开始；流式端点排障看 `_streaming_segment`／`_streaming_finalize_timeout`。`_voice_current` 与提交阶段 `current()` 核验固定身份；后台任务不能通过旧身份写回。相关覆盖：[test_voice_runtime.py](../tests/test_voice_runtime.py)。
+流式 PCM 先按 30 ms 切分；`_SegmentProcessor._audio` 维护含静音的已提交 PCM 时间轴，`_streaming_transcript` 按区间匹配最早未确认的话轮。队列允许四个较早的待确认话轮加当前轮次；只有明确歧义、队列满、丢帧／积压或本地结束后 15 秒仍未确认等故障才停源，下一次开口本身不是故障。Deepgram 时间戳并非声卡样本级精度，Finalize ACK 也不保证返回；`_flush_streaming_turn` 仅按远端端点或完整稳定区间覆盖保守放行。
+
+丢帧／积压排障从 `_voice_failed`、`_retire_voice_source` 和 `voice_errors` 开始；端点排障看 `_streaming_segment`／`_streaming_finalize_timeout`；抢话排障看 `_voice_busy`／`_defer_voice_message`。`_voice_current` 与提交阶段 `current()` 核验固定身份；后台任务不能通过旧身份写回。相关用例从 [test_voice_runtime.py](../tests/test_voice_runtime.py) 与 [test_streaming_commit.py](../tests/test_streaming_commit.py) 定位；真实连续语音与 Deepgram 验证边界见 [validation-v0.5.md](validation-v0.5.md)。

@@ -110,10 +110,12 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
       check(results.every(result => Array.isArray(result.microphones) && Array.isArray(result.processes)) && (await request('/api/status')).listening === false, 'Concurrent source enumeration keeps backend healthy');
     }
     check(await evaluate(`document.querySelector('#quick-microphone').checked === ${Boolean(originalSettings.microphone)} && document.querySelector('#quick-desktop-source').value === ${JSON.stringify(originalSettings.desktop_source)}`), 'Microphone and desktop sources stay separate');
-    if (!packaged) {
+    {
       // Synthetic health responses exercise recovery controls without opening any
-      // device or calling a speech service. All other routes use the real backend.
-      await evaluate(`(() => {
+      // device or calling a speech service, for source and final packaged UI alike.
+      // All other routes use the real backend.
+      await evaluate(`(async () => {
+        const { SageClient } = await import('./client.js');
         window.__voiceSmoke = { originalFetch: window.fetch, calls: [], status: { listening: true, sources: [
           { source: 'microphone:default', state: 'failed', streaming: true, pending_frames: 0, error_code: 'streaming_asr_connection_closed', recovery_action: 'retry_source' },
           { source: 'system', state: 'running', streaming: true, pending_frames: 2, error_code: null, recovery_action: null }
@@ -130,6 +132,15 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
           if (route === '/api/listening') fixture.calls.push({ route });
           return fixture.originalFetch.call(window, url, options);
         };
+        const connect = SageClient.prototype.connect;
+        SageClient.prototype.connect = function () {
+          window.__voiceSmoke.client = this;
+          SageClient.prototype.connect = connect;
+          return connect.call(this);
+        };
+        window.__voiceSmoke.send = (kind, data) => window.__voiceSmoke.client.dispatchEvent(new CustomEvent('event', {
+          detail: { id: crypto.randomUUID(), kind, data, created_at: new Date().toISOString() }
+        }));
         document.querySelector('#reconnect').click();
       })()`);
       await until(() => evaluate("Boolean(document.querySelector('#voice-health [data-action=retry_source]')) && !document.querySelector('#reconnect').disabled"), 'recoverable voice failure');
@@ -140,6 +151,21 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
       await evaluate("document.querySelector('#voice-health [data-action=retry_source]').click()");
       await until(() => evaluate("document.querySelector('#voice-health [data-source=\"microphone:default\"]').dataset.state === 'running'"), 'source retry health');
       check(await evaluate("window.__voiceSmoke.calls.length === 1 && window.__voiceSmoke.calls[0].method === 'POST' && window.__voiceSmoke.calls[0].body.source === 'microphone:default' && document.querySelector('#voice-health [data-source=system]').dataset.state === 'running' && window.__voiceSmoke.status.sources[1].pending_frames === 2"), 'Source retry sends exact source without global restart or changing other source');
+      await evaluate("window.__voiceSmoke.status.sources[0] = { ...window.__voiceSmoke.status.sources[0], speech_phase: 'finalizing', pending_turns: 2 };window.__voiceSmoke.send('voice_turn', { source: 'microphone:default', phase: 'finalizing', pending_turns: 2 })");
+      await until(() => evaluate("document.querySelector('#voice-health').textContent.includes('正在确认转写') && document.querySelector('#voice-health').textContent.includes('2 段语音等待确认')"), 'pending natural voice feedback');
+      check(true, 'Pending natural voice is shown separately from active capture');
+      await evaluate(`(() => {
+        const send = window.__voiceSmoke.send;
+        send('transcript', { source: 'microphone:default', turn_id: 'fixture-a', text: '上一句临时文字', final: false });
+        send('transcript', { source: 'microphone:default', turn_id: 'fixture-b', text: '下一句仍在识别', final: false });
+        send('transcript', { source: 'microphone:default', turn_id: 'fixture-a', text: '上一句已经确认', final: true });
+        send('transcript', { source: 'microphone:default', turn_id: 'fixture-a', text: '旧的临时文字', final: false });
+      })()`);
+      check(await evaluate("document.querySelectorAll('.transcript-item').length === 2 && document.querySelector('[data-turn=fixture-a] .transcript-text').textContent === '上一句已经确认' && document.querySelector('[data-turn=fixture-a]').dataset.final === 'true' && document.querySelector('[data-turn=fixture-b]').classList.contains('interim') && document.querySelector('[data-turn=fixture-b] .transcript-text').textContent === '下一句仍在识别'"), 'Late final keeps the next turn interim and cannot revert to old partial');
+      await evaluate("window.__voiceSmoke.send('audio_source', { source: 'microphone:default', kind: 'recognition_retry' })");
+      check(await evaluate("document.querySelector('[data-turn=fixture-b]').classList.contains('incomplete') && document.querySelector('[data-turn=fixture-b] .transcript-status').textContent === '未完成，未提交' && document.querySelector('[data-turn=fixture-a]').dataset.final === 'true'"), 'Source retirement marks only unfinished transcripts as unsubmitted');
+      await evaluate("window.__voiceSmoke.send('session', { session_id: 'fixture-voice-session' })");
+      check(await evaluate("document.querySelectorAll('.transcript-item').length === 0 && Boolean(document.querySelector('#transcript-empty'))"), 'Session event clears prior live transcripts');
       await evaluate("window.__voiceSmoke.status.sources[0] = { ...window.__voiceSmoke.status.sources[0], state: 'stopped', error_code: 'voice_source_stopped', recovery_action: 'restart_listening' };document.querySelector('#reconnect').click()");
       await until(() => evaluate("Boolean(document.querySelector('#voice-health [data-action=restart_listening]')) && !document.querySelector('#reconnect').disabled"), 'capture stopped guidance');
       await evaluate("document.querySelector('#voice-health [data-action=restart_listening]').click()");

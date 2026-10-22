@@ -27,14 +27,14 @@ It hears what you say and can also listen in on meeting audio from your computer
 </picture>
 
 > [!NOTE]
-> GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Download the Windows x64 folder ZIP or run from source; the latest release does not include an installer.
+> GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Use the Windows x64 folder ZIP, experimental NSIS installer or source setup.
 >
-> - **Version:** [0.4.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1) ships from `main`, including the v0.3 materials library, minutes tasks and controlled tools.
+> - **Version:** [0.5.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) ships from `main`, with consecutive voice turns, transcription status and source recovery, alongside the existing materials, minutes and controlled tools.
 > - **Frameworks:** LangChain, LangGraph, MCP HTTP and local runtime inspection are included. See [v0.4 validation](docs/validation-v0.4.md) for the actual coverage and the [development log](docs/development-log.md) for individual changes (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
-Current source includes **v0.5 feature improvements**: Pipecat source pipelines, optional Deepgram streaming STT, playback/interruption receipts, voice monitoring and NSIS build configuration. The home page and inspector explain source failures and offer an explicit retry of one failed recognizer. It has not been released as v0.5. Live streaming quality, device behavior and the installation/upgrade cycle still need acceptance; see [v0.5 validation](docs/validation-v0.5.md). The v0.4 download above does not include these changes.
+**Everyday voice in v0.5:** start the next sentence while the previous one awaits recognition. Confirmed turns enter history in order, while older replies wait until you finish speaking. The UI distinguishes interim, confirmed and unfinished transcripts, displays source activity and offers an explicit retry of one failed recognizer. Pipecat, optional Deepgram streaming STT, playback/interruption receipts and voice monitoring are included. Live service quality, device behavior and manual installation remain unverified; performance targets are optimization references. See [v0.5 validation](docs/validation-v0.5.md).
 
 ## What it does
 
@@ -89,14 +89,16 @@ Current source includes **v0.5 feature improvements**: Pipecat source pipelines,
 
 ### Download the Windows folder build
 
-Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.4.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
+Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.5.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.4.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.5.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 Extract the entire ZIP into a new folder and run `GreatSage.exe`, keeping all accompanying files. Python and Node.js are bundled; configure your own model services and credentials. The build is unsigned and has not passed clean-machine install, upgrade or uninstall acceptance. Existing users should quit the old app and back up their data before using the new folder; keep the existing data directory.
+
+The same release includes experimental `GreatSage-0.5.0-alpha.1-win-x64-Setup.exe`; verify its checksum too. It installs for the current user and is configured to preserve data on uninstall. Quit the previous app from the tray and back up the complete data directory before installing or upgrading. Manual installer acceptance is pending; the ZIP is preferred for initial trials.
 
 ### Run from source
 
@@ -182,7 +184,7 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
 - **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth, entity memory and multi-agent execution are not implemented yet.
-- **Distribution:** the released Windows x64 package is a folder ZIP. v0.5 adds NSIS builds; no installer release or trusted signing is provided yet. Clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified.
+- **Distribution:** Windows x64 folder ZIP and experimental NSIS installer, without trusted signing. Clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified. Prefer the ZIP for initial trials; packaged component checks do not validate the installation cycle.
 
 Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
 
@@ -194,7 +196,7 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.
 | v0.2 alpha | Released | Response-quality evaluation, hybrid search, layered summaries, request audits and background recovery |
 | v0.3 | Included in v0.4 alpha | Materials, cited minutes/todos/documents, controlled tools and task recovery; real-world validation remains pending |
 | v0.4 alpha | Released from main | LangChain, LangGraph, MCP HTTP, local inspection and a Windows x64 folder ZIP |
-| v0.5 | First integration; live acceptance pending | Pipecat, optional streaming STT, voice inspection and NSIS builds |
+| v0.5 alpha | Features delivered from main; live acceptance pending | Pipecat, consecutive turns, source recovery, transcript status, ZIP and experimental NSIS |
 | v0.6–v0.7 | Planned | LangMem/entity memory, Deep Agents/multi-agent; richer inputs and pet later |
 
 ## Contributing
