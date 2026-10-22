@@ -195,7 +195,8 @@ async def test_delayed_asr_confirmation_cannot_approve_a_tool_created_after_capt
     assert approvals[0]["_voice_approval_ids"] == frozenset({"new-pending-call"})
 
 
-async def test_new_speech_during_reply_cleanup_defers_old_response_until_quiet(voice):
+@pytest.mark.parametrize("new_turn", ["speaking", "finished"])
+async def test_new_speech_during_reply_cleanup_defers_old_response_until_quiet(voice, new_turn):
     identity = voice._voice_identity("microphone:fixture")
     voice._route_message = Runtime._route_message.__get__(voice)
     voice.settings.update({"mode": "conversation"})
@@ -218,8 +219,18 @@ async def test_new_speech_during_reply_cleanup_defers_old_response_until_quiet(v
     pending_task = asyncio.create_task(voice._route_voice_message(message, 101, identity, voice.data_epoch, 0))
     await entered.wait()
     await voice._handle_segment(identity, SpeechEvent("start"))
+    if new_turn == "finished":
+        voice.mic_speaking = False
+        newer = voice.memory.add_message("user", "已经完成的后一句", identity.source,
+            identity.session_id, "newer-fixture")
+        await voice._route_voice_message(newer, 102, identity, voice.data_epoch, 1)
+        await voice.reply_task
     release.set()
     await pending_task
+    if new_turn == "finished":
+        assert [row["text"] for row in responses] == ["已经完成的后一句"]
+        assert identity.source not in voice.pending_voice
+        return
     assert not responses and voice.reply_task is None
     assert identity.source in voice.pending_voice
     await voice._handle_segment(identity, SpeechEvent("discard"))

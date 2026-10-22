@@ -89,6 +89,7 @@ class Runtime:
         self.streaming_turns = {}
         self.pending_voice = {}
         self.voice_approvals = {}
+        self.voice_completed_versions = {}
         self.partials: dict[str, asyncio.Task] = {}
         self.final_tasks: set[asyncio.Task] = set()
         self.locks: dict[str, asyncio.Lock] = {}
@@ -390,6 +391,7 @@ class Runtime:
         self.streaming_turns.clear()
         self.pending_voice.clear()
         self.voice_approvals.clear()
+        self.voice_completed_versions.clear()
         tasks = list(self.partials.values()) + list(self.final_tasks)
         for task in tasks:
             task.cancel()
@@ -525,6 +527,7 @@ class Runtime:
         self.streaming_turns.pop(source, None)
         self.pending_voice.pop(source, None)
         self.voice_approvals.pop(source, None)
+        self.voice_completed_versions.pop(source, None)
         self.continued_messages.pop(source, None)
         partial = self.partials.pop(source, None)
         if partial:
@@ -909,6 +912,8 @@ class Runtime:
         if not self._voice_current(identity) or data_epoch != self.data_epoch:
             return True
         source = identity.source
+        if version < self.voice_completed_versions.get(source, version):
+            return True
         pending = self.pending_voice.get(source)
         if pending and pending[0]["_voice_context"][2] > version:
             return True
@@ -920,6 +925,10 @@ class Runtime:
 
     async def _route_voice_message(self, message, speech_end, identity, data_epoch, version):
         # Private routing metadata never enters memory or a provider prompt.
+        if not self._voice_current(identity) or data_epoch != self.data_epoch:
+            return
+        self.voice_completed_versions[identity.source] = max(
+            version, self.voice_completed_versions.get(identity.source, version))
         message = {**message, "_voice_context": (identity, data_epoch, version)}
         if not self._defer_voice_message(message, speech_end):
             await self._route_message(message, speech_end)
