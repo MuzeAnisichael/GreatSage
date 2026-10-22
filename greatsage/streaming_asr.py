@@ -82,7 +82,9 @@ def _service_type():
                 mip_opt_out=True,
                 audio_passthrough=False,
                 settings=self.Settings(
-                    model=model, language=Language(language), endpointing=False,
+                    # Finalize may have no ACK if all audio was already final.
+                    # SDK pause endpoints complement the local, still-required gate.
+                    model=model, language=Language(language), endpointing=300,
                     interim_results=True, punctuate=True, smart_format=False,
                 ),
             )

@@ -46,7 +46,8 @@ def test_source_metadata_does_not_expose_sdk_payloads_or_private_turns():
     sources = {row["source"]: row for row in result["sources"]}
     assert sources["microphone:2"] == {
         "source": "microphone:2", "state": "running", "streaming": True,
-        "pending_frames": 3, "error_code": None, "recovery_action": None}
+        "pending_frames": 3, "error_code": None, "recovery_action": None,
+        "speech_phase": None, "pending_turns": None}
     assert sources["system"]["state"] == "starting"
     assert sources["system"]["pending_frames"] == 0
     assert sources["process:91"]["pending_frames"] is None
@@ -54,6 +55,20 @@ def test_source_metadata_does_not_expose_sdk_payloads_or_private_turns():
     assert sources["microphone:9"]["error_code"] == "voice_pipeline_failed"
     assert "PRIVATE_" not in json.dumps(result)
     assert all(value is None for value in result["metrics"].values())
+
+
+def test_speech_phase_exposes_only_metadata_and_keeps_unknown_distinct_from_idle():
+    subject = runtime(voice_pipelines={"system": SimpleNamespace(state="running")})
+    subject.voice_activity = lambda source: {"speech_phase": "finalizing", "pending_turns": 2,
+                                             "text": "PRIVATE_TRANSCRIPT", "pcm": b"PRIVATE_AUDIO"}
+    result = voice_snapshot(subject)
+    assert result["sources"][0]["speech_phase"] == "finalizing"
+    assert result["sources"][0]["pending_turns"] == 2
+    assert "PRIVATE" not in json.dumps(result)
+    subject.voice_activity = lambda source: {"speech_phase": "PRIVATE_STATE", "pending_turns": True}
+    result = voice_snapshot(subject)
+    assert result["sources"][0]["speech_phase"] is None
+    assert result["sources"][0]["pending_turns"] is None
 
 
 def test_metric_tail_is_bounded_and_durations_keep_missing_distinct_from_zero():

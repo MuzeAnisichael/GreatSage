@@ -26,6 +26,7 @@ from .skills import SkillsManager
 from .semantic import chunks as embedding_chunks, fingerprint, text_hash
 from .tasks import TaskManager
 from .voice_status import audio_status, safe_error, valid_source, VOICE_ERRORS
+from .voice_turns import MAX_PENDING_TURNS, activity as turn_activity, make_turn, records as turn_records, turn_id
 
 
 def redact(value):
@@ -86,6 +87,8 @@ class Runtime:
         self.voice_cutoffs = {}
         self.capture_sources = {}
         self.streaming_turns = {}
+        self.pending_voice = {}
+        self.voice_approvals = {}
         self.partials: dict[str, asyncio.Task] = {}
         self.final_tasks: set[asyncio.Task] = set()
         self.locks: dict[str, asyncio.Lock] = {}
@@ -269,6 +272,25 @@ class Runtime:
     def audio_status(self):
         return audio_status(self)
 
+    def voice_activity(self, source):
+        """Metadata only: never include recognized words or PCM in health views."""
+        state = self.streaming_turns.get(source)
+        if state is not None:
+            return turn_activity(state)
+        speaking = bool(getattr(self.segments.get(source), "active", False))
+        if source.startswith("microphone"):
+            speaking = speaking or self.mic_speaking
+        pending = sum(getattr(task, "voice_source", None) == source and not task.done()
+                      for task in self.final_tasks)
+        return {"speech_phase": "speaking" if speaking else "finalizing" if pending else "idle",
+                "pending_turns": pending}
+
+    async def _voice_turn_event(self, source, version=None):
+        identity = self._voice_identity(source)
+        await self.emit("voice_turn", {"source": source,
+            "turn_id": turn_id(identity, version if version is not None else self.segment_versions.get(source, 0)),
+            **self.voice_activity(source)}, persist=False)
+
     def _fresh_voice_chunk(self, chunk):
         cutoff = self.voice_cutoffs.get(chunk.source)
         # Timestamp is packet wall time, not hardware sample time. Subtract the
@@ -366,6 +388,8 @@ class Runtime:
         pipelines = list(self.voice_pipelines.values())
         self.voice_pipelines.clear()
         self.streaming_turns.clear()
+        self.pending_voice.clear()
+        self.voice_approvals.clear()
         tasks = list(self.partials.values()) + list(self.final_tasks)
         for task in tasks:
             task.cancel()
@@ -460,7 +484,8 @@ class Runtime:
             from .streaming_asr import create_streaming_asr
             stt = create_streaming_asr(self._provider("asr"),
                 lambda code, scope=identity: self._voice_failed(scope, code))
-            self.streaming_turns[source] = {"origin": None, "settled_end": -1.0, "turn": None}
+            self.streaming_turns[source] = {"origin": None, "settled_end": -1.0,
+                                            "turn": None, "pending": [], "committing": 0}
         pipeline = SourceVoicePipeline(identity, config, self._handle_segment,
             stt_processor=stt, on_transcript=self._streaming_transcript, on_error=self._voice_failed)
         if source in self.segments:  # Deterministic/replay instrumentation uses the same pipeline.
@@ -498,6 +523,8 @@ class Runtime:
         self.source_epochs[source] = self.source_epochs.get(source, 0) + 1
         self.segments.pop(source, None)
         self.streaming_turns.pop(source, None)
+        self.pending_voice.pop(source, None)
+        self.voice_approvals.pop(source, None)
         self.continued_messages.pop(source, None)
         partial = self.partials.pop(source, None)
         if partial:
@@ -534,24 +561,31 @@ class Runtime:
         streaming = source in self.streaming_turns
         if event.kind == "start":
             self.segment_versions[source] = self.segment_versions.get(source, 0) + 1
+            self.voice_approvals[source] = frozenset(self.tasks.approvals)
             self.continued_messages.pop(source, None)
             if streaming:
                 state = self.streaming_turns[source]
                 if state["turn"] is not None:
-                    await self._voice_failed(identity, "streaming_asr_turn_overlap")
+                    if not state["turn"]["local_end"]:
+                        await self._voice_failed(identity, "streaming_asr_turn_overlap")
+                        return
+                # Count completed turns still persisting too: slow memory work
+                # cannot create an unbounded second queue of commit tasks.
+                if len(turn_records(state)) + state.get("committing", 0) > MAX_PENDING_TURNS:
+                    await self._voice_failed(identity, "streaming_asr_turn_queue_full")
                     return
-                state["turn"] = {"text": [], "chars": 0, "end_offset": state["settled_end"],
-                                 "local_end": False, "remote_end": False, "discard": False,
-                                 "remote_end_offset": -1.0,
-                                 "speech_end": 0, "pcm": bytearray(), "recording_overflow": False,
-                                 "version": self.segment_versions[source], "has_segment": False,
-                                 "timeout": None}
+                if state["turn"] is not None:
+                    state.setdefault("pending", []).append(state["turn"])
+                state["turn"] = make_turn(identity, self.segment_versions[source], state["settled_end"], event)
+                state["turn"]["approval_ids"] = self.voice_approvals[source]
             if source.startswith("microphone"):
                 self.mic_speaking = True
                 await self.pause_background()
                 await self.interrupt("microphone_speech")
             if self._voice_current(identity):
-                await self.emit("speech_start", {"source": source}, persist=False)
+                await self.emit("speech_start", {"source": source,
+                    "turn_id": turn_id(identity, self.segment_versions[source])}, persist=False)
+                await self._voice_turn_event(source)
         elif streaming:
             await self._streaming_segment(identity, event)
         elif event.kind == "discard":
@@ -559,7 +593,9 @@ class Runtime:
                 self.mic_speaking = False
             pending = self.continued_messages.pop(source, None)
             if pending and pending[2] == self.segment_versions.get(source, 0):
-                await self._route_message(pending[0], pending[1])
+                await self._route_voice_message(pending[0], pending[1], identity, self.data_epoch, pending[2])
+            await self._flush_pending_voice(source)
+            await self._voice_turn_event(source)
         elif event.kind == "partial":
             task = self.partials.get(source)
             if not task or task.done():
@@ -574,10 +610,12 @@ class Runtime:
                 task.cancel()
             task = asyncio.create_task(self._transcribe(
                 source, event.pcm, True, event.speech_end, self.segment_versions.get(source, 0),
-                event.continued, epoch=identity.generation, session_id=identity.session_id))
+                event.continued, epoch=identity.generation, session_id=identity.session_id,
+                approval_ids=self.voice_approvals.get(source, frozenset())))
             task.voice_source = source
             self.final_tasks.add(task)
             task.add_done_callback(self.final_tasks.discard)
+            await self._voice_turn_event(source)
 
     async def _streaming_segment(self, identity, event):
         state = self.streaming_turns.get(identity.source)
@@ -598,9 +636,13 @@ class Runtime:
                 turn["remote_end"] = False
                 return
             turn["local_end"] = True
+            turn["media_end"] = event.media_end
+            turn["voice_end"] = event.media_voice_end
         elif event.kind == "discard":
             # Short/noisy utterances cannot become commands through cloud recognition.
             turn["local_end"] = True
+            turn["media_end"] = event.media_end
+            turn["voice_end"] = event.media_voice_end
             if not turn["has_segment"]:
                 turn["discard"] = True
                 turn["text"].clear()
@@ -620,7 +662,7 @@ class Runtime:
     async def _streaming_finalize_timeout(self, identity, turn):
         await asyncio.sleep(15)
         state = self.streaming_turns.get(identity.source)
-        if self._voice_current(identity) and state and state["turn"] is turn:
+        if self._voice_current(identity) and any(item is turn for item in turn_records(state)):
             await self._voice_failed(identity, "streaming_asr_finalize_timeout")
 
     async def _streaming_transcript(self, identity, text, final, timestamp, extra):
@@ -628,7 +670,8 @@ class Runtime:
         if not self._voice_current(identity):
             return
         state = self.streaming_turns.get(identity.source)
-        turn = state and state["turn"]
+        turns = turn_records(state)
+        turn = turns[0] if turns else None
         if not turn:
             return
         text = text.strip()
@@ -645,8 +688,15 @@ class Runtime:
             end = start + duration
             if end <= state["settled_end"]:
                 return  # A duplicated/late interval from an already committed turn.
+            # Results are ordered on one SDK connection. Never attach a result
+            # crossing an unresolved local Finalize boundary to a later turn.
+            boundary = turn.get("media_end")
+            if boundary is not None and end > boundary + .03:
+                if final:
+                    await self._voice_failed(identity, "streaming_asr_segment_overlap")
+                return
         if text:
-            if final and start < turn["end_offset"] - .001:
+            if final and start < max(turn["end_offset"], state["settled_end"]) - .03:
                 await self._voice_failed(identity, "streaming_asr_segment_overlap")
                 return
             if final:
@@ -656,7 +706,7 @@ class Runtime:
                 turn["end_offset"] = end
             if not final:
                 await self.emit("transcript", {"text": " ".join([*turn["text"], text]),
-                    "source": identity.source, "final": False}, persist=False)
+                    "source": identity.source, "final": False, "turn_id": turn["id"]}, persist=False)
             turn["remote_end"] = endpoint
         elif endpoint:
             turn["remote_end"] = True  # An empty Finalize acknowledgement must release prior stable words.
@@ -670,24 +720,47 @@ class Runtime:
         if not self._voice_current(identity):
             return
         state = self.streaming_turns.get(identity.source)
-        turn = state and state["turn"]
-        if not turn or not turn["local_end"] or not turn["remote_end"]:
+        if not state:
             return
-        if not turn["discard"] and turn["remote_end_offset"] + .3 < turn["speech_end"] - state["origin"]:
-            return  # A cloud boundary before the last locally voiced audio cannot end this turn.
-        state["turn"] = None
-        state["settled_end"] = max(state["settled_end"], turn["end_offset"])
-        if turn["timeout"] and turn["timeout"] is not asyncio.current_task():
-            turn["timeout"].cancel()
-        if turn["discard"] or not turn["text"]:
-            return
-        task = asyncio.create_task(self._commit_streaming_turn(identity, turn, self.data_epoch))
-        task.voice_source = identity.source
-        self.final_tasks.add(task)
-        task.add_done_callback(self.final_tasks.discard)
+        for turn in turn_records(state):
+            boundary = turn.get("media_end")
+            # Deepgram may omit a Finalize ACK when no unfinalized audio remains.
+            # Stable FINAL coverage of all submitted PCM is separate proof; an
+            # interim cursor or mere elapsed wall time is never sufficient.
+            if turn["local_end"] and boundary is not None and turn["end_offset"] + 1e-6 >= boundary:
+                turn["remote_end"] = True
+                turn["remote_end_offset"] = max(turn["remote_end_offset"], turn["end_offset"])
+            if not turn["local_end"] or not turn["remote_end"]:
+                break
+            voice_end = turn.get("voice_end")
+            if voice_end is None:
+                voice_end = turn["speech_end"] - (state["origin"] or 0)
+            if not turn["discard"] and turn["remote_end_offset"] + 1e-6 < voice_end:
+                break  # A cloud boundary before the last local speech cannot end this turn.
+            if state.get("pending"):
+                state["pending"].pop(0)
+            else:
+                state["turn"] = None
+            state["settled_end"] = max(state["settled_end"], turn["end_offset"])
+            if turn["timeout"] and turn["timeout"] is not asyncio.current_task():
+                turn["timeout"].cancel()
+            if turn["discard"] or not turn["text"]:
+                continue
+            previous = state.get("commit_tail")
+            state["committing"] = state.get("committing", 0) + 1
+            task = asyncio.create_task(self._commit_streaming_turn(identity, turn, self.data_epoch, state, previous))
+            task.voice_commit_state = state
+            state["commit_tail"] = task
+            task.voice_source = identity.source
+            self.final_tasks.add(task)
+            task.add_done_callback(self.final_tasks.discard)
+        await self._voice_turn_event(identity.source)
+        await self._flush_pending_voice(identity.source)
 
-    async def _commit_streaming_turn(self, identity, turn, data_epoch):
+    async def _commit_streaming_turn(self, identity, turn, data_epoch, state=None, previous=None):
         try:
+            if previous is not None:
+                await asyncio.shield(previous)
             if not self._voice_current(identity) or data_epoch != self.data_epoch:
                 return
             await self.emit("metrics", {"component": "asr", "streaming": True, "final": True,
@@ -699,13 +772,22 @@ class Runtime:
                 pcm=bytes(turn["pcm"]) if not turn["recording_overflow"] else None,
                 epoch=identity.generation, data_epoch=data_epoch, session_id=identity.session_id,
                 source_epoch=identity.source_generation, trace_id=uuid.uuid4().hex,
+                approval_ids=turn.get("approval_ids", frozenset()),
                 extra={"streaming": True, "recording_truncated": turn["recording_overflow"]})
         except asyncio.CancelledError:
             raise
         except Exception:
             await self._voice_failed(identity, "streaming_asr_commit_failed")
+        finally:
+            if state is not None:
+                state["committing"] -= 1
+                asyncio.current_task().voice_commit_state = None
+            if self._voice_current(identity) and data_epoch == self.data_epoch:
+                await self._flush_pending_voice(identity.source)
+                await self._voice_turn_event(identity.source)
 
-    async def _transcribe(self, source, pcm, final, speech_end, version, continued=False, *, epoch=None, session_id=None):
+    async def _transcribe(self, source, pcm, final, speech_end, version, continued=False, *,
+                          epoch=None, session_id=None, approval_ids=frozenset()):
         epoch = self.epoch if epoch is None else epoch
         data_epoch = self.data_epoch
         session_id = session_id or self.session_id
@@ -720,12 +802,14 @@ class Runtime:
                     return
                 invoked = True
                 result = await self.providers.transcribe(self._provider("asr"), pcm)
-            await self.emit('metrics', {'component': 'asr', 'final': final, 'latency_ms': round((time.time()-started)*1000),
-                                       'audio_seconds': len(pcm)/32000, 'usage': result.get('usage', {})}, trace_id,
-                            persist=data_epoch == self.data_epoch)
-            await self._accept_transcript(source, result.get("text", "").strip(), final, speech_end,
-                version, continued, pcm=pcm, epoch=epoch, data_epoch=data_epoch, session_id=session_id,
-                source_epoch=source_epoch, trace_id=trace_id)
+                # Preserve capture order through persistence as well as ASR;
+                # a slow explicit-memory check must not reorder the next final.
+                await self.emit('metrics', {'component': 'asr', 'final': final, 'latency_ms': round((time.time()-started)*1000),
+                                           'audio_seconds': len(pcm)/32000, 'usage': result.get('usage', {})}, trace_id,
+                                persist=data_epoch == self.data_epoch)
+                await self._accept_transcript(source, result.get("text", "").strip(), final, speech_end,
+                    version, continued, pcm=pcm, epoch=epoch, data_epoch=data_epoch, session_id=session_id,
+                    source_epoch=source_epoch, trace_id=trace_id, approval_ids=approval_ids)
         except asyncio.CancelledError:
             if invoked and data_epoch == self.data_epoch:
                 await self.emit('usage', {'component': 'asr', 'final': final, 'audio_seconds': len(pcm)/32000,
@@ -734,9 +818,18 @@ class Runtime:
         except Exception as exc:
             if epoch == self.epoch:
                 await self.emit("error", {"message": str(exc), "component": "asr", "source": source}, trace_id)
+        finally:
+            if final:
+                self.final_tasks.discard(asyncio.current_task())
+                if (epoch == self.epoch and data_epoch == self.data_epoch and session_id == self.session_id
+                        and source_epoch == self.source_epochs.get(source, 0) and self.listening
+                        and source not in self.voice_disabled):
+                    await self._flush_pending_voice(source)
+                    await self._voice_turn_event(source)
 
     async def _accept_transcript(self, source, text, final, speech_end, version, continued, *,
-                                 pcm, epoch, data_epoch, session_id, source_epoch, trace_id, extra=None):
+                                 pcm, epoch, data_epoch, session_id, source_epoch, trace_id, extra=None,
+                                 approval_ids=frozenset()):
         def current():
             # A confirmed final belongs to the capture scope even when the next
             # VAD turn has begun. Only interim text follows the latest version.
@@ -745,7 +838,9 @@ class Runtime:
                     and source_epoch == self.source_epochs.get(source, 0))
         if not current() or not text or (not final and version != self.segment_versions.get(source, 0)):
             return
-        await self.emit("transcript", {"text": text, "source": source, "final": final}, trace_id, persist=False)
+        identity = self._voice_identity(source)
+        await self.emit("transcript", {"text": text, "source": source, "final": final,
+            "turn_id": turn_id(identity, version)}, trace_id, persist=False)
         if not current() or not final:
             return
         now = time.time()
@@ -782,6 +877,7 @@ class Runtime:
                     "message_id": message["id"], "source_ids": [message["id"]]}, trace_id)
         if not current():
             return
+        message = {**message, "_voice_approval_ids": approval_ids}
         if continued:
             segment = self.segments.get(source)
             if segment is None or segment.active:
@@ -792,15 +888,63 @@ class Runtime:
                     self._schedule_compression()
                 return
         self.continued_messages.pop(source, None)
-        await self._route_message(message, speech_end)
+        await self._route_voice_message(message, speech_end, identity, data_epoch, version)
+
+    def _voice_busy(self, source):
+        """Do not start a reply while this source has newer unresolved speech."""
+        if source.startswith("microphone") and self.mic_speaking:
+            return True
+        state = self.streaming_turns.get(source)
+        if state is not None:
+            own_commit = getattr(asyncio.current_task(), "voice_commit_state", None) is state
+            return bool(turn_records(state)) or state.get("committing", 0) > int(own_commit)
+        return any(getattr(task, "voice_source", None) == source and not task.done()
+                   and task is not asyncio.current_task() for task in self.final_tasks)
+
+    def _defer_voice_message(self, message, speech_end):
+        context = message.get("_voice_context")
+        if context is None:
+            return False
+        identity, data_epoch, version = context
+        if not self._voice_current(identity) or data_epoch != self.data_epoch:
+            return True
+        source = identity.source
+        pending = self.pending_voice.get(source)
+        if pending and pending[0]["_voice_context"][2] > version:
+            return True
+        if self._voice_busy(source):
+            self.pending_voice[source] = ({**message, "_voice_deferred": True}, speech_end)
+            return True
+        self.pending_voice.pop(source, None)
+        return False
+
+    async def _route_voice_message(self, message, speech_end, identity, data_epoch, version):
+        # Private routing metadata never enters memory or a provider prompt.
+        message = {**message, "_voice_context": (identity, data_epoch, version)}
+        if not self._defer_voice_message(message, speech_end):
+            await self._route_message(message, speech_end)
+
+    async def _flush_pending_voice(self, source):
+        if source not in self.pending_voice or self._voice_busy(source):
+            return
+        message, speech_end = self.pending_voice.pop(source)
+        if not self._defer_voice_message(message, speech_end):
+            await self._route_message(message, speech_end)
 
     async def _route_message(self, message, speech_end):
+        if self._defer_voice_message(message, speech_end):
+            return
         if message["source"].startswith("microphone"):
             # A spoken approval phrase answers a pending tool call instead of starting a reply.
-            if await self.tasks.handle_voice(message):
+            # A held older turn cannot authorize a tool that became pending later.
+            approvals_current = ("_voice_context" not in message
+                or self.tasks.approvals <= message.get("_voice_approval_ids", frozenset()))
+            if not message.get("_voice_deferred") and approvals_current and await self.tasks.handle_voice(message):
                 return
             config = self.settings.raw()
             if config["mode"] == "conversation" or await self._should_reply(message, config):
+                if self._defer_voice_message(message, speech_end):
+                    return
                 await self.submit_message(message, speech_end)
             elif config["mode"] == "proactive" and config["allow_proactive"] and triage(message['text'])['reason'] != 'silence_request':
                 await self._consider_proactive(message, speech_end)
@@ -942,6 +1086,8 @@ class Runtime:
     async def submit_message(self, message, speech_end):
         await self.interrupt("new_request")
         await self.pause_background()
+        if self._defer_voice_message(message, speech_end):
+            return
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, False))
 
     async def _consider_proactive(self, message, speech_end):
@@ -967,9 +1113,14 @@ class Runtime:
                                          "source_ids": [message["id"]]}, trace)
             self._schedule_compression()
             return
+        await self.pause_background()
+        if self._defer_voice_message(message, speech_end):
+            return
+        if self.mic_speaking or self.playing or (self.reply_task and not self.reply_task.done()):
+            self.pending_desktop = (message, speech_end)
+            return
         self.last_proactive = time.time()
         self.proactive_seen.append((self.last_proactive, normalized))
-        await self.pause_background()
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, True))
 
     async def interrupt(self, reason="user"):

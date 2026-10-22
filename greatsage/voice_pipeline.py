@@ -78,6 +78,7 @@ class _SegmentProcessor(FrameProcessor):
     def __init__(self, owner: SourceVoicePipeline) -> None:
         super().__init__(name="GreatSageVoiceSegments")
         self.owner = owner
+        self.media_seconds = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -86,8 +87,38 @@ class _SegmentProcessor(FrameProcessor):
             return
         if self.owner.closed:
             return
+        # Send streaming PCM in VAD-sized pieces, so Finalize follows the exact
+        # local boundary even if one capture packet contains several turns.
+        if self.owner.streaming:
+            for offset in range(0, len(frame.audio), 960):
+                audio = frame.audio[offset:offset + 960]
+                part = InputAudioRawFrame(audio, frame.sample_rate, frame.num_channels)
+                part.metadata.update(frame.metadata)
+                part.metadata["capture_timestamp"] -= (len(frame.audio) - offset - len(audio)) / 32000
+                part.transport_source = frame.transport_source
+                await self._audio(part, direction)
+                if self.owner.closed:
+                    return
+        else:
+            await self._audio(frame, direction)
+
+    async def _audio(self, frame, direction):
         timestamp = frame.metadata["capture_timestamp"]
-        events = self.owner.segmenter.feed(frame.audio, timestamp)
+        self.media_seconds += len(frame.audio) / 32000
+        # VAD and provider boundaries share submitted PCM time. Capture callback
+        # jitter only affects display/latency timestamps, never turn ownership.
+        clock = self.media_seconds if self.owner.streaming else timestamp
+        events = self.owner.segmenter.feed(frame.audio, clock)
+        for event in events:
+            event.media_end = self.media_seconds
+            if self.owner.streaming:
+                event.media_start = event.speech_start if event.kind == "start" else None
+                event.media_voice_end = self.owner.segmenter.last_voice
+                if event.speech_end:
+                    event.speech_end = timestamp - (self.media_seconds - event.speech_end)
+            else:
+                event.media_start = self.media_seconds - (timestamp - event.speech_start) if event.speech_start else None
+                event.media_voice_end = self.media_seconds - (timestamp - event.speech_end) if event.speech_end else None
         # VAD start precedes this chunk. VAD stop follows its PCM, so a streaming
         # service's finalize cannot overtake the last samples of the utterance.
         for event in events:

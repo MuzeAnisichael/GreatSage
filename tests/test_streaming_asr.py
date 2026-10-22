@@ -88,7 +88,7 @@ def test_sdk_construction_preserves_language_and_local_endpointing(sdk, language
     options = service._build_connect_kwargs()
     assert options["language"] == expected
     assert options["model"] == "nova-3"
-    assert options["endpointing"] == "false"
+    assert options["endpointing"] == "300"
     assert options["sample_rate"] == "16000"
     assert options["encoding"] == "linear16"
     assert options["channels"] == "1"

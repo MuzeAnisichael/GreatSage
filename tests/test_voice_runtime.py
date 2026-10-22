@@ -186,7 +186,7 @@ async def test_source_failure_stays_disabled_and_rejects_late_transcripts(runtim
     identity = await start_stream(runtime, monkeypatch)
     pipeline = runtime.voice_pipelines[identity.source]
     if reason == "overlap":
-        await runtime._handle_segment(identity, SpeechEvent("final", b"\0" * 960, time.time()))
+        # A second start while the first local turn is still speaking is invalid.
         await runtime._handle_segment(identity, SpeechEvent("start"))
     elif reason == "stopped":
         await runtime._capture_state({"kind": "source_stopped", "source": "microphone"},

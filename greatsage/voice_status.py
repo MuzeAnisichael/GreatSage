@@ -13,7 +13,7 @@ VOICE_ERRORS = {
     "streaming_asr_failed", "streaming_asr_finalize_timeout", "streaming_asr_language_not_supported",
     "streaming_asr_model_not_supported", "streaming_asr_processing_failed", "streaming_asr_restart_required",
     "streaming_asr_segment_overlap", "streaming_asr_timestamp_missing", "streaming_asr_transport_failed",
-    "streaming_asr_turn_overlap", "streaming_asr_turn_too_large",
+    "streaming_asr_turn_overlap", "streaming_asr_turn_too_large", "streaming_asr_turn_queue_full",
 }
 CONFIGURATION_ERRORS = {
     "streaming_asr_configuration_invalid", "streaming_asr_credentials_required",
@@ -68,8 +68,13 @@ def audio_status(runtime):
             action = None
         streaming = getattr(pipeline, "streaming", None)
         pending = getattr(pipeline, "pending_frames", None)
+        activity = getattr(runtime, "voice_activity", None)
+        detail = activity(source) if callable(activity) else {}
+        phase, turns = detail.get("speech_phase"), detail.get("pending_turns")
         sources.append({"source": source, "state": state,
                         "streaming": streaming if isinstance(streaming, bool) else None,
                         "pending_frames": pending if type(pending) is int and pending >= 0 else None,
-                        "error_code": code, "recovery_action": action})
+                        "error_code": code, "recovery_action": action,
+                        "speech_phase": phase if phase in ("speaking", "finalizing", "idle") else None,
+                        "pending_turns": turns if type(turns) is int and turns >= 0 else None})
     return {"listening": listening, "sources": sources}
