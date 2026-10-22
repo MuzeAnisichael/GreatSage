@@ -176,6 +176,11 @@ main { min-width: 0; }
 .voice-health-source[data-state="failed"] .tag, .voice-health-source[data-state="stopped"] .tag { color: var(--warning); background: var(--warning-soft); }
 .voice-health-source[data-state="running"] .tag { color: var(--success); background: var(--success-soft); }
 .voice-health-reason { margin: 8px 0; line-height: 1.6; color: var(--text-2); }
+.voice-health-progress { margin: 8px 0 0; line-height: 1.6; color: var(--text-2); }
+.voice-turn-count { display: block; margin-top: 4px; color: var(--text-3); }
+.transcript-status { display: block; margin-top: 5px; color: var(--text-3); font-size: 10px; }
+.transcript-item.interim .transcript-status { color: var(--accent); }
+.transcript-item.incomplete .transcript-status { color: var(--warning); }
 .voice-health-source .voice-recovery { margin-top: 4px; }
 .voice-error-code { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--text-3); font-family: var(--mono); }
 

@@ -73,6 +73,7 @@ function showConnection(stateName, message) {
 }
 
 function updateState(name, listening) {
+  if (listening === false && state.listening) markUnfinishedTranscripts();
   if (listening !== undefined) state.listening = Boolean(listening);
   if (name) state.status.state = name;
   const current = state.status.state || 'idle';
@@ -345,19 +346,42 @@ function renderChat({ preserveStreams = false } = {}) {
 function addTranscript(data, event) {
   $('#transcript-empty')?.remove();
   const source = typeof data.source === 'string' ? data.source : safeString(data.source || 'microphone');
-  let row = $$('.transcript-item.interim').find(item => item.dataset.source === source);
+  const turn = typeof data.turn_id === 'string' ? data.turn_id : '';
+  // An earlier confirmed turn may arrive while the next one is still interim.
+  // Source-only matching remains for pre-turn-ID/batch providers.
+  let row = $$('.transcript-item').find(item => item.dataset.source === source &&
+    (turn ? item.dataset.turn === turn : !item.dataset.turn && item.classList.contains('interim')));
+  if (row?.dataset.final === 'true' && data.final === false) return;
   if (!row) {
     row = element('div', 'transcript-item');
     row.dataset.source = source;
+    if (turn) row.dataset.turn = turn;
     const meta = element('div', 'transcript-meta');
     meta.append(element('strong', '', sourceLabel(data.source)), element('time', '', timeLabel(event.created_at)));
-    row.append(meta, element('div', 'transcript-text'));
+    row.append(meta, element('div', 'transcript-text'), element('small', 'transcript-status'));
     $('#transcripts').append(row);
   }
   $('.transcript-text', row).textContent = data.text || '';
   row.classList.toggle('interim', data.final === false);
+  row.classList.remove('incomplete');
+  row.dataset.final = String(data.final !== false);
+  $('.transcript-status', row).textContent = data.final === false ? '识别中，文字可能调整' : '已确认';
   while ($('#transcripts').children.length > 60) $('#transcripts').firstElementChild.remove();
   $('#transcripts').scrollTop = $('#transcripts').scrollHeight;
+}
+
+function markUnfinishedTranscripts(source) {
+  for (const row of $$('.transcript-item.interim')) {
+    if (source && row.dataset.source !== source && !(source === 'microphone' && row.dataset.source.startsWith('microphone'))) continue;
+    row.classList.remove('interim'); row.classList.add('incomplete');
+    $('.transcript-status', row).textContent = '未完成，未提交';
+  }
+}
+
+function resetTranscripts() {
+  const empty = element('div', 'small-empty', '新会话已开始，等待语音输入。');
+  empty.id = 'transcript-empty';
+  $('#transcripts').replaceChildren(empty);
 }
 
 function streamNode(event, create = true) {
@@ -378,6 +402,10 @@ function onEvent(event) {
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
     case 'transcript': addTranscript(data, event); break;
+    case 'audio_source':
+      if (data.kind === 'all_sources_stopped') markUnfinishedTranscripts();
+      else if (['source_stopped', 'recognition_retry'].includes(data.kind)) markUnfinishedTranscripts(data.source);
+      break;
     case 'observation_message': scheduleMemoryRefresh(); break;
     case 'stream_reset': resyncStream().catch(error => toast(error.message, 'error')); break;
     case 'user_message': {
@@ -422,8 +450,12 @@ function onEvent(event) {
     case 'session':
       stopLocalResponse();
       state.status.session_id = data.session_id;
+      resetTranscripts();
       break;
-    case 'error': toast(data.message || data.error || '服务发生错误，请查看运行日志。', 'error', 10000); break;
+    case 'error':
+      if (['audio_pipeline', 'asr'].includes(data.component)) markUnfinishedTranscripts(data.source);
+      toast(data.message || data.error || '服务发生错误，请查看运行日志。', 'error', 10000);
+      break;
     case 'metrics': {
       const latency = data.first_text_ms ?? data.ttft_ms ?? data.first_token_ms ?? data.first_response_ms ?? data.llm_ttft_ms ?? (data.component === 'llm' ? data.latency_ms : undefined);
       if (latency !== undefined) $('#latency-stat').replaceChildren(document.createTextNode(Number(latency).toFixed(0)), element('em', '', ' ms'));
@@ -439,6 +471,7 @@ async function resyncStream() {
   state.resyncing = true;
   state.streamGap = true;
   stopLocalResponse();
+  markUnfinishedTranscripts();
   try {
     const [status, history, events] = await Promise.all([client.request('/api/status'), client.request('/api/history'), client.request('/api/events')]);
     state.status = status;
@@ -809,7 +842,7 @@ $('#new-session').addEventListener('click', () => busy($('#new-session'), async 
   state.status.session_id = result.session_id || result.id;
   $('#session-label').textContent = `会话 ${String(state.status.session_id || '').slice(0, 8)}`;
   await refreshMemory(); renderChat();
-  $('#transcripts').replaceChildren(element('div', 'small-empty', '新会话已开始，等待语音输入。'));
+  resetTranscripts();
   showView('conversation'); toast('新会话已开始，长期记忆继续保留。');
 }));
 
