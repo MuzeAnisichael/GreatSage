@@ -3,6 +3,7 @@ import { setupMemoryPanel } from './memory.js';
 import { setupWork } from './work.js';
 import { setupMCP } from './mcp.js';
 import { setupInspector } from './inspector.js';
+import { setupVoiceHealth } from './voice.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -22,6 +23,7 @@ let enhancements;
 let work;
 let mcp;
 let inspector;
+let voiceHealth;
 
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -147,7 +149,7 @@ async function saveSettings() {
 }
 
 function setupProviderExtras() {
-  const streamingNote = element('p', 'source-note', 'Deepgram 流式识别需要独立密钥，仅连接官方服务。支持中文、英语和日语；开始监听后才发送所选音源。连接失败不会自动切换服务，请停止后重新开启监听。切换服务或账号会清除该组件旧的已保存密钥。');
+  const streamingNote = element('p', 'source-note', 'Deepgram 流式识别需要独立密钥，仅连接官方服务。支持中文、英语和日语；开始监听后才发送所选音源。连接失败不会自动切换服务，可在首页“音源状态”中处理并重试。切换服务或账号会清除该组件旧的已保存密钥。');
   streamingNote.id = 'streaming-asr-note';
   $('[data-provider="asr"]').append(streamingNote);
   const localAsr = element('div', 'local-provider-tools');
@@ -371,6 +373,7 @@ function onEvent(event) {
   enhancements?.onEvent(event);
   work?.onEvent(event);
   inspector?.onEvent(event);
+  voiceHealth?.onEvent(event);
   const data = event.data || {};
   switch (event.kind) {
     case 'state': updateState(data.state, data.listening); break;
@@ -747,6 +750,7 @@ async function loadInitial() {
   const requests = [
     ['设置', async () => fillSettings(await client.request('/api/settings'))],
     ['音频来源', refreshSources],
+    ['音源状态', () => voiceHealth.refresh()],
     ['记忆与历史', async () => { await refreshMemory(); renderChat(); }],
     ['技能', refreshSkills],
     ['任务', () => work.init()],
@@ -760,7 +764,11 @@ async function loadInitial() {
 enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory });
 work = setupWork({ client, toast, busy, confirmAction });
 mcp = setupMCP({ client, toast, busy });
-inspector = setupInspector({ client, busy, toast });
+voiceHealth = setupVoiceHealth({ client, busy, toast,
+  openAsrSettings() { showView('settings'); const provider = $('[name="asr.provider"]'); provider.scrollIntoView({ block: 'center' }); provider.focus(); },
+  openAudioControls() { showView('conversation'); $('#toggle-listening').scrollIntoView({ block: 'center' }); $('#toggle-listening').focus(); },
+});
+inspector = setupInspector({ client, busy, toast, voiceHealth });
 $$('.nav-item').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 $('.brand').addEventListener('click', event => { event.preventDefault(); showView('conversation'); });
 $('#settings-form').addEventListener('submit', event => { event.preventDefault(); busy($('#save-settings'), saveSettings); });
@@ -776,6 +784,7 @@ $('#toggle-listening').addEventListener('click', () => busy($('#toggle-listening
   const enabled = !state.listening;
   const result = await client.request('/api/listening', { method: 'POST', body: { enabled } });
   updateState(result?.state || (enabled ? 'listening' : 'idle'), result?.listening ?? enabled);
+  await voiceHealth.refresh();
 }));
 
 $('#chat-form').addEventListener('submit', event => {
@@ -853,7 +862,9 @@ setupHistorySearch();
 
 client.addEventListener('connection', event => {
   showConnection(event.detail.state, event.detail.message);
+  voiceHealth.setConnected(event.detail.state === 'connected');
   if (event.detail.state === 'connected' && state.initialized) {
+    voiceHealth.refresh().catch(() => {});
     client.request('/api/status').then(status => { state.status = status; updateState(status.state, status.listening); }).catch(error => showConnection('error', error.message));
     client.request('/api/events').then(result => { for (const item of Array.isArray(result) ? result : result.events || []) addEvent(item); }).catch(() => {});
   }

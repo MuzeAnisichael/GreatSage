@@ -110,6 +110,49 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
       check(results.every(result => Array.isArray(result.microphones) && Array.isArray(result.processes)) && (await request('/api/status')).listening === false, 'Concurrent source enumeration keeps backend healthy');
     }
     check(await evaluate(`document.querySelector('#quick-microphone').checked === ${Boolean(originalSettings.microphone)} && document.querySelector('#quick-desktop-source').value === ${JSON.stringify(originalSettings.desktop_source)}`), 'Microphone and desktop sources stay separate');
+    if (!packaged) {
+      // Synthetic health responses exercise recovery controls without opening any
+      // device or calling a speech service. All other routes use the real backend.
+      await evaluate(`(() => {
+        window.__voiceSmoke = { originalFetch: window.fetch, calls: [], status: { listening: true, sources: [
+          { source: 'microphone:default', state: 'failed', streaming: true, pending_frames: 0, error_code: 'streaming_asr_connection_closed', recovery_action: 'retry_source' },
+          { source: 'system', state: 'running', streaming: true, pending_frames: 2, error_code: null, recovery_action: null }
+        ] } };
+        window.fetch = async (url, options = {}) => {
+          const fixture = window.__voiceSmoke, route = new URL(url, location.href).pathname;
+          if (route === '/api/audio/status' || route === '/api/audio/retry') {
+            if (route.endsWith('/retry')) {
+              fixture.calls.push({ route, body: JSON.parse(options.body), method: options.method });
+              fixture.status.sources[0] = { ...fixture.status.sources[0], state: 'running', error_code: null, recovery_action: null };
+            }
+            return new Response(JSON.stringify(fixture.status), { headers: { 'Content-Type': 'application/json' } });
+          }
+          if (route === '/api/listening') fixture.calls.push({ route });
+          return fixture.originalFetch.call(window, url, options);
+        };
+        document.querySelector('#reconnect').click();
+      })()`);
+      await until(() => evaluate("Boolean(document.querySelector('#voice-health [data-action=retry_source]')) && !document.querySelector('#reconnect').disabled"), 'recoverable voice failure');
+      check(await evaluate("document.querySelector('#connection-label').textContent === '本地服务已连接' && document.querySelector('#toasts').textContent.indexOf('无法连接') === -1"), 'Voice fixtures preserve real backend connection');
+      check(await evaluate("document.querySelector('#voice-health').textContent.includes('语音识别连接已断开') && document.querySelector('#voice-health [data-source=system]').dataset.state === 'running'"), 'Failed voice source has persistent explanation beside healthy source');
+      await evaluate("document.querySelector('#voice-health').scrollIntoView({ block: 'center' })");
+      await screenshot(main, 'voice-recovery.png');
+      await evaluate("document.querySelector('#voice-health [data-action=retry_source]').click()");
+      await until(() => evaluate("document.querySelector('#voice-health [data-source=\"microphone:default\"]').dataset.state === 'running'"), 'source retry health');
+      check(await evaluate("window.__voiceSmoke.calls.length === 1 && window.__voiceSmoke.calls[0].method === 'POST' && window.__voiceSmoke.calls[0].body.source === 'microphone:default' && document.querySelector('#voice-health [data-source=system]').dataset.state === 'running' && window.__voiceSmoke.status.sources[1].pending_frames === 2"), 'Source retry sends exact source without global restart or changing other source');
+      await evaluate("window.__voiceSmoke.status.sources[0] = { ...window.__voiceSmoke.status.sources[0], state: 'stopped', error_code: 'voice_source_stopped', recovery_action: 'restart_listening' };document.querySelector('#reconnect').click()");
+      await until(() => evaluate("Boolean(document.querySelector('#voice-health [data-action=restart_listening]')) && !document.querySelector('#reconnect').disabled"), 'capture stopped guidance');
+      await evaluate("document.querySelector('#voice-health [data-action=restart_listening]').click()");
+      check(await evaluate("window.__voiceSmoke.calls.length === 1 && document.activeElement.id === 'toggle-listening' && document.querySelector('#voice-health').textContent.includes('设备连接')"), 'Stopped capture guides device check without claiming automatic recovery');
+      await evaluate("window.__voiceSmoke.status.sources[0] = { ...window.__voiceSmoke.status.sources[0], state: 'failed', error_code: 'streaming_asr_credentials_required', recovery_action: 'configure_asr' };document.querySelector('#reconnect').click()");
+      await until(() => evaluate("Boolean(document.querySelector('#voice-health [data-action=configure_asr]')) && !document.querySelector('#reconnect').disabled"), 'voice settings guidance');
+      await evaluate("document.querySelector('#voice-health [data-action=configure_asr]').click()");
+      check(await evaluate("!document.querySelector('#view-settings').hidden && document.activeElement.name === 'asr.provider' && window.__voiceSmoke.calls.length === 1"), 'Missing speech credentials open recognition settings without retry');
+      await evaluate("window.fetch = window.__voiceSmoke.originalFetch;delete window.__voiceSmoke;document.querySelector('[data-view=conversation]').click();document.querySelector('#reconnect').click()");
+      await until(() => evaluate("!document.querySelector('#reconnect').disabled && document.querySelector('#voice-health-note').textContent.includes('尚未聆听')"), 'real voice status restored');
+      check((await request('/api/status')).listening === false, 'Voice recovery fixtures never enabled real capture');
+      await evaluate("document.querySelector('#toasts').replaceChildren()");
+    }
     check(await evaluate('document.body.scrollWidth <= document.documentElement.clientWidth + 1'), 'Console has no horizontal overflow');
     const sessionId = (await request('/api/status')).session_id;
     const fixtureCode = `import json,sys\nfrom pathlib import Path\nfrom greatsage.memory import MemoryStore\ndata=json.load(sys.stdin)\nstore=MemoryStore(Path(data['directory']))\nolder_session=store.new_session()\nolder=store.add_message('user','SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH',session_id=older_session)\nsummary=store.save_summary('SYNTHETIC READ ONLY DESKTOP SUMMARY',[older['id']],model='smoke-fixture')\nfor index in range(115): store.add_message('observation','SYNTHETIC FILLER '+str(index),source='system',session_id=older_session)\nsource=store.add_message('user','SYNTHETIC CASCADE SOURCE',session_id=data['session'])\nstore.add_message('assistant','SYNTHETIC CASCADE DERIVED ANSWER',session_id=data['session'],metadata={'source_ids':[source['id']]})\nstore.close()\nprint(json.dumps({'older_id':older['id'],'summary_id':summary['id'],'source_id':source['id']}))`;
