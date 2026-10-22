@@ -738,11 +738,11 @@ class Runtime:
     async def _accept_transcript(self, source, text, final, speech_end, version, continued, *,
                                  pcm, epoch, data_epoch, session_id, source_epoch, trace_id, extra=None):
         def current():
+            # A confirmed final belongs to the capture scope even when the next
+            # VAD turn has begun. Only interim text follows the latest version.
             return (epoch == self.epoch and data_epoch == self.data_epoch and session_id == self.session_id
                     and self.listening and source not in self.voice_disabled
-                    and source_epoch == self.source_epochs.get(source, 0)
-                    and (not extra or not extra.get("streaming")
-                         or version == self.segment_versions.get(source, 0)))
+                    and source_epoch == self.source_epochs.get(source, 0))
         if not current() or not text or (not final and version != self.segment_versions.get(source, 0)):
             return
         await self.emit("transcript", {"text": text, "source": source, "final": final}, trace_id, persist=False)
