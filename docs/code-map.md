@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-10-21。适用于 v0.5 当前源码实现；版本状态以 [project-status.md](project-status.md) 为准。
+更新日期：2026-10-22。适用于 v0.5 当前源码实现；版本状态以 [project-status.md](project-status.md) 为准。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -21,6 +21,7 @@ GreatSage/
 │  ├─ memory.js / audit.js           历史、记忆冲突、索引及审计
 │  ├─ work.js / mcp.js               资料、任务、产物、审批与 MCP 配置
 │  ├─ inspector.js                   运行监控
+│  ├─ voice.js                       音源状态、故障说明与恢复操作
 │  └─ pet.html / pet.js / pet.css    桌宠
 ├─ greatsage/
 │  ├─ __main__.py / server.py        本地服务入口、认证与路由
@@ -28,6 +29,7 @@ GreatSage/
 │  ├─ audio.py / winloopback.py      Windows 采集
 │  ├─ segmentation.py / echo.py     分段与回声抑制措施
 │  ├─ voice_pipeline.py             Pipecat 分音源生命周期、背压及固定身份
+│  ├─ voice_status.py               首页与监控共享的音源元数据／恢复动作
 │  ├─ streaming_asr.py              可选 Deepgram 官方 SDK 薄适配、连接探针
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
 │  ├─ settings.py / skills.py       配置、凭据与只读 Skill
@@ -60,6 +62,8 @@ GreatSage/
 | 桌面退出、父进程消失与后端收尾 | [desktop/main.cjs](../desktop/main.cjs): `stopBackend`，私有 stdin 管道 | [greatsage/__main__.py](../greatsage/__main__.py): `_watch_desktop_pipe` / `--shutdown-stdin` → uvicorn 正常关闭 → `Runtime.close` | [scripts/test_desktop_shutdown.cjs](../scripts/test_desktop_shutdown.cjs), [scripts/smoke_shutdown.py](../scripts/smoke_shutdown.py) |
 | 设置、密钥、模型切换 | [ui/app.js](../ui/app.js): `saveSettings`, `saveQuickSettings`；`PUT /api/settings` | [greatsage/settings.py](../greatsage/settings.py): `SettingsStore.update`, `provider`, `read_env`；服务端 `update_settings` | [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
 | 音源列表、开始 / 停止监听 | [ui/app.js](../ui/app.js): `loadSources`；`GET /api/audio/sources`, `POST /api/listening` | [runtime.py](../greatsage/runtime.py): `Runtime.set_listening`, `_enqueue`, `_audio_consumer`；[audio.py](../greatsage/audio.py): `AudioCaptureManager.sources`, `start`, `stop`；进程采集再看 [winloopback.py](../greatsage/winloopback.py) | [test_audio.py](../tests/test_audio.py), [test_runtime.py](../tests/test_runtime.py) |
+| 单音源故障与识别重试 | [ui/voice.js](../ui/voice.js): `setupVoiceHealth`, `describeVoiceSource`；`GET /api/audio/status`, `POST /api/audio/retry` | [voice_status.py](../greatsage/voice_status.py): `audio_status`；[runtime.py](../greatsage/runtime.py): `Runtime.retry_voice_source`, `_capture_state`, `_retire_voice_source` | [test_voice_recovery.py](../tests/test_voice_recovery.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
+| 流式话轮与最终转写提交 | `transcript`、`speech_start` 事件 | [runtime.py](../greatsage/runtime.py): `_streaming_transcript` → `_flush_streaming_turn` → `_commit_streaming_turn` → `_accept_transcript`；[voice_pipeline.py](../greatsage/voice_pipeline.py): `SourceVoicePipeline.close`, `_cleanup` | [test_voice_runtime.py](../tests/test_voice_runtime.py), [test_streaming_commit.py](../tests/test_streaming_commit.py), [test_voice_pipeline.py](../tests/test_voice_pipeline.py) |
 | 识别、断句、打断与回声 | `POST /api/interrupt`；`transcript`, `speech_start`, `interrupt` 事件 | [segmentation.py](../greatsage/segmentation.py): `Segmenter.feed`；[runtime.py](../greatsage/runtime.py): `_transcribe`, `interrupt`；[providers.py](../greatsage/providers.py): `Providers.transcribe`；[echo.py](../greatsage/echo.py) | [test_segmentation.py](../tests/test_segmentation.py), [test_echo.py](../tests/test_echo.py), [test_runtime.py](../tests/test_runtime.py) |
 | 文字回答、旁听与主动回应 | [ui/app.js](../ui/app.js) 的消息提交监听器；`POST /api/chat` | [runtime.py](../greatsage/runtime.py): `chat`, `_route_message`, `_should_reply`, `_consider_proactive`, `submit_message`, `_respond`；策略辅助在 [decisions.py](../greatsage/decisions.py) | [test_runtime.py](../tests/test_runtime.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
 | API / Ollama 流式聊天 | `POST /api/providers/test`；服务端 `test_provider` | [providers.py](../greatsage/providers.py): `Providers.stream_chat` → [chat_models.py](../greatsage/chat_models.py): `stream_chat`；`MeteredChatOpenAI`, `NamedToolChatOllama` | [test_providers.py](../tests/test_providers.py), [test_probe_providers.py](../tests/test_probe_providers.py) |
@@ -112,6 +116,20 @@ flowchart LR
 ```
 
 旁听 / 主动模式还经 `_should_reply` / `_consider_proactive` 判断；桌面声音属于观察输入。语音统一经 Pipecat 管线；原服务保留分段快照，Deepgram 可选原生流式。实际起播由客户端回执衡量，不能把音频生成完成当成已经播放。
+
+```mermaid
+flowchart LR
+    Failure["_voice_failed / _capture_state"] --> Status["voice_status.audio_status"]
+    Status --> Home["GET /api/audio/status → setupVoiceHealth"]
+    Status --> Monitor["voice_snapshot → inspector.renderVoice"]
+    Home -. "用户点击重试" .-> Retry["POST /api/audio/retry → retry_voice_source"]
+    Monitor -. "用户点击重试" .-> Retry
+    Retry --> Retire["失效来源代际 / 丢弃旧缓冲"]
+    Retire -. "有界关闭" .-> New["新 SourceVoicePipeline / SDK 连接"]
+    New -. "仅新 PCM" .-> Accept["原有识别与提交入口"]
+```
+
+只有采集仍活跃的识别故障可走单源重试；设备停止与配置问题分别导向音源和识别设置。旧连接的回调、错误及排队音频不能改变重试后的状态。
 
 ### 2. 回答上下文与后台记忆更新
 

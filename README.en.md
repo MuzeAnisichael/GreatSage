@@ -34,7 +34,7 @@ It hears what you say and can also listen in on meeting audio from your computer
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
-Current source includes the **first v0.5 integration**: Pipecat source pipelines, optional Deepgram streaming STT, playback/interruption receipts, voice monitoring and NSIS build configuration. It has not been released as v0.5. Live streaming quality, device behavior and the installation/upgrade cycle still need acceptance; see [v0.5 validation](docs/validation-v0.5.md). The v0.4 download above does not include these changes.
+Current source includes **v0.5 feature improvements**: Pipecat source pipelines, optional Deepgram streaming STT, playback/interruption receipts, voice monitoring and NSIS build configuration. The home page and inspector explain source failures and offer an explicit retry of one failed recognizer. It has not been released as v0.5. Live streaming quality, device behavior and the installation/upgrade cycle still need acceptance; see [v0.5 validation](docs/validation-v0.5.md). The v0.4 download above does not include these changes.
 
 ## What it does
 

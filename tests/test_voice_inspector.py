@@ -46,7 +46,7 @@ def test_source_metadata_does_not_expose_sdk_payloads_or_private_turns():
     sources = {row["source"]: row for row in result["sources"]}
     assert sources["microphone:2"] == {
         "source": "microphone:2", "state": "running", "streaming": True,
-        "pending_frames": 3, "error_code": None}
+        "pending_frames": 3, "error_code": None, "recovery_action": None}
     assert sources["system"]["state"] == "starting"
     assert sources["system"]["pending_frames"] == 0
     assert sources["process:91"]["pending_frames"] is None

@@ -150,6 +150,14 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def sources():
         return await asyncio.to_thread(runtime.capture.sources)
 
+    @app.get("/api/audio/status", dependencies=api)
+    async def audio_status():
+        return runtime.audio_status()
+
+    @app.post("/api/audio/retry", dependencies=api)
+    async def retry_voice_source(body: dict):
+        return await runtime.retry_voice_source(body.get("source"))
+
     @app.post("/api/listening", dependencies=api)
     async def listening(body: dict):
         if not isinstance(body.get("enabled"), bool):

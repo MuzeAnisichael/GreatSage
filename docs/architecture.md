@@ -48,6 +48,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/echo.py | 播放参考及自身声音抑制；不是完整 AEC |
 | greatsage/segmentation.py | 30 ms VAD 帧、预留音频、临时快照、静音结束与最长分段 |
 | greatsage/voice_pipeline.py | Pipecat 帧、分音源身份、串行处理、背压和关闭 |
+| greatsage/voice_status.py / ui/voice.js | 共享音源元数据、恢复动作与首页／监控的故障处理入口 |
 | greatsage/streaming_asr.py | 官方 Deepgram SDK 薄适配、单连接、显式语言与凭据、安全失败 |
 | greatsage/providers.py | 流式 LLM、ASR、TTS、本地模型准备与受控错误 |
 | greatsage/chat_models.py | LangChain OpenAI／Ollama 聊天适配，复用应用连接池与凭据 |
@@ -77,7 +78,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 
 每源使用 Pipecat `PipelineWorker`，VAD 产生开始、临时快照、最终片段和丢弃事件。原 API／本地路径仍以快照请求识别，最终片段串行保序；长语句达到上限后分段并保持“仍在说话”。选择 Deepgram 时，PCM 经官方 SDK 流式发送，稳定片段先聚合，需本地 VAD 结束和远端 Finalize／speech_final 同时满足才提交。临时文字不能发起回答或工具；短噪声的本地丢弃不能被云端转写升级为命令。
 
-管线固定来源、会话与代际，有界排队并在关闭时使回调立即失效。普通分段识别丢帧后重建该源管线；流式丢帧、积压、超过 15 秒未确认、前一轮未确认时新轮次开始等情况停止该源并要求重开，不能自动重连重放或换提供商。当前尚需真实连续会话验证这些保守边界。录音开启时额外 PCM 缓存有界；超长轮次保留文字、跳过残缺录音。
+管线固定来源、会话与代际，有界排队并在关闭时使回调立即失效。普通分段识别丢帧后重建该源管线；流式丢帧、积压、超过 15 秒未确认、前一轮未确认时新轮次开始等情况停止该源。采集仍在运行时，显式单源重试先失效旧身份、清理旧缓冲及任务，再有界关闭并重建该源管线；只接受新的音频，不改变其他音源，不自动重连重放或换提供商。设备／进程采集停止仍要求检查来源并重新开启监听，配置错误指向设置。当前尚需真实连续会话验证这些保守边界。录音开启时额外 PCM 缓存有界；超长轮次保留文字、跳过残缺录音。
 
 框架 tracing、RTVI、转写正文日志和环境脚本 `PIPECAT_SETUP_FILES` 均停用。Pipecat 1.13 在 Python 3.11 上使用其官方 `wait_for2` 兼容补丁。版本、许可和 SDK 默认行为见[v0.5 方案](v0.5-plan.md)。
 

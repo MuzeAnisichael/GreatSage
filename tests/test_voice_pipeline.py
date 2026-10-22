@@ -2,6 +2,7 @@
 import asyncio
 import os
 import struct
+from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import (
@@ -166,3 +167,44 @@ async def test_backpressure_covers_stt_and_close_rejects_late_results():
             await pipeline.start()
     finally:
         await pipeline.close()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_concurrent_close_waiters_share_cleanup_completion_and_error(fails):
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    pipeline = SourceVoicePipeline(VoiceIdentity("system", "session-close", 1), CONFIG, noop)
+
+    async def cancel(**_kwargs):
+        calls.append("cancel")
+        entered.set()
+        await release.wait()
+
+    async def runner():
+        await release.wait()
+        if fails:
+            raise RuntimeError("PRIVATE_SDK_CLEANUP_ERROR")
+
+    pipeline._runner = SimpleNamespace(cancel=cancel)
+    pipeline._runner_task = asyncio.create_task(runner())
+    first = asyncio.create_task(pipeline.close())
+    await entered.wait()
+    second = asyncio.create_task(pipeline.close())
+    await asyncio.sleep(0)
+    assert pipeline.closed and not first.done() and not second.done()
+    # The first owner may be a failed/cancelled start() caller. Its cancellation
+    # cannot let another close return before the shared cleanup has finished.
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert not second.done() and calls == ["cancel"]
+    release.set()
+    if fails:
+        with pytest.raises(RuntimeError, match="^voice_pipeline_cleanup_failed$"):
+            await second
+        with pytest.raises(RuntimeError, match="^voice_pipeline_cleanup_failed$"):
+            await pipeline.close()
+    else:
+        await second
+        await pipeline.close()
+    assert calls == ["cancel"]

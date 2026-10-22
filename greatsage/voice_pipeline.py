@@ -174,6 +174,7 @@ class SourceVoicePipeline:
         self._ready = asyncio.Event()
         self._started = False
         self._closed = False
+        self._close_task: asyncio.Task | None = None
         self._runner_task: asyncio.Task | None = None
         processors = [_SegmentProcessor(self)]
         if stt_processor is not None:
@@ -261,17 +262,29 @@ class SourceVoicePipeline:
         await asyncio.wait_for(self._drained.wait(), timeout)
 
     async def close(self) -> None:
-        """Invalidate callbacks immediately, then let Pipecat cancel and clean."""
-        if self._closed:
-            return
-        self._closed = True
-        self._ready.set()
-        self._pending.clear()
-        self._drained.set()
+        """Invalidate immediately; all callers observe the same cleanup result.
+
+        Runtime schedules close outside processor callbacks. A cancelled waiter
+        must not cancel cleanup or make another caller mistake ``closed`` for
+        released resources, including when ``start`` is already cleaning up.
+        """
+        if self._close_task is None:
+            self._closed = True
+            self._ready.set()
+            self._pending.clear()
+            self._drained.set()
+            self._close_task = asyncio.create_task(self._cleanup(), name=f"voice-close:{self.identity.source}")
+            # A timeout may cancel every waiter; still retrieve the safe error.
+            self._close_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        await asyncio.shield(self._close_task)
+
+    async def _cleanup(self) -> None:
         if self._runner_task is None:
             return
-        await self._runner.cancel(reason="GreatSage voice scope invalidated")
         try:
+            # Cancellation itself can wait on SDK/processor cleanup. Bound that
+            # phase too, then force the runner task down if it cannot complete.
+            await asyncio.wait_for(self._runner.cancel(reason="GreatSage voice scope invalidated"), timeout=2)
             await asyncio.wait_for(asyncio.shield(self._runner_task), timeout=5)
         except TimeoutError:
             self._runner_task.cancel()

@@ -1,11 +1,13 @@
-export function setupInspector({ client, busy, toast }) {
+import { describeVoiceSource } from './voice.js';
+
+export function setupInspector({ client, busy, toast, voiceHealth }) {
   const nav = document.createElement('button'); nav.className = 'nav-item'; nav.dataset.view = 'inspector';
   nav.innerHTML = '<svg class="icon"><use href="#i-logs"/></svg><span>运行监控</span>';
   document.querySelector('[data-view=logs]').before(nav);
   const page = document.createElement('section'); page.className = 'view'; page.id = 'view-inspector'; page.hidden = true; page.setAttribute('aria-label', '运行监控');
   page.innerHTML = '<div class="view-header"><div><h2>秘书正在做什么</h2><p class="source-note">查看任务节点、实际请求的消息目录、上下文估算和记忆变更。</p></div><button class="button ghost small" id="inspector-refresh">刷新</button></div><p id="inspector-stamp" class="source-note" role="status">正在读取…</p><div class="stat-strip" id="inspector-stats"></div><div class="inspector-grid"><section class="panel"><div class="panel-heading"><h2>任务运行</h2></div><div class="panel-body" id="inspector-tasks"></div></section><section class="panel"><div class="panel-heading"><h2>长期记忆</h2><button class="button ghost small" id="inspector-memory-open">查看与管理</button></div><div class="panel-body" id="inspector-memory"></div></section></div><section class="panel inspector-context"><div class="panel-heading"><h2>模型请求与上下文</h2><button class="button ghost small" id="inspector-audit-open">请求证据</button></div><div class="panel-body"><label class="field"><span>最近请求</span><select id="inspector-request"></select></label><div id="inspector-budget"></div><div class="inspector-table-wrap"><table class="inspector-table"><thead><tr><th>顺序</th><th>角色</th><th>消息字节</th><th>内容指纹</th></tr></thead><tbody id="inspector-messages"></tbody></table></div><p class="source-note" id="inspector-sources"></p><p class="source-note">此页始终展示元数据。事先开启正文归档的请求，可在“请求证据”中单独查看正文。实体记忆、多 Agent 和远端追踪尚未接入。</p></div></section>';
   const voicePanel = document.createElement('section'); voicePanel.className = 'panel inspector-context';
-  voicePanel.innerHTML = '<div class="panel-heading"><h2>语音管线与播放反馈</h2></div><div class="panel-body"><p class="source-note" id="inspector-voice-state"></p><div class="inspector-table-wrap"><table class="inspector-table"><thead><tr><th>音源</th><th>状态</th><th>识别方式</th><th>排队音频帧</th><th>失败原因</th></tr></thead><tbody id="inspector-voice-sources"></tbody></table></div><div class="stat-strip" id="inspector-voice-metrics"></div><p class="source-note">音频就绪记录合成完成；播放和停止由客户端回执确认，回执上界包含回传耗时。客户端起播记录收到音频事件到 playing 事件的间隔。这些数值均不是声卡实际发声测量。</p><p class="source-note" id="inspector-voice-window"></p></div>';
+  voicePanel.innerHTML = '<div class="panel-heading"><h2>语音管线与播放反馈</h2></div><div class="panel-body"><p class="source-note" id="inspector-voice-state"></p><div class="inspector-table-wrap"><table class="inspector-table"><thead><tr><th>音源</th><th>状态</th><th>识别方式</th><th>排队音频帧</th><th>失败原因</th><th>处理</th></tr></thead><tbody id="inspector-voice-sources"></tbody></table></div><div class="stat-strip" id="inspector-voice-metrics"></div><p class="source-note">音频就绪记录合成完成；播放和停止由客户端回执确认，回执上界包含回传耗时。客户端起播记录收到音频事件到 playing 事件的间隔。这些数值均不是声卡实际发声测量。</p><p class="source-note" id="inspector-voice-window"></p></div>';
   page.querySelector('.inspector-grid').after(voicePanel);
   document.querySelector('main').append(page);
   const $ = selector => page.querySelector(selector);
@@ -15,20 +17,21 @@ export function setupInspector({ client, busy, toast }) {
   const contentLabels = { saved: '正文已归档', disabled: '仅元数据', source_deleted: '来源已删除', size_limit: '正文超出归档上限' };
   let data, epoch = 0, selected = '', timer;
   function renderVoice() {
-    const voice = data.voice || {}, sources = voice.sources || [];
-    const states = { starting: '正在连接', running: '运行中', closed: '已关闭', failed: '已停用' };
-    const sourceLabel = source => source === 'system' ? '系统声音 · 观察'
-      : source.startsWith('process:') ? `进程 ${source.slice(8)} · 观察`
-      : `麦克风 ${source.split(':')[1] || '默认'} · 用户输入`;
+    const voice = data.voice || {}, sources = voiceHealth?.snapshot?.sources || voice.sources || [];
     $('#inspector-voice-state').textContent = sources.length
-      ? '各音源分别处理；停用的音源需要关闭并重新开启聆听。'
+      ? '各音源分别处理；重试只接收新音频，不重放未完成的旧语音。采集停止时，请先检查设备或程序后重新开启聆听。'
       : data.listening ? '等待所选音源的音频。' : '尚未聆听，开启后显示各音源的管线状态。';
     $('#inspector-voice-sources').replaceChildren();
     for (const source of sources) {
       const row = element('tr');
+      const detail = describeVoiceSource(source);
       const mode = source.streaming === true ? '实时流式' : source.streaming === false ? '分段识别' : '待恢复';
       const pending = Number.isInteger(source.pending_frames) && source.pending_frames >= 0 ? source.pending_frames.toLocaleString() : '待测';
-      for (const value of [sourceLabel(source.source), states[source.state] || '待测', mode, pending, source.error_code || '—']) row.append(element('td', value));
+      for (const value of [detail.label, detail.state, mode, pending]) row.append(element('td', value));
+      const reason = element('td', detail.reason || '—');
+      if (source.error_code) reason.append(element('small', source.error_code, 'voice-error-code'));
+      const action = element('td'); const button = voiceHealth?.actionButton(source); if (button) action.append(button);
+      row.append(reason, action);
       $('#inspector-voice-sources').append(row);
     }
     $('#inspector-voice-metrics').replaceChildren();
@@ -101,7 +104,7 @@ export function setupInspector({ client, busy, toast }) {
   }
   async function refresh() {
     const request = ++epoch;
-    const result = await client.request('/api/inspector');
+    const [result] = await Promise.all([client.request('/api/inspector'), voiceHealth?.refresh()]);
     if (request !== epoch) return;
     data = result; render();
   }
@@ -114,8 +117,9 @@ export function setupInspector({ client, busy, toast }) {
     document.querySelector('#audit-trace').value = request.trace_id;
     document.querySelector('#audit-refresh').click();
   };
+  voiceHealth?.subscribe(() => { if (data) renderVoice(); });
   return { refresh, onEvent(event) {
-    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated', 'metrics', 'audio_source', 'audio_gap', 'error'].includes(event.kind)) return;
+    if (page.hidden || !['state', 'agent_node', 'task_updated', 'task_finished', 'request_snapshot', 'response_done', 'memory_updated', 'compression_done', 'session', 'stream_reset', 'mcp_updated', 'metrics', 'audio_source', 'audio_gap', 'audio_recovery', 'listening', 'error'].includes(event.kind)) return;
     // Invalidate an older in-flight response immediately, before the debounce.
     epoch++; clearTimeout(timer); timer = setTimeout(() => refresh().catch(error => toast(error.message, 'error')), 250);
   } };
