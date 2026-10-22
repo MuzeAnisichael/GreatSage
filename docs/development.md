@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-21。当前源码为 v0.5 候选，最近已发布版本为从 `main` 交付的 **0.4.0-alpha.1**，包含 v0.3 功能和 v0.4 框架迁移，提供 Windows x64 目录 ZIP。[项目现状](project-status.md)区分已实现、已验证与尚未交付；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-22。当前交付版本为从 `main` 发布的 **0.5.0-alpha.1**，包含连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -135,13 +135,13 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 表示：当前候选为 `0.5.0a1` 与 `0.5.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
+Python 与桌面包分别使用对应的 alpha 表示：当前为 `0.5.0a1` 与 `0.5.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
 
-PyInstaller 冻结后端，electron-builder 生成桌面目录与 ZIP。`scripts/build.ps1` 默认 `-Target dir`，发布 ZIP 使用 `-Target zip`；若脚本执行受限，直接调用两个构建工具，命令见[README](../README.md)。将整个目录分发，不能只复制 `GreatSage.exe`。GitHub [v0.4.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.4.0-alpha.1)提供 Windows x64 ZIP 与 `SHA256SUMS.txt`；发布前对最终 ZIP 计算 SHA256，上传后核对资产名、大小与摘要。它没有安装器或发行签名，跨电脑安装／升级／卸载仍待验收。
+PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。`scripts/build.ps1` 默认 `-Target dir`，单一产物可用 `-Target zip/nsis`；若同时交付两种格式，后端构建一次后执行 `electron-builder --win zip nsis --x64 --publish never`，避免重复冻结。将整个目录分发，不能只复制 `GreatSage.exe`。[v0.5.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1)提供 Windows x64 ZIP、实验性安装器和 `SHA256SUMS.txt`。发布前记录构建代码提交、两个产物的大小／SHA256，上传后核对远端资产；无受信任发行签名，人工安装／升级／卸载仍待验收。
 
-本次构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
+此前构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
 
-本版继续使用原 `settings.json` 格式和 `memory.sqlite3`，新增 `agent-checkpoints.sqlite3` 保存图控制状态。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.4 验证](validation-v0.4.md)。
+本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`，没有数据格式迁移。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.5 验证](validation-v0.5.md)。
 
 可重复的桌面 smoke test 使用独立运行目录：
 

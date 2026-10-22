@@ -1,6 +1,41 @@
 # v0.5 语音与恢复验证记录
 
-日期：2026-10-21；Windows 11、Python 3.11.7，起点为 v0.4 主干 `a624bfd`。当前为 `0.5.0-alpha.1` 候选源码，尚未发布 v0.5 标签，不能视为整个阶段验收完成。范围见[实施方案](v0.5-plan.md)，小切片见[开发日志](development-log.md)。
+更新日期：2026-10-22；Windows 11、Python 3.11.7。本文件按轮次保留证据，最终交付为 `0.5.0-alpha.1`，功能完成与真实环境验收分别记录。范围见[实施方案](v0.5-plan.md)，小切片见[开发日志](development-log.md)。后面的早期候选构建不能替代最终发布对象检查。
+
+## 2026-10-22 · 最终 alpha 功能交付
+
+本轮起点为 `main` / `7d41fb7`。最终运行代码 **`b4ffe01`**；随后只更新交付文档，未修改包内代码或依赖。PyInstaller 冻结一次，electron-builder 复用该后端生成 ZIP 与 NSIS。ZIP 原构建名 `GreatSage-0.5.0-alpha.1-win.zip` 仅重命名为带 `x64` 的发布名，没有重新压缩。发布标签指向保留各切片的 main 合并提交，最终 CI 与合并状态见[Windows regression](https://github.com/MuzeAnisichael/GreatSage/actions/workflows/ci.yml)及[仓库 PR](https://github.com/MuzeAnisichael/GreatSage/pulls?q=is%3Apr+is%3Amerged)。
+
+| 范围 | 实际证据与限制 |
+| --- | --- |
+| 连续话轮、队列、时间轴及隔离 | 语音相关定向集合 **76 passed / 7.66 s**；包括原 API、真实 Pipecat 帧与模拟 SDK 结果，不是独立服务实测 |
+| 回应与审批 | Runtime／新语音回归／既有语音审批 **48 passed / 7.41 s**；最后补充“清理期间新轮已完成”后只复验新话轮文件，**10 passed / 3.05 s**。这些集合重叠，不相加 |
+| 元数据 | 状态白名单 **4 passed**；未知值不伪装为零，不暴露转写或 PCM |
+| 最终冻结语音依赖 | `--check-voice-runtime` 通过，3034 ms；Pipecat 1.13.0、Deepgram SDK 7.14.0、合成管线及清理正常，无网络、硬件或识别质量验收 |
+| 最终冻结后端 | **14/14**；合成模型 4 次／工具 1 次，审批、重启撤销、恰好一次执行、三类产物及监控通过，采集保持关闭 |
+| 最终冻结正常退出 | shutdown／父管道 EOF 均正常退出，约 **547／500 ms**；连接文件清理和 SQLite 完整性通过。只是此合成检查，不是长运行性能承诺 |
+| 最终包内桌面 | **41/41**，`packaged=true`；迟到 final、后续 interim、停止标记、新会话清空、单源重试、设置、记忆／审计和桌宠通过，未启用真实音源 |
+| 文档 | 407 个本地链接无缺失；架构、目录树、函数索引、路线图、使用说明及经验同步 |
+
+本地报告（均忽略、不上传个人运行数据）：
+
+- `.runtime/backend-smoke/20261022T085705Z-f9c21c/result.json`
+- `.runtime/shutdown-smoke/bd26394bfbcf8a6b/result.json`
+- `.runtime/desktop-smoke/2026-10-22T08-59-59-267Z/result.json`，同目录恢复界面截图已检查。
+- 构建日志 `.runtime/v05-final-pyinstaller.log`、`.runtime/v05-final-desktop-build.log`。
+
+第一次受限桌面启动没有产生测试进程或报告，不计为检查通过；允许桌面进程启动后运行的上述 41 项才是采纳的结果。构建未新增下载模型或服务调用。
+
+### 发布产物
+
+下载：[v0.5.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1)，随包提供 `SHA256SUMS.txt`。两种格式共用同一运行代码；NSIS 的 Authenticode 状态为 **NotSigned**。
+
+| 文件 | 字节 | SHA256 |
+| --- | ---: | --- |
+| `GreatSage-0.5.0-alpha.1-win-x64.zip` | 285,809,338 | `83d76c8a4b99ea1dd98f58b60b78cf3cfc4a46e1941dd797c4677b5ff3e59d2a` |
+| `GreatSage-0.5.0-alpha.1-win-x64-Setup.exe` | 212,176,951 | `7df4103eaeb957329fa2dd376ff42681b0253fb3b48f3daf5fd398b93574a751` |
+
+**保留的未测项**：真实 Deepgram 中文和自然连续语音、实际麦克风／扬声器／设备切换、人工安装／跨版本升级／卸载、干净机器和整天运行。安装器为实验性 alpha 产物；包内检查不验证安装流程。性能目标继续作为优化参考，不重复付费测试追逐数值。无需这些环境的功能已完成交付，后续根据真实反馈维护，再按路线图推进 v0.6。
 
 ## 2026-10-22 · 功能恢复切片
 
@@ -15,7 +50,7 @@
 
 桌面报告：`.runtime/desktop-smoke/2026-10-22T03-27-04-370Z/result.json`，同目录 `voice-recovery.png` 已检查。第一轮测试包装器未保留原生 fetch 的 Window 绑定，造成其他请求误报断连；修正夹具并增加连接有效断言后才采纳上述结果。源代码 CI 以本轮 GitHub 检查为准，旧包证据不覆盖本次改动。
 
-恢复入口只重建还在采集的失败识别管线；设备停止仍需检查来源并重开监听。音频按来源代际、队列和包时间截止点隔离，包时间不是声卡精确采样时间。前轮尚未确认时开始新轮的保守停止策略仍在，真实自然对话待测。
+恢复入口只重建还在采集的失败识别管线；设备停止仍需检查来源并重开监听。音频按来源代际、队列和包时间截止点隔离，包时间不是声卡精确采样时间。本切片当时仍采用前轮未确认就停止新轮的保守策略；后续自然话轮切片已用有界队列替换，真实自然对话仍待测。
 
 ## 首轮集成定向验证（2026-10-21）
 
@@ -39,7 +74,7 @@
 
 首个候选（运行代码 `87559e9`）已通过冻结离线语音诊断（1585 ms）、冻结 shutdown／EOF（656／843 ms，报告 `.runtime/shutdown-smoke/9f39c4e21173cd93/`）、包内桌面 31 项（`.runtime/desktop-smoke/2026-10-20T19-14-36-329Z/result.json`）。随后发现并修复设置切换竞态；前述结果仅对应修复前候选，不冒充最终包验收。SoXR 独立 `.pyd` 和四份原许可证已确认随包存在。
 
-## 最终候选构建
+## 2026-10-21 早期候选构建（不是最终发布包）
 
 - 修复后的运行代码对应 `36a1e04`，PyInstaller 后端与 electron-builder NSIS 再构建成功。仅重建受到修复影响的候选，未重新调用付费服务。
 - 最终冻结后端黑盒 **14/14**：回环 HTTP、设置、模型／MCP 合成协议、重启撤销授权、重新点击后恰好一次工具执行、三类产物及监控隐私。合成模型 4 次、合成工具 1 次，无外部模型或麦克风。报告：`.runtime/backend-smoke/20261020T192046Z-cf8c87/result.json`。
