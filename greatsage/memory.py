@@ -16,6 +16,7 @@ from .audit import AuditMixin
 from .artifacts import ArtifactsMixin
 from .materials import MaterialsMixin, chunk_label
 from .task_store import TaskStoreMixin
+from .structured_memory import StructuredMemoryMixin
 
 
 def _now() -> str:
@@ -47,13 +48,13 @@ def _relevance(query: str, text: str) -> float:
                for term in _terms(query) if term in folded)
 
 
-class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, TaskStoreMixin):
+class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, TaskStoreMixin):
     """One WAL database, serialized transactions, and immutable source IDs.
 
     A revision creates a new ID, invalidating all derived records first. This
     makes an in-flight summary referencing the old ID impossible to commit.
-    Only explicit calls to add_memory create durable user memories; assistant
-    messages and ambient transcripts are never promoted automatically.
+    Explicit memories and validated user-source extractions share the same
+    dependency chain. Assistant and ambient transcripts are never promoted.
     """
 
     def __init__(self, data_dir: Path):
@@ -115,6 +116,7 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
         self._init_materials()
         self._init_artifacts()
         self._init_tasks()
+        self._init_structured_memory()
         self._db.commit()
 
     @staticmethod
@@ -246,7 +248,7 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
 
     def list_memories(self) -> list[dict]:
         with self._lock:
-            return [self._row(row) for row in self._db.execute("SELECT * FROM memories WHERE status='active' ORDER BY rowid DESC")]
+            return [self._structured_memory_row(self._row(row)) for row in self._db.execute("SELECT * FROM memories WHERE status='active' ORDER BY rowid DESC")]
 
     def memory_candidates(self, text: str, limit: int = 24) -> list[dict]:
         return sorted(self.list_memories(), key=lambda item: (_relevance(text, item["text"]), item["created_at"]), reverse=True)[:limit]
@@ -289,6 +291,7 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
                 raise KeyError(id)
             sources = record.get("source_ids", record.get("metadata", {}).get("source_ids", []))
             return {"record": record, "sources": [item for id in sources if (item := self.record(id))],
+                    "structured": record.get("structured"),
                     "dependents": [dict(row) for row in self._db.execute("SELECT owner_type,owner_id FROM dependencies WHERE source_id=? LIMIT 100", (id,))]}
 
     def history_page(self, cursor: int | None = None, session_id: str | None = None, limit: int = 30) -> dict:
@@ -337,6 +340,8 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
                 row = self._db.execute(f"SELECT * FROM {table} WHERE id=?", (owner,)).fetchone()
                 if row:
                     texts.add(row["text"])
+                    if table == "memories":
+                        self._block_extraction_sources(json.loads(row["source_ids"]))
                     if table == "messages" and row["trace_id"]:
                         traces.add(row["trace_id"])
                 self._db.execute(f"DELETE FROM {table} WHERE id=?", (owner,))
@@ -362,6 +367,7 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
         if row is None:
             return
         if kind == "memory":
+            self._block_extraction_sources(json.loads(row["source_ids"]))
             self._db.execute("INSERT OR REPLACE INTO forgotten_memories VALUES (?,?,?)", (id, row["source_ids"], _now()))
         texts = {row["text"]}
         traces = {row["trace_id"]} if kind == "message" and row["trace_id"] else set()
@@ -421,7 +427,8 @@ class MemoryStore(VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, 
         with self._lock:
             with self._db:
                 self._db.execute("DELETE FROM memories WHERE source_ids != '[]'")
-                for table in ("messages", "summaries", "sessions", "events", "forgotten_memories", "request_snapshots"):
+                for table in ("messages", "summaries", "sessions", "events", "forgotten_memories", "request_snapshots",
+                              "memory_extraction_progress", "memory_extraction_blocks"):
                     self._db.execute(f"DELETE FROM {table}")
                 # Imported materials are not history: artifacts keep their links to material chunks.
                 self._db.execute("DELETE FROM dependencies WHERE NOT (owner_type='artifact' AND source_id IN (SELECT id FROM material_chunks))")
