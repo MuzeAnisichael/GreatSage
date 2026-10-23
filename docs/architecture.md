@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-10-22。本文记录 v0.5 当前源码架构：在 v0.4 的 LangChain、LangGraph 和 MCP 基础上接入 Pipecat，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。源码、构建、真实服务和已发布版本的边界见[项目现状](project-status.md)与[v0.5 验证](validation-v0.5.md)。按功能定位文件和函数见[代码导航](code-map.md)。
+更新日期：2026-10-24。本文记录包含 v0.6 的当前源码架构：在 LangChain、LangGraph、MCP 与 Pipecat 基础上接入 LangMem 提取，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。源码、构建、真实服务和已发布版本的边界见[项目现状](project-status.md)及其验证入口；记忆范围见[v0.6 方案](v0.6-plan.md)。按功能定位文件和函数见[代码导航](code-map.md)。
 
 ## 1. 组成与调用关系
 
@@ -18,6 +18,10 @@ flowchart LR
     ASR --> Runtime
     Turn --> Runtime
     Runtime <--> Memory[SQLite 记忆与摘要]
+    Runtime -. 空闲后台单批 .-> Extract[LangMem 结构化提取]
+    Extract --> LLM
+    Extract --> Validate[来源与证据复核／确认策略]
+    Validate --> Memory
     Skills[本地 Skill 指令与资料] --> Runtime
     Runtime --> LLM[LangChain 流式模型适配]
     LLM --> Output[文字与分句语音输出]
@@ -43,7 +47,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | desktop/main.cjs、preload.cjs | 窗口、托盘、受限桌面接口、本地后端启动与连接凭据 |
 | ui/ | 控制台、桌宠、语音播放、状态和日志展示 |
 | greatsage/server.py | 有认证的本地 HTTP／WebSocket 接口与输入校验 |
-| greatsage/runtime.py | 音频任务、行为预设、上下文、回复、播放与压缩调度 |
+| greatsage/runtime.py | 音频任务、行为预设、上下文、回复、播放、压缩与记忆提取调度 |
 | greatsage/audio.py、winloopback.py | 麦克风、系统／进程回环、PCM 转换与线程队列 |
 | greatsage/echo.py | 播放参考及自身声音抑制；不是完整 AEC |
 | greatsage/segmentation.py | 30 ms VAD 帧、预留音频、临时快照、静音结束与最长分段 |
@@ -58,6 +62,8 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/inspector.py、ui/inspector.js | 本地状态、消息／上下文和记忆元数据检查 |
 | greatsage/settings.py | 配置校验、环境变量、DPAPI 密钥与原子提交 |
 | greatsage/memory.py | 持久化、检索、摘要、来源关系、修正与删除 |
+| greatsage/structured_memory.py | 无模型依赖的提取持久化、候选、精确实体分组、证据与旧来源抑制 |
+| greatsage/memory_extraction.py | LangMem schema／提取适配，只返回提案；复用当前模型传输与计量 |
 | greatsage/skills.py | 只读技能注册、选择、版本与引用边界 |
 | greatsage/semantic.py、budget.py | 版本化向量索引、混合检索与模型输入预算 |
 | greatsage/decisions.py、background.py | 结构化回应策略、有限批次及失败退避 |
@@ -70,8 +76,9 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/tools.py（v0.3） | 工具定义、效果分级、授权决策、工作目录沙箱、执行与撤销 |
 | ui/work.js（v0.3） | 任务、资料、产物、审批和工具设置界面 |
 | ui/memory.js、audit.js | 记忆来源、冲突、历史浏览、索引和审计控件 |
+| ui/structured-memory.js | 提取设置／状态、候选确认／拒绝、实体关系和原文证据；复用记忆修改／删除 |
 
-存储层的 `TaskStoreMixin` 从 `task_store.py` 注入 `MemoryStore`，不再经 `tasks.py` 导入任务执行依赖。`tasks.py` 保留原符号兼容入口；表结构、事务和恢复语义保持原样。目录按当前职责组织，较大的 Runtime／路由拆分随对应功能迁移进行，避免无关搬迁。
+存储层的 `TaskStoreMixin` 从 `task_store.py` 注入 `MemoryStore`，不再经 `tasks.py` 导入任务执行依赖。`StructuredMemoryMixin` 同样只依赖本地存储与哈希辅助，不为读取实体或记忆而加载 LangMem；LangMem 管理器只在真正提取时创建。`tasks.py` 保留原符号兼容入口。目录按当前职责组织，较大的 Runtime／路由拆分随对应功能迁移进行，避免无关搬迁。
 
 ## 2. 音频与实时响应
 
@@ -112,11 +119,23 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 ## 5. 上下文与后台工作
 
-近期原文、有效显式记忆、历史检索、摘要和 Skill 内容在预算内组合。已准备且适用的 cl100k/o200k 编码计数包含消息封装估计；未知模型继续以 JSON UTF-8 字节上界预算。强制指令、主动前缀、输出容量与协议余量同时计入。
+近期原文、有效长期记忆、历史检索、摘要和 Skill 内容在预算内组合。长期记忆包含显式记录及按策略生效的提取；pending 候选不进入回答或向量检索，生效提取携带实际原文证据。已准备且适用的 cl100k/o200k 编码计数包含消息封装估计；未知模型继续以 JSON UTF-8 字节上界预算。强制指令、主动前缀、输出容量与协议余量同时计入。
 
 压缩与正常回答使用同一提供商适配接口，但后台压缩让出前台交互。保存摘要前重新验证来源。具体结构和删除规则见 [memory-design.md](memory-design.md)。
 
-后台每轮至多压缩一个批次、索引 4 条记录；前台说话或最终识别/回复时让出资源。失败按 5–300 秒退避，界面可重试；重启根据 SQLite 未覆盖来源/未建索引记录继续，不重放旧回答。嵌入有独立开关与凭据，文本按 UTF-8 切块，索引按 provider/base URL/model/chunk version 隔离。前台嵌入和本地扫描共享等待上限；扫描分批检查截止时间，超时回退词法。
+后台每轮至多压缩一批、提取一批、索引 4 条记录；前台说话或最终识别／回复时让出资源。失败按 5–300 秒退避，界面可重试；重启根据 SQLite 未覆盖来源／未处理提取来源／未建索引记录继续，不重放旧回答。嵌入有独立开关与凭据，文本按 UTF-8 切块，索引按 provider/base URL/model/chunk version 隔离。前台嵌入和本地扫描共享等待上限；扫描分批检查截止时间，超时回退词法。
+
+### v0.6 提取与本地记忆边界
+
+`memory_extraction_enabled` 默认关闭；开启后使用当前聊天模型与已有凭据。`memory_confirmation` 默认 `mostly`，另有 `auto` 和 `necessary`；三档规则、冲突限制及删除行为统一见 [记忆设计](memory-design.md)。手动提取也要求开关已保存启用，HTTP 只安排当前会话的一批工作，不等待模型结束。
+
+LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校验；只启用插入提案、单步调用，禁用更新／删除、远端追踪及隐式模型重试。`ProviderMemoryModel` 将 schema 输出接到已有 `Providers.stream_chat`，不是业务工具执行入口：提取模块没有数据库或工具执行器，也不能自行批准候选。依赖与许可见 [third-party.md](third-party.md)。
+
+每批最多 8 条稳定的 `user` 文字／麦克风原文，最多 24 项提案。先选择预算内的完整原文，再核对框架实际请求预算；助手、系统、工具与桌面旁听不作为提取来源，任意 metadata 不发送给模型。Runtime 在请求和提交边界复核会话、设置与取消／数据代际；存储事务再次复核原文身份、内容哈希、版本及逐字引用，和候选、依赖、结构及处理进度一并提交。前台请求、设置变更、会话切换或删除会使旧批次失效；即使提供商迟到返回也不能写入旧结果。
+
+放不进预算的单条原文按 `budget_version` 持久标为延后，使后续短来源可以继续；延后不等于处理成功或遗忘，容量／计数方式等预算条件改变后可重试。只有合法 `MemoryFact` 或显式 `NoMemory` 输出才能完成一批，普通正文不被误当成“没有记忆”。取消使用有界等待，未退场的旧提取任务继续占位以避免无限启动替代任务；前台不等待该提供商无限收尾。
+
+实体与关系是本地结构化记录的列表视图，按精确名称与类型归组，没有图数据库、别名合并或同名消歧。逐字引用证明摘录来自给定原文，不证明提取的事实或推理正确；具体边界与旧来源整体抑制的保守取舍见 [记忆设计](memory-design.md)。
 
 ## 6. 事件与可审计性
 
@@ -133,6 +152,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 | response_start/delta/done | 文字流与完成／中断状态 |
 | audio、playback、interrupt | 语音就绪、播放回执与打断 |
 | compression_start/done、memory_updated | 压缩来源与数据变化 |
+| memory_extraction（v0.6） | 提取阶段、数量与安全错误码；候选正文由记忆详情单独读取 |
 | stream_reset | 慢客户端丢失连续事件后明确要求重载状态 |
 | error | 服务或管线异常及可用的降级信息 |
 | task_updated、task_finished、task_deleted（v0.3） | 任务状态与步骤进度（只推送，不写日志）、结束结果、删除 |
@@ -145,7 +165,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 语言模型调用保存不可变请求元数据；全文快照默认关闭。开启后存入实际 messages、配置和注入 Skill 文本，移除应用凭据，单条正文最多 256 KB，超出则仅留元数据。正文可以显式查看或导出。删除/修正来源会清理对应正文，日志保留期同时清理快照；启动时将中途请求标为 interrupted_restart。API/ASR/TTS 的用量仍通过事件记录，快照不保存原始音频。不保证外部模型再次调用产生同样输出。
 
-新增 API：`/api/memory/index`、`/api/memory/reindex`、`/api/background/retry`、`/api/tokenizer[/prepare]`、`/api/memory/conflicts`、`/api/records/{id}`、`/api/history/page`、`/api/audit/{id}` 及其显式 export 操作；全部复用本地认证。
+记忆与审计 API：`/api/memory/index`、`/api/memory/reindex`、`/api/background/retry`、`/api/tokenizer[/prepare]`、`/api/memory/conflicts`、`/api/records/{id}`、`/api/history/page`、`/api/audit/{id}` 及其显式 export 操作。v0.6 增加 `/api/memory/candidates`、`/api/memory/candidates/{id}/resolve`、`/api/memory/entities[/{id}]`、`GET/POST /api/memory/extraction`；全部复用本地认证和原有修改／删除边界。
 
 ## 7. 配置、凭据与本地接口
 
@@ -157,7 +177,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 ## 8. 扩展点与尚未完成的能力
 
-提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP、Pipecat 与可选 Deepgram 原生流式 ASR 已接入；完整 AEC、MCP stdio／OAuth、实体记忆、多 Agent 和跨平台桌面采集尚未实现。PyInstaller 冻结后端，electron-builder 提供目录、ZIP 与 NSIS 构建。v0.5 安装器候选尚未公开发布或完成安装链验收，也没有受信任发行签名；构建成功不能代替干净电脑验收。
+提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP、Pipecat、可选 Deepgram 原生流式 ASR 与 LangMem／实体列表已接入；完整 AEC、MCP stdio／OAuth、多 Agent 和跨平台桌面采集尚未实现。PyInstaller 冻结后端，electron-builder 提供目录、ZIP 与 NSIS 构建。安装与发行签名的当前边界见[项目现状](project-status.md)；构建成功不能代替干净电脑验收。
 
 ## 9. v0.3 资料、任务与工具
 
@@ -212,6 +232,6 @@ MCP 工具统一归为 `external`，不信任服务端的只读提示来降低�
 
 本地认证接口 `/api/mcp/servers`、`/api/mcp/servers/{id}/discover`、`/api/mcp/disconnect` 对应配置状态、显式发现和停用；不启用服务端 sampling、roots 或 elicitation。未来传输／认证扩展仍须保留相同权限边界。
 
-`/api/inspector` 聚合最近任务图状态、请求快照元数据、记忆计数与变更事件。每个新快照记录消息顺序／角色／序列化字节数／指纹、来源类型与版本、输入／工具／schema 估算及输出预留；最多显示 256 条消息目录。正文始终由既有审计入口显式查看，不能因监控页面打开而开启归档。事件到达即递增界面请求代际，丢弃迟到刷新；实体记忆与多 Agent 返回 `planned`，不会用空数据暗示已实现。
+`/api/inspector` 聚合最近任务图状态、请求快照元数据、记忆计数与变更事件。每个新快照记录消息顺序／角色／序列化字节数／指纹、来源类型与版本、输入／工具／schema 估算及输出预留；最多显示 256 条消息目录。正文始终由既有审计入口显式查看，不能因监控页面打开而开启归档。事件到达即递增界面请求代际，丢弃迟到刷新。v0.6 的 `entity_memory` 返回实体数量与提取状态／计数，原文与证据留在记忆详情；多 Agent 仍返回 `planned`。
 
-选择这些框架是为了复用供应商协议、持久化编排与标准工具生态；选择薄适配而保留应用边界，是为了让现有 Windows 音频、历史数据、来源失效、权限和桌宠行为继续兼容。语音、实体记忆和复杂规划按路线图逐步迁移，不能把使用了 LangGraph 等同于已经具备多 Agent。
+选择这些框架是为了复用供应商协议、持久化编排与标准工具生态；选择薄适配而保留应用边界，是为了让现有 Windows 音频、历史数据、来源失效、权限和桌宠行为继续兼容。复杂规划和多 Agent 继续按路线图推进，不能把使用了 LangGraph 或 LangMem 等同于已经具备多 Agent。

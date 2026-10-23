@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-10-22。适用于 v0.5 当前源码实现；版本状态以 [project-status.md](project-status.md) 为准。
+更新日期：2026-10-24。适用于包含 v0.6 结构化记忆的当前源码实现；构建、验证与发布状态以 [project-status.md](project-status.md) 为准。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -19,6 +19,7 @@ GreatSage/
 │  ├─ index.html / styles.css        控制台布局与样式
 │  ├─ app.js / client.js             页面协调、播放、HTTP / WebSocket 客户端
 │  ├─ memory.js / audit.js           历史、记忆冲突、索引及审计
+│  ├─ structured-memory.js           提取设置、候选、实体关系与原文证据
 │  ├─ work.js / mcp.js               资料、任务、产物、审批与 MCP 配置
 │  ├─ inspector.js                   运行监控
 │  ├─ voice.js                       音源状态、故障说明与恢复操作
@@ -35,6 +36,8 @@ GreatSage/
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
 │  ├─ settings.py / skills.py       配置、凭据与只读 Skill
 │  ├─ memory.py / semantic.py       记忆持久化、来源关系、向量检索
+│  ├─ structured_memory.py          结构化记忆、实体分组、提取进度与抑制
+│  ├─ memory_extraction.py          LangMem schema 与现有模型传输薄适配
 │  ├─ budget.py / background.py     上下文预算与后台退避
 │  ├─ decisions.py                  回应策略
 │  ├─ materials.py / artifacts.py   资料、引用与版本化产物
@@ -73,6 +76,10 @@ GreatSage/
 | 语音语言、音色与播放 | [ui/app.js](../ui/app.js): `AudioPlayer.enqueue`, `next`, `stop`, `notify`；`POST /api/playback` | [runtime.py](../greatsage/runtime.py): `_speak_worker`, `playback`，校验每句身份／顺序与一次性停止回执；[providers.py](../greatsage/providers.py): `synthesize`, `voices` | [test_providers.py](../tests/test_providers.py), [test_runtime.py](../tests/test_runtime.py), [test_audio_player.py](../tests/test_audio_player.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 新会话与历史浏览 | [ui/app.js](../ui/app.js) 的新会话监听器；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/sessions`, `/api/history/page` | [runtime.py](../greatsage/runtime.py): `reset_session`；[memory.py](../greatsage/memory.py): `new_session`, `sessions`, `history_page` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime.py](../tests/test_runtime.py), [test_server.py](../tests/test_server.py) |
 | 显式长期记忆与冲突 | [ui/app.js](../ui/app.js): `renderMemories`；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/memories`, `/api/memory/conflicts` | [runtime.py](../greatsage/runtime.py): `_remember_explicit`, `add_memory_checked`；[memory.py](../greatsage/memory.py): `add_memory`, `conflicts`, `resolve_conflict` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
+| 自动提取设置、手动提取与状态 | [ui/structured-memory.js](../ui/structured-memory.js): `setupStructuredMemory`；`PUT /api/settings`、`GET/POST /api/memory/extraction` | [runtime.py](../greatsage/runtime.py): `request_memory_extraction`, `memory_extraction_status`, `_background_cycle`, `extract_memories`, `pause_background`；[settings.py](../greatsage/settings.py): `_validate` | [test_memory_runtime.py](../tests/test_memory_runtime.py), [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
+| LangMem 提取与原文证据校验 | 后台 `Runtime.extract_memories`；[ui/memory.js](../ui/memory.js): `showRecord` → [ui/structured-memory.js](../ui/structured-memory.js): `appendStructuredEvidence`；`GET /api/records/{id}` | [memory_extraction.py](../greatsage/memory_extraction.py): `MemoryFact`, `NoMemory`, `plan_sources`, `extraction_budget_version`, `ProviderMemoryModel._agenerate`, `extract_memory_proposals`；[structured_memory.py](../greatsage/structured_memory.py): `extraction_sources`, `defer_extraction_sources`, `_validate_extraction_sources`, `_validate_extraction_item`, `save_extraction` | [test_memory_extraction.py](../tests/test_memory_extraction.py), [test_structured_memory.py](../tests/test_structured_memory.py), [test_memory_runtime.py](../tests/test_memory_runtime.py) |
+| 提取候选确认、拒绝与冲突 | `GET /api/memory/candidates`、`POST /api/memory/candidates/{id}/resolve`；冲突复用 `/api/memory/conflicts/{id}` | [structured_memory.py](../greatsage/structured_memory.py): `memory_candidates_list`, `resolve_memory_candidate`, `_structured_conflicts`；[ui/structured-memory.js](../ui/structured-memory.js): `renderCandidates`, `resolveCandidate`；[ui/memory.js](../ui/memory.js): `refreshConflicts` | [test_structured_memory.py](../tests/test_structured_memory.py), [test_server.py](../tests/test_server.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
+| 实体、关系与证据浏览 | `GET /api/memory/entities?q=`、`GET /api/memory/entities/{id}`；[ui/structured-memory.js](../ui/structured-memory.js): `refreshEntities`, `showEntity` | [structured_memory.py](../greatsage/structured_memory.py): `_entity_id`, `_entity_records`, `memory_entities`, `memory_entity`；修改／删除跳回 `renderMemories` 既有入口 | [test_structured_memory.py](../tests/test_structured_memory.py), [test_server.py](../tests/test_server.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 历史检索与回答上下文 | [ui/app.js](../ui/app.js): `scheduleHistorySearch`；`GET /api/memory/search` | 手动搜索：[memory.py](../greatsage/memory.py): `search`；回答检索：[runtime.py](../greatsage/runtime.py): `_semantic_context`, `_build_context` → `MemoryStore.context`；[semantic.py](../greatsage/semantic.py): `semantic_search`, `fuse`；[budget.py](../greatsage/budget.py): `TokenCounter.count` | [test_memory.py](../tests/test_memory.py), [test_memory_v02.py](../tests/test_memory_v02.py), [test_semantic.py](../tests/test_semantic.py) |
 | 摘要压缩、向量索引、后台重试 | [ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/memory/index`, `/api/background/retry` | [runtime.py](../greatsage/runtime.py): `_schedule_compression`, `_background_cycle`, `_compress`, `_index_pending`；[memory.py](../greatsage/memory.py): `compression_batch`, `save_summary`；[background.py](../greatsage/background.py): `BackgroundState` | [test_runtime_v02.py](../tests/test_runtime_v02.py), [test_memory_v02.py](../tests/test_memory_v02.py), [test_semantic.py](../tests/test_semantic.py) |
 | 纠正 / 删除内容和派生数据 | [ui/app.js](../ui/app.js): `renderMemories`, `renderHistory`；`PUT/DELETE /api/memories/{record_id}`, `/api/history/{record_id}` | [runtime.py](../greatsage/runtime.py): `before_delete`；[memory.py](../greatsage/memory.py): `revise_message`, `revise_memory`, `delete_message`, `delete_memory`, `_delete_derived`；关联清理见 [audit.py](../greatsage/audit.py), [artifacts.py](../greatsage/artifacts.py) | [test_memory.py](../tests/test_memory.py), [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py), [test_audit.py](../tests/test_audit.py) |
@@ -87,7 +94,7 @@ GreatSage/
 | 桌宠摸摸、气泡、状态与任务提示 | [ui/pet.js](../ui/pet.js): `setMessage`, `setState`, `taskMessage` 及触摸事件监听器 | [desktop/main.cjs](../desktop/main.cjs): `showPet`, `hidePet`；[ui/pet.html](../ui/pet.html), [pet.css](../ui/pet.css)；接收 `SageClient` 推送事件 | [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 构建与分发 | [package.json](../package.json): `package` / `build.nsis`；[scripts/build.ps1](../scripts/build.ps1): `-Target dir/zip/nsis` | [greatsage-backend.spec](../greatsage-backend.spec), [scripts/backend_entry.py](../scripts/backend_entry.py)；PyInstaller 后端 → electron-builder 目录／ZIP／NSIS | [scripts/smoke_backend.py](../scripts/smoke_backend.py)；安装配置已实现，实际验收见各 `validation-*.md` |
 
-测试表内省略目录的 `test_*.py` 均在 `tests/`。`MemoryStore` 继承 `VectorIndexMixin`、`AuditMixin`、`MaterialsMixin`、`ArtifactsMixin`、`TaskStoreMixin`：例如 `runtime.memory.create_artifact()` 的实现位于 `artifacts.py`，任务账本实现位于 `task_store.py`，不是 `memory.py`。
+测试表内省略目录的 `test_*.py` 均在 `tests/`。`MemoryStore` 继承 `StructuredMemoryMixin`、`VectorIndexMixin`、`AuditMixin`、`MaterialsMixin`、`ArtifactsMixin`、`TaskStoreMixin`：例如 `runtime.memory.save_extraction()` 位于 `structured_memory.py`，`create_artifact()` 位于 `artifacts.py`，任务账本实现位于 `task_store.py`。这些存储入口不导入 LangMem 或任务执行器；模型提取经 Runtime 按需加载。
 
 本轮结构整理将 `ui/v02.js` / `setupV02` 改为按职责命名的 `ui/memory.js` / `setupMemoryPanel`，并把 `TaskStoreMixin` 从 `tasks.py` 提取到 `task_store.py`（原模块保留兼容导出）；不改变业务语义。历史验证文件名保留，查旧提交时注意名称差异。
 
@@ -149,10 +156,18 @@ flowchart LR
     B --> M["MemoryStore.context / SkillsManager.select / TokenCounter.count"]
     H["_schedule_compression"] -. "compression_task" .-> C["_background_cycle"]
     C --> X["_compress → compression_batch → 模型摘要 → save_summary"]
+    C --> E["extract_memories → extraction_sources / plan_sources"]
+    E --> Defer["超预算原文 → defer_extraction_sources；不计成功"]
+    E -. "单批异步模型调用" .-> L["extract_memory_proposals → LangMem → ProviderMemoryModel"]
+    L --> P["Providers.stream_chat：当前聊天模型"]
+    P --> V0["结构化提案；无存储／工具执行权限"]
+    V0 --> Check["Runtime 身份复核 → save_extraction 证据复核"]
+    Check --> DB["SQLite：记忆／依赖／结构／进度同事务"]
     C --> I["_index_pending → embed → save_vectors"]
+    DB -. "memory_updated / memory_extraction" .-> UI["structured-memory.js / inspector.js"]
 ```
 
-前台语音 / 回复会让后台让出；语义检索失败可回退词法。来源版本、向量指纹和摘要来源复核由应用维护，不能因替换模型库而省略。
+前台语音 / 回复会让后台让出；语义检索失败可回退词法。提取独立开关默认关闭、策略默认“大部分确认”，一次至多 8 条用户原文、24 项提案；`POST /api/memory/extraction` 只安排当前会话的一批工作。来源版本、向量指纹和证据复核由应用维护，不能因替换模型库而省略。三档生效与识别边界见 [memory-design.md](memory-design.md)，确认范围见 [v0.6-plan.md](v0.6-plan.md)。
 
 ### 3. 纠正 / 删除 → 阻止旧结果回写
 
@@ -162,11 +177,12 @@ flowchart LR
     B --> I["取消相关异步工作 / 递增数据代际"]
     I --> M["MemoryStore.revise_* / delete_*"]
     M --> D["_delete_derived 与关联索引、审计、引用失效"]
+    M --> S["_block_extraction_sources：旧来源版本整体抑制"]
     M --> E["Runtime.emit"]
     E -. "memory_updated / WebSocket" .-> UI["ui/app.js onEvent → scheduleMemoryRefresh"]
 ```
 
-具体清理顺序见 `before_delete`、`_delete_record` 和 `_delete_derived`。会话、音频与数据删除使用不同代际；调试迟到结果时同时检查 `generation`、`epoch`、`data_epoch`、`capture_generation`，不要只看任务是否被取消。
+具体清理顺序见 `before_delete`、`_delete_record` 和 `_delete_derived`。拒绝提取候选也走同一删除边界；`_block_extraction_sources` 持久保留来源 ID／哈希以阻止旧来源换一种说法再生。会话、音频与数据删除使用不同代际；调试迟到结果时同时检查 `generation`、`epoch`、`data_epoch`、`capture_generation`，提取还核对 `memory_extraction_epoch`、会话 ID 与设置版本，不只依赖任务取消。
 
 ### 4. 资料 → 图任务 → 产物
 
@@ -235,7 +251,7 @@ git blame -L '/async def _call/,+25' -- greatsage/tasks.py
 
 一次问题优先关联 `trace_id` → `task_id` / `call_id` → 请求快照与事件；快照全文默认关闭，监控页不等于完整请求档案。排查源码时不打印运行目录中的密钥、录音或私人会话。结论、原因、修复和验证边界写入 [development-log.md](development-log.md)，架构取舍回链到对应设计文档。
 
-当前尚未实现：LangMem / 实体记忆、Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
+当前尚未实现：Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth。LangMem 提取、候选和实体列表已接入；实体按精确名称／类型分组，不承担同名消歧。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
 
 ### v0.5 音源、话轮与取消链
 

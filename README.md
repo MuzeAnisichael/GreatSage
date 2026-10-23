@@ -29,12 +29,14 @@
 > [!NOTE]
 > 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。提供 Windows x64 目录 ZIP、实验性 NSIS 安装器和源码运行方式。
 >
-> - **版本**：[0.5.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) 从 `main` 交付，包含自然连续语音、转写状态、单音源恢复，以及此前的资料库、纪要任务和受控工具。
+> - **版本**：[0.6.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1) 从 `main` 交付，新增 LangMem 记忆提取、三档确认策略、候选审核、实体关系和原文证据；保留连续语音、资料任务与受控工具。
 > - **框架迁移**：LangChain、LangGraph、MCP HTTP 和本地运行监控已纳入本版；实际验证范围见[v0.4 验证](docs/validation-v0.4.md)，逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
 
 **v0.5 的日常语音体验**：上一句等待最终识别时可以继续下一句；已确认原文按顺序保存，用户继续说话时暂缓旧回答。界面区分临时、确认和未提交转写，显示音源阶段并提供单独重试。Pipecat、可选 Deepgram、播放／打断计时和语音监控均已接入。配置与证据见[使用说明](docs/usage.md)和[v0.5 验证](docs/validation-v0.5.md)；真实新服务、设备和人工安装链仍待验收，性能指标作为优化参考。
+
+**v0.6 的可审阅记忆**：在设置中启用自动提取后，选择自动生效、仅必要时确认或大部分确认（默认）。记忆页可核对原文、接受／拒绝候选、查看实体与关系；拒绝／删除后阻止旧来源重新提取。默认不启用后台模型调用，详见[使用说明](docs/usage.md)和[v0.6 验证](docs/validation-v0.6.md)。
 
 ## 它能做什么
 
@@ -42,7 +44,7 @@
   - 麦克风和一个桌面音源同时监听，桌面音源可以是系统整体声音，或一个指定程序。
   - 有对话伙伴、旁听助手、主动秘书三种预设，结合你写的全局指令，决定回答、解释、提醒还是保持安静。
 - **跨会话记忆**
-  - 原文、显式记忆和三层摘要都保留来源，支持关键词检索和可选的语义检索。
+  - 原文、显式／结构化记忆和三层摘要都保留来源，支持关键词检索和可选的语义检索。
   - 修正或删除原文时，由它派生的摘要、记忆和回答会一起失效。
 - **带出处的纪要（v0.3）**
   - 可以导入 `.md` 资料，把会议原文和资料整理成纪要、可编辑的待办和文档草稿。
@@ -89,16 +91,16 @@
 
 ### 下载 Windows 目录包
 
-从 [v0.5.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+从 [v0.6.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.5.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.6.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
 
-同页提供实验性 `GreatSage-0.5.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
+同页提供实验性 `GreatSage-0.6.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
 
 ### 从源码运行
 
@@ -186,7 +188,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **自身回声**：用进程排除、播放参考和文本去重来减少，不是完整的声学回声消除（AEC）。用耳机代替扬声器可以减少回声干扰。
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
-- **v0.4 验证范围**：真实模型、MCP 服务及打包对象的具体覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth、实体记忆和多 Agent 尚未接入。
+- **v0.4 验证范围**：真实模型、MCP 服务及打包对象的具体覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth 和多 Agent 尚未接入；v0.6 记忆范围见[记忆验证](docs/validation-v0.6.md)。
 - **分发**：提供 Windows x64 目录 ZIP 和实验性 NSIS 安装器，没有受信任发行签名；干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
 
 测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
@@ -200,7 +202,8 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.3 | 随 v0.4 alpha 交付 | 资料库、带出处的纪要／待办／文档、受控工具、任务取消与恢复；真实场景验收继续保留 |
 | v0.4 alpha | 已从 main 交付 | LangChain、LangGraph、MCP HTTP、本地监控与 Windows x64 目录 ZIP |
 | v0.5 alpha | 功能从 main 交付，真实验收继续保留 | Pipecat、连续话轮、单源恢复、转写进度、语音监控、ZIP／实验性 NSIS |
-| v0.6–v0.7 | 分阶段规划 | LangMem／实体记忆、Deep Agents／多 Agent；之后扩展信息输入和桌宠 |
+| v0.6 alpha | 功能从 main 交付 | LangMem 提取、三档确认、实体关系、来源与删除保护 |
+| v0.7 | 已确认方向、待设计实施 | Deep Agents／隔离子 Agent；之后扩展信息输入和桌宠 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 

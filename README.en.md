@@ -29,12 +29,14 @@ It hears what you say and can also listen in on meeting audio from your computer
 > [!NOTE]
 > GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Use the Windows x64 folder ZIP, experimental NSIS installer or source setup.
 >
-> - **Version:** [0.5.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1) ships from `main`, with consecutive voice turns, transcription status and source recovery, alongside the existing materials, minutes and controlled tools.
+> - **Version:** [0.6.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1) ships from `main`, with LangMem extraction, three confirmation policies, candidate review, entities and evidence, alongside existing voice, materials and controlled tools.
 > - **Frameworks:** LangChain, LangGraph, MCP HTTP and local runtime inspection are included. See [v0.4 validation](docs/validation-v0.4.md) for the actual coverage and the [development log](docs/development-log.md) for individual changes (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
 **Everyday voice in v0.5:** start the next sentence while the previous one awaits recognition. Confirmed turns enter history in order, while older replies wait until you finish speaking. The UI distinguishes interim, confirmed and unfinished transcripts, displays source activity and offers an explicit retry of one failed recognizer. Pipecat, optional Deepgram streaming STT, playback/interruption receipts and voice monitoring are included. Live service quality, device behavior and manual installation remain unverified; performance targets are optimization references. See [v0.5 validation](docs/validation-v0.5.md).
+
+**Reviewable memory in v0.6:** opt in to background extraction using your selected chat model. Choose automatic, necessary-only or mostly-confirmation (default). Review candidates, original quotes and entity relationships; rejecting or deleting a memory suppresses further extraction from that old source version. Exact-name grouping is not identity resolution, and quote validation does not guarantee semantic correctness. See [v0.6 validation](docs/validation-v0.6.md).
 
 ## What it does
 
@@ -42,7 +44,7 @@ It hears what you say and can also listen in on meeting audio from your computer
   - Captures the microphone plus one desktop source: all system audio, or a single app.
   - Three presets (conversation partner, listening assistant, proactive secretary) and your own global instructions decide whether it answers, explains, reminds or stays quiet.
 - **Remembers across sessions**
-  - Transcripts, explicit memories and three levels of summaries all keep their sources. Search is keyword-based, with optional semantic search.
+  - Transcripts, explicit/structured memories and three levels of summaries all keep their sources. Search is keyword-based, with optional semantic search.
   - Correcting or deleting a transcript also invalidates the summaries, memories and answers derived from it.
 - **Writes minutes with sources (v0.3)**
   - Import `.md` notes, then turn a meeting and those notes into minutes, editable todos and a document draft.
@@ -89,16 +91,16 @@ It hears what you say and can also listen in on meeting audio from your computer
 
 ### Download the Windows folder build
 
-Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.5.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
+Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.6.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.5.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.6.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 Extract the entire ZIP into a new folder and run `GreatSage.exe`, keeping all accompanying files. Python and Node.js are bundled; configure your own model services and credentials. The build is unsigned and has not passed clean-machine install, upgrade or uninstall acceptance. Existing users should quit the old app and back up their data before using the new folder; keep the existing data directory.
 
-The same release includes experimental `GreatSage-0.5.0-alpha.1-win-x64-Setup.exe`; verify its checksum too. It installs for the current user and is configured to preserve data on uninstall. Quit the previous app from the tray and back up the complete data directory before installing or upgrading. Manual installer acceptance is pending; the ZIP is preferred for initial trials.
+The same release includes experimental `GreatSage-0.6.0-alpha.1-win-x64-Setup.exe`; verify its checksum too. It installs for the current user and is configured to preserve data on uninstall. Quit the previous app from the tray and back up the complete data directory before installing or upgrading. Manual installer acceptance is pending; the ZIP is preferred for initial trials.
 
 ### Run from source
 
@@ -183,7 +185,7 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 - **Echo:** echo handling combines process exclusion, playback references and text de-duplication. It is not full acoustic echo cancellation; headphones help.
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
-- **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth, entity memory and multi-agent execution are not implemented yet.
+- **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth and multi-agent execution are not implemented yet. See [v0.6 validation](docs/validation-v0.6.md) for structured memory coverage.
 - **Distribution:** Windows x64 folder ZIP and experimental NSIS installer, without trusted signing. Clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified. Prefer the ZIP for initial trials; packaged component checks do not validate the installation cycle.
 
 Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
@@ -197,7 +199,8 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.
 | v0.3 | Included in v0.4 alpha | Materials, cited minutes/todos/documents, controlled tools and task recovery; real-world validation remains pending |
 | v0.4 alpha | Released from main | LangChain, LangGraph, MCP HTTP, local inspection and a Windows x64 folder ZIP |
 | v0.5 alpha | Features delivered from main; live acceptance pending | Pipecat, consecutive turns, source recovery, transcript status, ZIP and experimental NSIS |
-| v0.6–v0.7 | Planned | LangMem/entity memory, Deep Agents/multi-agent; richer inputs and pet later |
+| v0.6 alpha | Features delivered from main | LangMem extraction, confirmation policies, entities, evidence and deletion protection |
+| v0.7 | Planned | Deep Agents and isolated subagents; richer inputs and pet later |
 
 ## Contributing
 

@@ -16,6 +16,8 @@ for distribution in ('langchain-core', 'langchain-openai', 'langchain-ollama', '
     data += copy_metadata(distribution)
 for distribution in ('langgraph', 'langgraph-checkpoint', 'langgraph-checkpoint-sqlite'):
     data += copy_metadata(distribution)
+for distribution in ('langmem', 'trustcall', 'langchain', 'langchain-anthropic', 'anthropic', 'dydantic'):
+    data += copy_metadata(distribution)
 for package in ('mcp', 'mcp_types', 'jsonschema_specifications'):
     data += collect_data_files(package)
 for distribution in ('mcp', 'mcp-types', 'jsonschema', 'jsonschema-specifications'):

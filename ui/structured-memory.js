@@ -3,7 +3,7 @@ const kindLabels = { fact: '事实', preference: '偏好', relationship: '关系
 const entityLabels = { person: '人物', project: '项目', organization: '组织', other: '其他', literal: '内容' };
 const reviewLabels = { uncertain: '内容不确定', sensitive: '涉及敏感信息', ambiguous_entity: '实体归属待确认', confirmation_policy: '按当前策略确认', conflict: '与已有记忆冲突' };
 const policyLabels = { auto: '自动生效', necessary: '仅必要时确认', mostly: '大部分确认' };
-const extractionErrors = { timeout: '请求超时，可稍后重试', extraction_failed: '模型提取失败，请查看服务配置', extraction_invalid: '模型输出未通过证据检查', invalid_response: '模型输出无法读取', extraction_superseded: '来源或设置已变化，旧结果已丢弃' };
+const extractionErrors = { invalid_extraction_schema: '模型未提供有效结构化结果，请检查模型能力后手动重试', missing_extraction_result: '模型没有返回提案或明确的空结果，请检查模型能力', invalid_request: '当前模型或接口不支持该请求，请调整模型设置', input_budget_exceeded: '原文超出当前上下文预算，已延后处理', invalid_credentials: '模型凭据无效，请检查设置', rate_limited: '服务暂时限流，请稍后重试', timeout: '请求超时，可稍后重试', extraction_failed: '模型提取失败，请查看服务配置', extraction_invalid: '模型输出未通过证据检查', invalid_response: '模型输出无法读取', extraction_superseded: '来源或设置已变化，旧结果已丢弃' };
 const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className; if (text !== undefined) el.textContent = String(text); return el; };
 const button = (label, action, className = 'button ghost small') => { const el = node('button', className, label); el.type = 'button'; el.addEventListener('click', action); return el; };
 
@@ -60,9 +60,9 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
       if (request !== statusEpoch) return;
       const running = status.background?.running;
       const retry = status.background?.retry_in_seconds || 0;
-      const phase = !status.enabled ? '已关闭' : running ? '提取中' : retry > 0 ? `${retry} 秒后重试` : ({ queued: '等待后台处理', running: '提取中', idle: '等待空闲', backoff: '等待重试', error: '提取失败', failed: '提取失败', completed: '本批提取完成', discarded: '旧结果已丢弃', cancelled: '已取消' })[status.phase] || '等待空闲';
+      const phase = !status.enabled ? '已关闭' : running ? '提取中' : retry > 0 ? `${retry} 秒后重试` : ({ deferred: '原文超出预算，已延后', queued: '等待后台处理', running: '提取中', idle: '等待空闲', backoff: '等待重试', error: '提取失败', failed: '提取失败', needs_attention: '已暂停，请调整配置或手动重试', completed: '本批提取完成', discarded: '旧结果已丢弃', cancelled: '已取消' })[status.phase] || '等待空闲';
       $('#extraction-status').textContent = `${phase} · ${policyLabels[status.confirmation] || policyLabels.mostly} · 当前模型：${status.model || state.settings?.llm?.model || '未配置'}`;
-      $('#extraction-counts').textContent = `来源：${status.eligible_sources ?? 0} 条可提取，${status.processed_sources ?? 0} 条已处理，${status.pending_sources ?? 0} 条待处理 · ${status.active ?? 0} 条有效提取 · ${status.pending ?? 0} 条候选 · ${status.conflicts ?? 0} 项冲突`;
+      $('#extraction-counts').textContent = `来源：${status.eligible_sources ?? 0} 条可提取，${status.processed_sources ?? 0} 条已处理，${status.pending_sources ?? 0} 条待处理（${status.deferred_sources ?? 0} 条超出预算延后） · ${status.active ?? 0} 条有效提取 · ${status.pending ?? 0} 条候选 · ${status.conflicts ?? 0} 项冲突`;
       const error = status.error || status.background?.error || status.background?.last_error;
       $('#extraction-error').hidden = !error;
       $('#extraction-error').textContent = error ? `提取暂未完成：${extractionErrors[error] || error}` : '';
