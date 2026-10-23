@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-22。当前交付版本为从 `main` 发布的 **0.6.0-alpha.1**，包含连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-24。当前交付版本为从 `main` 发布的 **0.6.0-alpha.1**，新增 LangMem 提取、三档确认、候选／实体关系与来源保护，保留连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -141,7 +141,7 @@ PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。
 
 此前构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
 
-本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`；v0.6 以新增表保存结构记忆、来源处理进度与抑制记录，已有文本记录保留。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.6 验证](validation-v0.6.md)。
+本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`；v0.6 以新增表保存结构记忆、来源处理进度、超预算延后与抑制记录，已有文本记录保留。运行目录的 `memory-extraction-state.json` 仅保存安全错误码和设置版本，用于跨重启保持提取的 `needs_attention` 暂停，不包含候选或原文正文。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.6 验证](validation-v0.6.md)。
 
 可重复的桌面 smoke test 使用独立运行目录：
 
@@ -200,3 +200,5 @@ v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒
 ## v0.6 记忆提取开发
 
 依赖固定 LangMem／trustcall，模型走既有 Providers，禁止由提取模型直接写库。定位入口见[代码导航](code-map.md)，范围见[v0.6 计划](v0.6-plan.md)。本地只跑受影响检查；全仓检查交由 Windows CI。冻结后运行 `greatsage-backend.exe --check-memory-runtime`（源码用 `python -m greatsage --check-memory-runtime`）验证真实 LangMem 加载与一次合成提案，不读取用户设置、不联网。新表升级前备份完整数据目录；不承诺旧版本降级后理解新候选。
+
+提取的确定性错误直接进入 `needs_attention`；暂时性错误最多尝试三次（含首次）后暂停。`Runtime._set_extraction_attention()` 原子写入上述安全标记，同配置下重启不自动重发；手动提取、后台重试或配置更新可恢复。不要用删除该文件作为常规故障恢复步骤，界面入口会同时处理重试状态。

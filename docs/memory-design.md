@@ -147,3 +147,5 @@ v0.6 在删除／拒绝／修正旧记忆时记录叶子原文的 ID 和内容�
 既有回归覆盖跨会话恢复、中文检索、来源身份、删除与后台提交竞争、级联摘要／回答失效、修正回滚、上下文预算和显式记忆写入。v0.6 定向用例位于 [test_structured_memory.py](../tests/test_structured_memory.py)、[test_memory_extraction.py](../tests/test_memory_extraction.py)、[test_memory_runtime.py](../tests/test_memory_runtime.py)、[test_server.py](../tests/test_server.py) 和[桌面冒烟](../scripts/smoke_desktop.cjs)，涉及三档策略、伪造证据、冲突再检查、旧来源抑制、跨重启、异步失效及界面操作。测试存在不代表所有环境已经通过，实际结果见当前版本验证记录。
 
 后续优先评估更大规模的混合检索、自然会话提取／冲突漏检、同名实体归属、复杂关系保持与长时间资源使用。当前小型固定集成绩、API 连通、逐字引文和来源图正确性不能替代这些质量测量。
+
+确定性提取错误立即进入 `needs_attention`；暂时性错误最多尝试三次（含首次）后暂停。安全错误码与设置版本保存到运行目录 `memory-extraction-state.json`，同配置下重启保持暂停；手动提取、后台重试或配置更新可恢复。

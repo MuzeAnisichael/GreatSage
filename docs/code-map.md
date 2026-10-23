@@ -38,6 +38,7 @@ GreatSage/
 │  ├─ memory.py / semantic.py       记忆持久化、来源关系、向量检索
 │  ├─ structured_memory.py          结构化记忆、实体分组、提取进度与抑制
 │  ├─ memory_extraction.py          LangMem schema 与现有模型传输薄适配
+│  ├─ memory_diagnostics.py         无网络的真实 LangMem 加载与合成提案检查
 │  ├─ budget.py / background.py     上下文预算与后台退避
 │  ├─ decisions.py                  回应策略
 │  ├─ materials.py / artifacts.py   资料、引用与版本化产物
@@ -76,7 +77,7 @@ GreatSage/
 | 语音语言、音色与播放 | [ui/app.js](../ui/app.js): `AudioPlayer.enqueue`, `next`, `stop`, `notify`；`POST /api/playback` | [runtime.py](../greatsage/runtime.py): `_speak_worker`, `playback`，校验每句身份／顺序与一次性停止回执；[providers.py](../greatsage/providers.py): `synthesize`, `voices` | [test_providers.py](../tests/test_providers.py), [test_runtime.py](../tests/test_runtime.py), [test_audio_player.py](../tests/test_audio_player.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 新会话与历史浏览 | [ui/app.js](../ui/app.js) 的新会话监听器；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/sessions`, `/api/history/page` | [runtime.py](../greatsage/runtime.py): `reset_session`；[memory.py](../greatsage/memory.py): `new_session`, `sessions`, `history_page` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime.py](../tests/test_runtime.py), [test_server.py](../tests/test_server.py) |
 | 显式长期记忆与冲突 | [ui/app.js](../ui/app.js): `renderMemories`；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/memories`, `/api/memory/conflicts` | [runtime.py](../greatsage/runtime.py): `_remember_explicit`, `add_memory_checked`；[memory.py](../greatsage/memory.py): `add_memory`, `conflicts`, `resolve_conflict` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
-| 自动提取设置、手动提取与状态 | [ui/structured-memory.js](../ui/structured-memory.js): `setupStructuredMemory`；`PUT /api/settings`、`GET/POST /api/memory/extraction` | [runtime.py](../greatsage/runtime.py): `request_memory_extraction`, `memory_extraction_status`, `_background_cycle`, `extract_memories`, `pause_background`；[settings.py](../greatsage/settings.py): `_validate` | [test_memory_runtime.py](../tests/test_memory_runtime.py), [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
+| 自动提取设置、手动提取与状态 | [ui/structured-memory.js](../ui/structured-memory.js): `setupStructuredMemory`；`PUT /api/settings`、`GET/POST /api/memory/extraction` | [runtime.py](../greatsage/runtime.py): `request_memory_extraction`, `memory_extraction_status`, `_background_cycle`, `extract_memories`, `pause_background`, `_memory_work_identity`, `_set_extraction_attention`；[settings.py](../greatsage/settings.py): `_validate` | [test_memory_runtime.py](../tests/test_memory_runtime.py), [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
 | LangMem 提取与原文证据校验 | 后台 `Runtime.extract_memories`；[ui/memory.js](../ui/memory.js): `showRecord` → [ui/structured-memory.js](../ui/structured-memory.js): `appendStructuredEvidence`；`GET /api/records/{id}` | [memory_extraction.py](../greatsage/memory_extraction.py): `MemoryFact`, `NoMemory`, `plan_sources`, `extraction_budget_version`, `ProviderMemoryModel._agenerate`, `extract_memory_proposals`；[structured_memory.py](../greatsage/structured_memory.py): `extraction_sources`, `defer_extraction_sources`, `_validate_extraction_sources`, `_validate_extraction_item`, `save_extraction` | [test_memory_extraction.py](../tests/test_memory_extraction.py), [test_structured_memory.py](../tests/test_structured_memory.py), [test_memory_runtime.py](../tests/test_memory_runtime.py) |
 | 提取候选确认、拒绝与冲突 | `GET /api/memory/candidates`、`POST /api/memory/candidates/{id}/resolve`；冲突复用 `/api/memory/conflicts/{id}` | [structured_memory.py](../greatsage/structured_memory.py): `memory_candidates_list`, `resolve_memory_candidate`, `_structured_conflicts`；[ui/structured-memory.js](../ui/structured-memory.js): `renderCandidates`, `resolveCandidate`；[ui/memory.js](../ui/memory.js): `refreshConflicts` | [test_structured_memory.py](../tests/test_structured_memory.py), [test_server.py](../tests/test_server.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
 | 实体、关系与证据浏览 | `GET /api/memory/entities?q=`、`GET /api/memory/entities/{id}`；[ui/structured-memory.js](../ui/structured-memory.js): `refreshEntities`, `showEntity` | [structured_memory.py](../greatsage/structured_memory.py): `_entity_id`, `_entity_records`, `memory_entities`, `memory_entity`；修改／删除跳回 `renderMemories` 既有入口 | [test_structured_memory.py](../tests/test_structured_memory.py), [test_server.py](../tests/test_server.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
@@ -169,6 +170,8 @@ flowchart LR
 
 前台语音 / 回复会让后台让出；语义检索失败可回退词法。提取独立开关默认关闭、策略默认“大部分确认”，一次至多 8 条用户原文、24 项提案；`POST /api/memory/extraction` 只安排当前会话的一批工作。来源版本、向量指纹和证据复核由应用维护，不能因替换模型库而省略。三档生效与识别边界见 [memory-design.md](memory-design.md)，确认范围见 [v0.6-plan.md](v0.6-plan.md)。
 
+`_memory_work_identity()` 同时约束提取和后续索引，取消前递增代际，迟到结果不能继续下一阶段。确定性提取错误立即暂停，暂时性错误最多尝试三次（含首次）；`_set_extraction_attention()` 将安全错误码与设置版本写入运行目录的 `memory-extraction-state.json`，同配置重启保持 `needs_attention`。恢复入口为手动提取、`POST /api/background/retry` 或更新配置；此文件不存正文，不属于源码或待提交数据。
+
 ### 3. 纠正 / 删除 → 阻止旧结果回写
 
 ```mermaid
@@ -226,6 +229,8 @@ flowchart LR
 安装验收：[scripts/smoke_installer.ps1](../scripts/smoke_installer.ps1) 的 `Invoke-Installer`／`Invoke-OwnedUninstall`、`Assert-DataHashes` 及人工退出节点；运行前查看脚本头部边界。`desktop/main.cjs` 在 ready 前处理显式数据目录隔离，`stopBackend` 与后端 `_watch_desktop_pipe` 完成正常退出。
 
 冻结语音排障：`python -m greatsage --check-voice-runtime` 或包内后端同名参数 → [diagnostics.py](../greatsage/diagnostics.py) 的 `check_voice_runtime`；不连接服务、不启用设备，检查 SDK 懒加载与合成静音管线。新增依赖时同步 [greatsage-backend.spec](../greatsage-backend.spec)、[hook-deepgram.py](../scripts/hooks/hook-deepgram.py) 和[许可记录](third-party.md)。
+
+冻结记忆排障：`python -m greatsage --check-memory-runtime` 或包内后端同名参数 → [memory_diagnostics.py](../greatsage/memory_diagnostics.py) 的 `check_memory_runtime` → `extract_memory_proposals`。用假提供商执行一次真实 LangMem schema 路径，不读用户设置、不联网，不代表真实模型质量或最终包已经通过。
 
 语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
 
