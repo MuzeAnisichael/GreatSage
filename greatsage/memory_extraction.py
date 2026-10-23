@@ -129,7 +129,14 @@ class ProviderMemoryModel(BaseChatModel):
         raise ExtractionError("async_required")
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
-        return self.bind(tools=[convert_to_openai_tool(tool) for tool in tools])
+        # Trustcall supplies raw JSON schemas with $defs/$ref. Reuse LangChain's
+        # Pydantic conversion to inline our known schemas for local tool templates.
+        canonical = {schema.__name__: schema for schema in EXTRACTION_SCHEMAS}
+        formatted = []
+        for tool in tools:
+            name = tool.get("function", {}).get("name") if isinstance(tool, dict) else getattr(tool, "__name__", None)
+            formatted.append(convert_to_openai_tool(canonical.get(name, tool)))
+        return self.bind(tools=formatted)
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         if self.call_budget["calls"] >= 1:

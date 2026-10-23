@@ -163,3 +163,29 @@ async def test_explicit_empty_schema_is_the_only_successful_no_memory_result(tmp
 
     assert await extract_memory_proposals(Empty(), config(), [{"id": "source-1", "text": "你好"}],
                                           TokenCounter(config(), tmp_path)) == []
+
+
+async def test_ollama_wire_schema_inlines_evidence_for_local_tool_templates(tmp_path):
+    requests = []
+    local = {**config(), "provider": "ollama", "base_url": "http://127.0.0.1:11434", "model": "fixture"}
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert str(request.url) == "http://127.0.0.1:11434/api/chat"
+        fact = next(tool["function"] for tool in body["tools"] if tool["function"]["name"] == "MemoryFact")
+        assert "$ref" not in json.dumps(fact["parameters"])
+        evidence = fact["parameters"]["properties"]["evidence"]["items"]
+        assert set(evidence["properties"]) == {"source_id", "quote"}
+        assert set(evidence["required"]) == {"source_id", "quote"}
+        return httpx.Response(200, headers={"content-type": "application/x-ndjson"}, text=json.dumps({
+            "model": "fixture", "message": {"role": "assistant", "content": "", "tool_calls": [{
+                "function": {"name": "NoMemory", "arguments": {"no_memory": True}}}]},
+            "done": True, "done_reason": "stop"}) + "\n")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        service = Providers(client=client)
+        assert await extract_memory_proposals(service, local, [{"id": "source-1", "text": "你好"}],
+                                              TokenCounter(local, tmp_path)) == []
+        await service.close()
+    assert len(requests) == 1
