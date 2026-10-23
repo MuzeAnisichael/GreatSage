@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from .semantic import text_hash
 
 
+_USER_ORIGINAL_SQL = "m.role='user' AND (m.source IN ('text','microphone') OR m.source GLOB 'microphone:*')"
+
+
 def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
@@ -39,6 +42,10 @@ class StructuredMemoryMixin:
             CREATE TABLE IF NOT EXISTS memory_extraction_blocks (
                 source_id TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL,
                 PRIMARY KEY(source_id,content_hash));
+            CREATE TABLE IF NOT EXISTS memory_extraction_deferred (
+                source_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                content_hash TEXT NOT NULL, budget_version TEXT NOT NULL,
+                reason TEXT NOT NULL, deferred_at TEXT NOT NULL);
         """)
         # Migrate existing explicit forget decisions without retaining their text.
         for row in self._db.execute("SELECT source_ids FROM forgotten_memories").fetchall():
@@ -54,22 +61,45 @@ class StructuredMemoryMixin:
 
     @staticmethod
     def _eligible_extraction_source(row: dict) -> bool:
-        return row.get("role") == "user" and row.get("source") in {"text", "microphone"}
+        source = row.get("source", "")
+        return (row.get("role") == "user" and isinstance(source, str)
+                and (source in {"text", "microphone"} or source.startswith("microphone:")))
 
     def _source_snapshot(self, row: dict) -> dict:
         return {**row, "content_hash": text_hash(row["text"]),
                 "version": row.get("metadata", {}).get("version", 1)}
 
-    def extraction_sources(self, limit: int = 8, session_id: str | None = None) -> list[dict]:
+    def extraction_sources(self, limit: int = 8, session_id: str | None = None,
+                           budget_version: str | None = None) -> list[dict]:
         """Return at most eight unprocessed, unsuppressed stable user originals."""
         with self._lock:
             session, args = (" AND m.session_id=?", [session_id]) if session_id is not None else ("", [])
-            rows = self._db.execute("""
-                SELECT m.* FROM messages m WHERE m.role='user' AND m.source IN ('text','microphone')
+            deferred = ""
+            if budget_version is not None:
+                deferred = " AND NOT EXISTS (SELECT 1 FROM memory_extraction_deferred d WHERE d.source_id=m.id AND d.budget_version=?)"
+                args.append(budget_version)
+            rows = self._db.execute("SELECT m.* FROM messages m WHERE " + _USER_ORIGINAL_SQL + """
                 AND NOT EXISTS (SELECT 1 FROM memory_extraction_progress p WHERE p.source_id=m.id)
                 AND NOT EXISTS (SELECT 1 FROM memory_extraction_blocks b WHERE b.source_id=m.id)
-            """ + session + " ORDER BY m.rowid LIMIT ?", [*args, max(0, min(int(limit), 8))])
+            """ + session + deferred + " ORDER BY m.rowid LIMIT ?", [*args, max(0, min(int(limit), 8))])
             return [self._source_snapshot(self._row(row)) for row in rows]
+
+    def defer_extraction_sources(self, sources: list[dict], budget_version: str) -> dict:
+        """Persist budget-only deferral, never a successful extraction or forget decision."""
+        if not isinstance(budget_version, str) or not budget_version or len(budget_version) > 128:
+            raise ValueError("Invalid extraction budget version")
+        with self._lock, self._db:
+            snapshots = self._validate_extraction_sources(sources)
+            count = 0
+            for source in snapshots.values():
+                if self._db.execute("""SELECT 1 FROM memory_extraction_progress WHERE source_id=?
+                    UNION ALL SELECT 1 FROM memory_extraction_blocks WHERE source_id=?""",
+                                    (source["id"], source["id"])).fetchone():
+                    continue
+                self._db.execute("INSERT OR REPLACE INTO memory_extraction_deferred VALUES (?,?,?,?,?)",
+                                 (source["id"], source["content_hash"], budget_version, "input_budget_exceeded", _now()))
+                count += 1
+            return {"deferred_sources": count}
 
     def _validate_extraction_sources(self, sources: list[dict]) -> dict[str, dict]:
         if not isinstance(sources, list) or not 1 <= len(sources) <= 8:
@@ -209,6 +239,7 @@ class StructuredMemoryMixin:
                 if sid not in consumed and sid not in blocked:
                     self._db.execute("INSERT INTO memory_extraction_progress VALUES (?,?,?,?)",
                                      (sid, source["content_hash"], _now(), model))
+                    self._db.execute("DELETE FROM memory_extraction_deferred WHERE source_id=?", (sid,))
                     result["processed_sources"] += 1
         return result
 
@@ -279,17 +310,26 @@ class StructuredMemoryMixin:
             return {"entity": entities[id], "facts": matching,
                     "relationships": [fact for fact in matching if fact["structured"]["kind"] == "relationship"]}
 
-    def extraction_status(self) -> dict:
+    def extraction_status(self, budget_version: str | None = None) -> dict:
         with self._lock:
-            eligible = self._db.execute("SELECT count(*) FROM messages WHERE role='user' AND source IN ('text','microphone')").fetchone()[0]
+            eligible = self._db.execute("SELECT count(*) FROM messages m WHERE " + _USER_ORIGINAL_SQL).fetchone()[0]
             processed = self._db.execute("SELECT count(*),max(processed_at) FROM memory_extraction_progress").fetchone()
             blocked = self._db.execute("SELECT count(*) FROM messages m WHERE EXISTS (SELECT 1 FROM memory_extraction_blocks b WHERE b.source_id=m.id)").fetchone()[0]
-            pending = self._db.execute("""SELECT count(*) FROM messages m WHERE m.role='user' AND m.source IN ('text','microphone')
+            pending = self._db.execute("SELECT count(*) FROM messages m WHERE " + _USER_ORIGINAL_SQL + """
                 AND NOT EXISTS (SELECT 1 FROM memory_extraction_progress p WHERE p.source_id=m.id)
                 AND NOT EXISTS (SELECT 1 FROM memory_extraction_blocks b WHERE b.source_id=m.id)""").fetchone()[0]
+            deferred_query = """SELECT count(*) FROM memory_extraction_deferred d
+                WHERE NOT EXISTS (SELECT 1 FROM memory_extraction_progress p WHERE p.source_id=d.source_id)
+                AND NOT EXISTS (SELECT 1 FROM memory_extraction_blocks b WHERE b.source_id=d.source_id)"""
+            deferred_args = []
+            if budget_version is not None:
+                deferred_query += " AND d.budget_version=?"
+                deferred_args.append(budget_version)
+            deferred = self._db.execute(deferred_query, deferred_args).fetchone()[0]
             counts = {row[0]: row[1] for row in self._db.execute("""SELECT m.status,count(*) FROM memories m
                 JOIN structured_memories s ON s.memory_id=m.id GROUP BY m.status""")}
             conflicts = self._db.execute("SELECT count(*) FROM memory_conflicts c JOIN structured_memories s ON s.memory_id=c.candidate_id").fetchone()[0]
             return {"eligible_sources": eligible, "processed_sources": processed[0], "pending_sources": pending,
                     "blocked_sources": blocked, "active": counts.get("active", 0), "pending": counts.get("pending", 0),
-                    "conflicts": conflicts, "last_processed_at": processed[1]}
+                    "conflicts": conflicts, "last_processed_at": processed[1], "deferred_sources": deferred,
+                    "deferred_reason": "input_budget_exceeded" if deferred else None}

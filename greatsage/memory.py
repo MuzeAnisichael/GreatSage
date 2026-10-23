@@ -428,7 +428,7 @@ class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, Materials
             with self._db:
                 self._db.execute("DELETE FROM memories WHERE source_ids != '[]'")
                 for table in ("messages", "summaries", "sessions", "events", "forgotten_memories", "request_snapshots",
-                              "memory_extraction_progress", "memory_extraction_blocks"):
+                              "memory_extraction_progress", "memory_extraction_blocks", "memory_extraction_deferred"):
                     self._db.execute(f"DELETE FROM {table}")
                 # Imported materials are not history: artifacts keep their links to material chunks.
                 self._db.execute("DELETE FROM dependencies WHERE NOT (owner_type='artifact' AND source_id IN (SELECT id FROM material_chunks))")

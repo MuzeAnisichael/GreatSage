@@ -44,9 +44,10 @@ def test_policies_quarantine_only_the_required_extractions(store, policy, reason
 
 def test_source_selection_is_bounded_and_excludes_non_user_and_ambient(store):
     for role, source in [("assistant", "text"), ("tool", "text"), ("system", "text"),
-                         ("observation", "microphone"), ("user", "system"), ("user", "process")]:
+                         ("observation", "microphone:2"), ("user", "system"), ("user", "process"),
+                         ("user", "microphoneFake")]:
         store.add_message(role, "不能作为用户事实", source)
-    selected = [store.add_message("user", f"原文 {index}", "microphone", "selected") for index in range(10)]
+    selected = [store.add_message("user", f"原文 {index}", "microphone:2", "selected") for index in range(10)]
     store.add_message("user", "别的会话", session_id="other")
     rows = store.extraction_sources(100, "selected")
     assert len(rows) == 8 and {row["id"] for row in rows} == {row["id"] for row in selected[:8]}
@@ -54,6 +55,49 @@ def test_source_selection_is_bounded_and_excludes_non_user_and_ambient(store):
     store.save_extraction([], rows, "auto")
     assert len(store.extraction_sources(8, "selected")) == 2
     assert store.extraction_status()["processed_sources"] == 8
+
+
+def test_device_microphone_source_is_accepted_by_selection_commit_and_status(store):
+    source = store.add_message("user", "我喜欢绿茶", "microphone:12")
+    assert store.extraction_status()["eligible_sources"] == 1
+    snapshots = store.extraction_sources()
+    assert snapshots[0]["id"] == source["id"]
+    assert store.save_extraction([fact(source)], snapshots, "auto")["saved"] == 1
+    assert store.extraction_status()["processed_sources"] == 1
+
+
+def test_budget_deferral_persists_without_starving_later_sources_or_marking_success(tmp_path):
+    memory = MemoryStore(tmp_path)
+    for index in range(8):
+        memory.add_message("user", f"超长原文 {index} " + "正文" * 10000)
+    small = memory.add_message("user", "我喜欢绿茶")
+    oversized = memory.extraction_sources(budget_version="small-budget")
+    assert len(oversized) == 8 and small["id"] not in {row["id"] for row in oversized}
+    assert memory.defer_extraction_sources(oversized, "small-budget") == {"deferred_sources": 8}
+    assert memory.extraction_status("small-budget")["processed_sources"] == 0
+    assert memory.extraction_status("small-budget")["pending_sources"] == 9
+    memory.close()
+    memory = MemoryStore(tmp_path)
+    try:
+        selected = memory.extraction_sources(budget_version="small-budget")
+        assert [row["id"] for row in selected] == [small["id"]]
+        assert memory.save_extraction([fact(small)], selected, "auto")["saved"] == 1
+        assert not memory.extraction_sources(budget_version="small-budget")
+        assert len(memory.extraction_sources(budget_version="larger-budget")) == 8
+        assert len(memory.extraction_sources()) == 8
+        assert memory.extraction_status("small-budget")["deferred_sources"] == 8
+        assert memory.extraction_status("larger-budget")["deferred_sources"] == 0
+        metadata = json.dumps([dict(row) for row in memory._db.execute("SELECT * FROM memory_extraction_deferred")], ensure_ascii=False)
+        assert "正文" not in metadata and "超长原文" not in metadata
+        revised = memory.revise_message(oversized[0]["id"], "新的较短原文")
+        assert memory.extraction_sources(budget_version="small-budget")[0]["id"] == revised["id"]
+        with pytest.raises(ValueError, match="no longer exists"):
+            memory.defer_extraction_sources(oversized, "small-budget")
+        assert memory.extraction_status("small-budget")["deferred_sources"] == 7
+        memory.clear_history()
+        assert memory.extraction_status("small-budget")["deferred_sources"] == 0
+    finally:
+        memory.close()
 
 
 @pytest.mark.parametrize("tamper", ["quote", "source_id", "hash", "text", "version", "role", "source", "session_id"])
