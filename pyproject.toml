@@ -16,6 +16,8 @@ dependencies = [
   "langchain-openai==1.7.2", "langchain-ollama==1.1.0", "langchain-core==1.6.11",
   "openai==2.45.0", "ollama==0.6.3",
   "langgraph==1.2.15", "langgraph-checkpoint-sqlite==3.1.2",
+  "langmem==0.0.30", "trustcall==0.0.39", "langchain==1.4.6",
+  "langchain-anthropic==1.7.6", "anthropic==1.17.0", "dydantic==0.0.8",
   "mcp==2.3.0", "httpx2==2.13.1", "jsonschema==4.26.0",
   "pipecat-ai[deepgram]==1.13.0", "deepgram-sdk==7.14.0",
   "audioop-lts>=0.2.1; python_version >= '3.13'",

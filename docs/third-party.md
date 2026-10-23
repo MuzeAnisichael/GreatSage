@@ -1,6 +1,8 @@
-# 语音依赖与分发说明
+# 新增框架依赖与分发说明
 
 本页记录 2026-10-21 引入的语音依赖，不是项目全部依赖清单。GreatSage 自身采用 MIT；第三方组件分别适用其原许可证。冻结后端随附本页和下表组件的发行元数据，不改变上游归属或许可。
+
+2026-10-24 记忆提取新增 MIT 组件：LangMem 0.0.30、trustcall 0.0.39、langchain 1.4.6、langchain-anthropic 1.7.6、anthropic 1.17.0、dydantic 0.0.8。来源为 [LangMem](https://github.com/langchain-ai/langmem)、[trustcall](https://github.com/hinthornw/trustcall)、[LangChain](https://github.com/langchain-ai/langchain)、[Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python)、[dydantic](https://github.com/hinthornw/dydantic)。后两项模型依赖由上游包引入，不代表应用启用额外模型服务；提取仍使用用户选择的聊天适配器。固定 langchain 1.4.6 以保留现有 langchain-core 1.6.11，冻结包携带发行元数据与原许可证。复用提取与 schema 校验，不接入 LangMem 远端存储或 prompt 优化。
 
 | 组件与本次版本 | 许可 | 来源 |
 | --- | --- | --- |

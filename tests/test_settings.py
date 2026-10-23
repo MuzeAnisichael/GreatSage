@@ -23,6 +23,7 @@ def test_defaults_follow_confirmed_first_release_policy(store):
     assert public["mode"] == "conversation"
     assert public["microphone"] and not public["voice_enabled"]
     assert not public["record_audio"]
+    assert not public["memory_extraction_enabled"] and public["memory_confirmation"] == "mostly"
     assert public["log_retention_days"] == 30 and public["recording_retention_days"] == 7
     assert public["llm"]["key_configured"]
     assert "ENVIRONMENT_TEST_CREDENTIAL" not in json.dumps(public)
@@ -88,6 +89,7 @@ def test_failed_atomic_commit_preserves_both_old_settings_and_credentials(store,
 
 
 @pytest.mark.parametrize("patch", [
+    {"memory_extraction_enabled": "true"}, {"memory_confirmation": "unknown"}, {"memory_confirmation": []},
     {"mode": "unknown"}, {"mode": []}, {"unrecognized_option": True},
     {"voice_enabled": "false"}, {"cooldown_seconds": -1}, {"cooldown_seconds": float("nan")},
     {"cooldown_seconds": 10 ** 1000}, {"recording_retention_days": 0},
