@@ -271,6 +271,22 @@ main { min-width: 0; }
 .conflict-card { padding: 14px 16px; border-top: 1px solid var(--border); }
 .conflict-card strong { display: block; margin: 6px 0 4px; font-size: 13px; color: var(--text-2); }
 .conflict-card > .panel-tools { margin-top: 12px; }
+.candidates-panel .panel-heading h2, .entities-panel .panel-heading h2 { display: flex; align-items: center; gap: 8px; }
+.candidate-card { padding: 14px 16px; border-top: 1px solid var(--border); }
+.candidate-card .panel-tools, .entity-fact .panel-tools { margin-top: 12px; flex-wrap: wrap; }
+.extraction-panel .panel-body > p { margin: 0 0 10px; }
+#extraction-error { color: var(--danger); overflow-wrap: anywhere; }
+.extraction-panel .panel-tools { margin: 12px 0; flex-wrap: wrap; }
+.entities-panel .panel-heading { flex-wrap: wrap; }
+.entity-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr)); gap: 12px; padding: 16px; }
+.entity-list > .small-empty { grid-column: 1 / -1; }
+.entity-card { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); background: var(--surface); text-align: left; overflow-wrap: anywhere; }
+.entity-card:hover { border-color: var(--accent); background: var(--surface-2); }
+.entity-card strong { flex: 1; min-width: 0; }
+.entity-card small { width: 100%; }
+.entity-fact { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.structured-relation { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+.evidence-quote { margin: 12px 0 6px; padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .index-panel .panel-body > p { margin: 0 0 8px; }
 .index-panel .panel-tools { margin: 4px 0 10px; }
 .archive-panel > summary { list-style: none; cursor: pointer; font-weight: 600; }

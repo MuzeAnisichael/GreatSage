@@ -262,6 +262,38 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def memory_conflicts():
         return runtime.memory.conflicts()
 
+    @app.get("/api/memory/candidates", dependencies=api)
+    async def memory_candidates():
+        return runtime.memory.memory_candidates_list()
+
+    @app.post("/api/memory/candidates/{candidate_id}/resolve", dependencies=api)
+    async def resolve_memory_candidate(candidate_id: str, body: dict):
+        action = body.get("action")
+        if action not in ("accept", "reject"):
+            raise ValueError("请选择接受或拒绝候选记忆。")
+        # Invalidate in-flight readers/writers before changing active context.
+        await runtime.before_delete()
+        result = runtime.memory.resolve_memory_candidate(candidate_id, action)
+        await runtime.emit("memory_updated", {"id": candidate_id, "action": action})
+        runtime._schedule_compression()
+        return result
+
+    @app.get("/api/memory/entities", dependencies=api)
+    async def memory_entities(q: str = ""):
+        return runtime.memory.memory_entities(q[:2000])
+
+    @app.get("/api/memory/entities/{entity_id}", dependencies=api)
+    async def memory_entity(entity_id: str):
+        return runtime.memory.memory_entity(entity_id)
+
+    @app.get("/api/memory/extraction", dependencies=api)
+    async def memory_extraction():
+        return runtime.memory_extraction_status()
+
+    @app.post("/api/memory/extraction", dependencies=api)
+    async def extract_current_session():
+        return await runtime.request_memory_extraction(runtime.session_id)
+
     @app.post("/api/memory/conflicts/{candidate_id}", dependencies=api)
     async def resolve_conflict(candidate_id: str, body: dict):
         if body.get("resolution") not in ("replace", "keep_existing", "keep_both"):
