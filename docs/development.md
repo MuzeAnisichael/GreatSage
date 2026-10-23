@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-22。当前交付版本为从 `main` 发布的 **0.5.0-alpha.1**，包含连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-10-24。当前交付版本为从 `main` 发布的 **0.6.0-alpha.1**，新增 LangMem 提取、三档确认、候选／实体关系与来源保护，保留连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -135,13 +135,13 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 表示：当前为 `0.5.0a1` 与 `0.5.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
+Python 与桌面包分别使用对应的 alpha 表示：当前为 `0.6.0a1` 与 `0.6.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
 
-PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。`scripts/build.ps1` 默认 `-Target dir`，单一产物可用 `-Target zip/nsis`；若同时交付两种格式，后端构建一次后执行 `electron-builder --win zip nsis --x64 --publish never`，避免重复冻结。将整个目录分发，不能只复制 `GreatSage.exe`。[v0.5.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.5.0-alpha.1)提供 Windows x64 ZIP、实验性安装器和 `SHA256SUMS.txt`。发布前记录构建代码提交、两个产物的大小／SHA256，上传后核对远端资产；无受信任发行签名，人工安装／升级／卸载仍待验收。
+PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。`scripts/build.ps1` 默认 `-Target dir`，单一产物可用 `-Target zip/nsis`；若同时交付两种格式，后端构建一次后执行 `electron-builder --win zip nsis --x64 --publish never`，避免重复冻结。将整个目录分发，不能只复制 `GreatSage.exe`。[v0.6.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1)提供 Windows x64 ZIP、实验性安装器和 `SHA256SUMS.txt`。发布前记录构建代码提交、两个产物的大小／SHA256，上传后核对远端资产；无受信任发行签名，人工安装／升级／卸载仍待验收。
 
 此前构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
 
-本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`，没有数据格式迁移。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.5 验证](validation-v0.5.md)。
+本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`；v0.6 以新增表保存结构记忆、来源处理进度、超预算延后与抑制记录，已有文本记录保留。运行目录的 `memory-extraction-state.json` 仅保存安全错误码和设置版本，用于跨重启保持提取的 `needs_attention` 暂停，不包含候选或原文正文。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.6 验证](validation-v0.6.md)。
 
 可重复的桌面 smoke test 使用独立运行目录：
 
@@ -182,7 +182,7 @@ README 截图和社交预览图用下面的脚本重新生成：
 
 ## 8. 开源参考与复用
 
-v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒加载入口和元数据，不收集所有服务 extras 或模型。许可与来源见 [third-party.md](third-party.md)。NSIS 使用 `scripts/build.ps1 -Target nsis`，当前源码版本为 `0.5.0a1`／`0.5.0-alpha.1`，发布状态以[项目现状](project-status.md)为准。
+v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒加载入口和元数据，不收集所有服务 extras 或模型。许可与来源见 [third-party.md](third-party.md)。NSIS 使用 `scripts/build.ps1 -Target nsis`，当前源码版本为 `0.6.0a1`／`0.6.0-alpha.1`，发布状态以[项目现状](project-status.md)为准。
 
 升级前从托盘菜单退出 GreatSage，再备份完整数据目录。NSIS 的运行中升级处理可能强制结束进程，不保证执行应用关闭流程。默认当前用户安装、手动升级、卸载保留数据、不自动启动；DPAPI 仍绑定 Windows 用户。`GREATSAGE_DATA_DIR` 显式设置时也隔离 Electron profile，正常启动沿用既有路径。
 
@@ -196,3 +196,9 @@ v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒
 - [Microsoft 进程回环示例](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)：Windows 指定进程采集的官方实现参考。
 
 这些参考不代表本项目继承了其全部能力。直接引入外部代码时记录版本、许可证、修改范围与归属；模型权重、形象素材和语音服务分别核对适用条款。
+
+## v0.6 记忆提取开发
+
+依赖固定 LangMem／trustcall，模型走既有 Providers，禁止由提取模型直接写库。定位入口见[代码导航](code-map.md)，范围见[v0.6 计划](v0.6-plan.md)。本地只跑受影响检查；全仓检查交由 Windows CI。冻结后运行 `greatsage-backend.exe --check-memory-runtime`（源码用 `python -m greatsage --check-memory-runtime`）验证真实 LangMem 加载与一次合成提案，不读取用户设置、不联网。新表升级前备份完整数据目录；不承诺旧版本降级后理解新候选。
+
+提取的确定性错误直接进入 `needs_attention`；暂时性错误最多尝试三次（含首次）后暂停。`Runtime._set_extraction_attention()` 原子写入上述安全标记，同配置下重启不自动重发；手动提取、后台重试或配置更新可恢复。不要用删除该文件作为常规故障恢复步骤，界面入口会同时处理重试状态。

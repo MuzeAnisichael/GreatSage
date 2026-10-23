@@ -72,6 +72,7 @@ def _defaults() -> dict:
                       "api_key_env": "OPENROUTER_API_KEY", "enabled": False, "timeout_seconds": 60,
                       "query_timeout_seconds": 1.5},
         "semantic_decisions": True, "audit_content": False,
+        "memory_extraction_enabled": False, "memory_confirmation": "mostly",
         # v0.3 tools: side effects ask by default; voice approval and commands are opt-in.
         "tools_enabled": True, "voice_approval": False, "command_tool": False,
         "workspace_dirs": [], "tool_rules": [], "app_launchers": [],
@@ -211,8 +212,10 @@ def _validate(config: dict) -> dict:
         raise ValueError("Invalid mode")
     if config["desktop_source"] not in ("none", "system", "process"):
         raise ValueError("Invalid desktop_source")
+    if config["memory_confirmation"] not in ("auto", "necessary", "mostly"):
+        raise ValueError("Invalid memory_confirmation")
     for field in ("voice_enabled", "allow_proactive", "microphone", "record_audio", "semantic_decisions", "audit_content",
-                  "tools_enabled", "voice_approval", "command_tool"):
+                  "tools_enabled", "voice_approval", "command_tool", "memory_extraction_enabled"):
         if type(config[field]) is not bool:
             raise ValueError(f"Invalid {field}: expected a boolean")
     _validate_tools(config)

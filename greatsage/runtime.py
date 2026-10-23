@@ -20,7 +20,7 @@ from .budget import TokenCounter
 from .decisions import triage, default_reply, decision_messages, parse_decision, DECISION_SCHEMA, CONFLICT_SCHEMA
 from .echo import EchoGuard, decode_reference
 from .memory import MemoryStore
-from .providers import Providers
+from .providers import Providers, ProviderError
 from .settings import SettingsStore
 from .skills import SkillsManager
 from .semantic import chunks as embedding_chunks, fingerprint, text_hash
@@ -95,6 +95,11 @@ class Runtime:
         self.locks: dict[str, asyncio.Lock] = {}
         self.reply_task: asyncio.Task | None = None
         self.compression_task: asyncio.Task | None = None
+        self.memory_extraction_task: asyncio.Task | None = None
+        self.memory_extraction_epoch = 0
+        self._memory_extraction_request = None
+        self._memory_extraction_state = {"phase": "idle", "error": None, "source_count": 0,
+                                         "item_count": 0, "trace_id": ""}
         self.consumer_task: asyncio.Task | None = None
         self.housekeeping_task: asyncio.Task | None = None
         self.mic_speaking = False
@@ -120,6 +125,16 @@ class Runtime:
         self.capture_generation = 0
         self.trace_times: dict[str, float | None] = {}
         self.background = BackgroundState()
+        self._memory_extraction_attention = None
+        try:
+            attention = json.loads((self.data_dir / "memory-extraction-state.json").read_text(encoding="utf-8"))
+            if (isinstance(attention, dict) and re.fullmatch(r"[0-9a-f]{64}", attention.get("settings_version", ""))
+                    and re.fullmatch(r"[a-z_]{1,80}", attention.get("error", ""))):
+                self._memory_extraction_attention = attention["settings_version"]
+                self._memory_extraction_state.update(phase="needs_attention", error=attention["error"])
+                self.background.state("memory_extraction")["attempts"] = 1
+        except (OSError, ValueError, TypeError):
+            pass
         self.tasks = TaskManager(self)
 
     async def start(self):
@@ -134,7 +149,7 @@ class Runtime:
         await self.set_listening(False)
         await self.interrupt("shutdown")
         await self.tasks.close()
-        tasks = [self.consumer_task, self.housekeeping_task, self.compression_task]
+        tasks = [self.consumer_task, self.housekeeping_task, self.compression_task, self.memory_extraction_task]
         tasks += list(self.partials.values()) + list(self.final_tasks)
         for task in tasks:
             if task:
@@ -1135,6 +1150,7 @@ class Runtime:
     async def interrupt(self, reason="user"):
         interrupt_started = time.perf_counter()
         self.generation += 1
+        await self.pause_background()
         task = self.reply_task
         self.reply_task = None
         if task and task is not asyncio.current_task() and not task.done():
@@ -1526,24 +1542,228 @@ class Runtime:
         return True
 
     def _schedule_compression(self):
+        if self.memory_extraction_task and not self.memory_extraction_task.done():
+            return
         if not self.compression_task or self.compression_task.done():
             self.compression_task = asyncio.create_task(self._background_cycle())
 
     async def pause_background(self):
-        task = self.compression_task
-        if task and task is not asyncio.current_task() and not task.done():
+        # Advance before cancellation: even a provider swallowing CancelledError
+        # cannot commit the superseded extraction after this point.
+        self.memory_extraction_epoch += 1
+        tasks = {task for task in (self.compression_task, self.memory_extraction_task)
+                 if task and task is not asyncio.current_task() and not task.done()}
+        for task in tasks:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if tasks:
+            # asyncio.wait does not wait for cancellation to finish. Keep the
+            # original task references so an uncooperative provider cannot cause
+            # unlimited replacement jobs while foreground work continues.
+            done, _ = await asyncio.wait(tasks, timeout=.25)
+            for task in done:
+                with contextlib.suppress(asyncio.CancelledError):
+                    task.result()
 
     def _foreground_busy(self):
         return (self.mic_speaking or self.playing or (self.reply_task and not self.reply_task.done())
                 or any(not task.done() and task is not asyncio.current_task() for task in self.final_tasks))
 
     async def _background_cycle(self):
+        identity = self._memory_work_identity()
         await self._compress()
+        if identity != self._memory_work_identity():
+            return
         if not self._foreground_busy():
+            request = self._memory_extraction_request
+            if request and (request["runtime_session"] != self.session_id or request["version"] != self.settings.version()):
+                self._memory_extraction_request = None
+            else:
+                await self.extract_memories(session_id=request["session_id"] if request else None)
+        if identity == self._memory_work_identity() and not self._foreground_busy():
             await self._index_pending()
+
+    def _memory_work_identity(self):
+        return (self.epoch, self.data_epoch, self.generation, self.memory_extraction_epoch,
+                self.session_id, self.settings.version())
+
+    def _set_extraction_attention(self, version=None, error=None):
+        """Persist only a safe failure marker so restart cannot silently repeat paid failures."""
+        self._memory_extraction_attention = version
+        path = self.data_dir / "memory-extraction-state.json"
+        try:
+            if version is None:
+                path.unlink(missing_ok=True)
+            else:
+                temporary = path.with_suffix(".tmp")
+                temporary.write_text(json.dumps({"settings_version": version, "error": error}), encoding="utf-8")
+                temporary.replace(path)
+        except OSError:
+            # The in-memory gate still holds if the data volume becomes read-only.
+            pass
+
+    def memory_extraction_status(self):
+        """Public metadata only; model output and source bodies stay in memory UI."""
+        from .memory_extraction import extraction_budget_version
+
+        config = self.settings.raw()
+        budget_version = extraction_budget_version(config["llm"], TokenCounter(config["llm"], self.data_dir).method)
+        state = dict(self._memory_extraction_state)
+        if not config.get("memory_extraction_enabled", False):
+            state["phase"] = "disabled"
+        return {**self.memory.extraction_status(budget_version=budget_version), **state,
+                "enabled": config.get("memory_extraction_enabled", False),
+                "confirmation": config.get("memory_confirmation", "mostly"),
+                "model": config["llm"]["model"],
+                "scheduled": self._memory_extraction_request is not None,
+                "needs_attention": self._memory_extraction_attention == self.settings.version()
+                                   and self.background.state("memory_extraction")["attempts"] > 0,
+                "background": self.background.snapshot().get("memory_extraction", {})}
+
+    async def request_memory_extraction(self, session_id=None):
+        """Queue one batch; None resumes pending history, current ID scopes a manual request."""
+        if not self.settings.raw().get("memory_extraction_enabled", False):
+            raise ValueError("请先启用自动提取记忆，再安排会话提取。")
+        if session_id is not None and session_id != self.session_id:
+            raise ValueError("手动提取只支持当前会话。")
+        self._set_extraction_attention()
+        self.background.state("memory_extraction").update(attempts=0, retry_at=0)
+        self._memory_extraction_request = {"session_id": session_id, "runtime_session": self.session_id,
+                                           "version": self.settings.version()}
+        if not self.memory_extraction_task or self.memory_extraction_task.done():
+            self._memory_extraction_state.update(phase="queued", error=None)
+        await self.emit("memory_extraction", {"phase": "queued", "scope": "session" if session_id else "pending"})
+        self._schedule_compression()
+        return self.memory_extraction_status()
+
+    async def extract_memories(self, session_id=None):
+        """Extract a single bounded batch; all identities are rechecked before atomic save."""
+        config = self.settings.raw()
+        if not config.get("memory_extraction_enabled", False):
+            return
+        if self._memory_extraction_attention is not None:
+            if (self._memory_extraction_attention == self.settings.version()
+                    and self.background.state("memory_extraction")["attempts"] > 0):
+                return
+            self._set_extraction_attention()
+            self.background.state("memory_extraction").update(attempts=0, retry_at=0)
+        if self._foreground_busy() or not self.background.ready("memory_extraction"):
+            return
+        if self.memory_extraction_task and not self.memory_extraction_task.done():
+            return
+        from .memory_extraction import ExtractionError, extract_memory_proposals, extraction_budget_version, plan_sources
+
+        identity = self._memory_work_identity()
+        policy = config.get("memory_confirmation", "mostly")
+        trace, snapshot = uuid.uuid4().hex, None
+        sources = []
+        request = self._memory_extraction_request
+        if request and request["session_id"] != session_id:
+            request = None
+
+        def finish_request():
+            if request is not None and self._memory_extraction_request is request:
+                self._memory_extraction_request = None
+
+        def current():
+            return (identity == self._memory_work_identity()
+                    and self.settings.raw().get("memory_extraction_enabled", False))
+
+        async def before_request(messages, llm):
+            nonlocal snapshot
+            if not current() or self._foreground_busy():
+                raise ExtractionError("extraction_superseded")
+            snapshot = await self.snapshot_request(trace, "memory_extraction", messages,
+                                                   [source["id"] for source in sources], provider=llm)
+            if not current():
+                raise ExtractionError("extraction_superseded")
+
+        async def on_usage(usage):
+            await self.emit("usage", {"component": "llm", "purpose": "memory_extraction", "usage": usage,
+                                      "source_ids": [source["id"] for source in sources]}, trace)
+
+        self.memory_extraction_task = asyncio.current_task()
+        try:
+            llm = self._provider("llm")
+            llm["max_tokens"] = min(2048, llm.get("max_tokens", 768))
+            llm["total_timeout_seconds"] = min(60, llm.get("total_timeout_seconds", 60))
+            counter = TokenCounter(llm, self.data_dir)
+            budget_version = extraction_budget_version(llm, counter.method)
+            candidates = self.memory.extraction_sources(limit=8, session_id=session_id, budget_version=budget_version)
+            if not candidates:
+                deferred = self.memory.extraction_status(budget_version=budget_version).get("deferred_sources", 0)
+                self._memory_extraction_state.update(phase="deferred" if deferred else "idle",
+                                                     error="input_budget_exceeded" if deferred else None)
+                finish_request()
+                return
+            sources, oversized = plan_sources(candidates, counter, llm)
+            if oversized:
+                self.memory.defer_extraction_sources(oversized, budget_version)
+            if not sources:
+                self._memory_extraction_state.update(phase="deferred", error="input_budget_exceeded",
+                                                     source_count=0, item_count=0, trace_id=trace)
+                await self.emit("memory_extraction", self._memory_extraction_state, trace)
+                return
+            self.background.begin("memory_extraction")
+            self._memory_extraction_state.update(phase="running", error=None, source_count=len(sources),
+                                                 item_count=0, trace_id=trace)
+            await self.emit("memory_extraction", self._memory_extraction_state, trace)
+            # The outer deadline also covers framework preparation, not just HTTP.
+            async with asyncio.timeout(65):
+                items = await extract_memory_proposals(self.providers, llm, sources, counter,
+                                                      before_request=before_request, on_usage=on_usage)
+            valid_sources = all(
+                (row := self.memory.record(source["id"])) is not None
+                and row.get("kind") == "message"
+                and row.get("role") == source["role"] and row.get("source") == source["source"]
+                and row.get("session_id") == source["session_id"]
+                and row.get("metadata", {}).get("version", 1) == source.get("version", 1)
+                and text_hash(row["text"]) == source["content_hash"] for source in sources)
+            if not current() or not valid_sources or self._foreground_busy():
+                raise ExtractionError("extraction_superseded")
+            # No await between the identity/source check and the store transaction.
+            try:
+                result = self.memory.save_extraction(items, sources, policy=policy, model=llm["model"])
+            except ValueError:
+                raise ExtractionError("invalid_extraction_evidence") from None
+            finish_request()
+            counts = {key: value for key, value in result.items() if isinstance(value, int)}
+            self._memory_extraction_state.update(phase="completed", error=None, item_count=result["saved"], last_batch=counts)
+            self.background.success("memory_extraction")
+            if snapshot:
+                self.memory.finish_snapshot(snapshot, "completed")
+            await self.emit("memory_extraction", self._memory_extraction_state, trace)
+            if result["saved"]:
+                await self.emit("memory_updated", {"origin": "extracted", **counts}, trace)
+            return counts
+        except asyncio.CancelledError:
+            self._memory_extraction_state.update(phase="cancelled", error=None)
+            if snapshot:
+                self.memory.finish_snapshot(snapshot, "cancelled")
+                await self.emit("usage", {"component": "llm", "purpose": "memory_extraction",
+                                          "remote_usage": "unknown_after_cancellation"}, trace)
+            await self.emit("memory_extraction", self._memory_extraction_state, trace)
+            raise
+        except Exception as exc:
+            obsolete = not current() or isinstance(exc, ExtractionError) and str(exc) == "extraction_superseded"
+            code = (str(exc) if isinstance(exc, ExtractionError) else
+                    exc.code if isinstance(exc, ProviderError) else
+                    "timeout" if isinstance(exc, TimeoutError) else "extraction_failed")
+            self._memory_extraction_state.update(phase="discarded" if obsolete else "failed", error=None if obsolete else code)
+            if snapshot:
+                self.memory.finish_snapshot(snapshot, "cancelled" if obsolete else "failed")
+            if not obsolete:
+                self.background.failure("memory_extraction")
+                transient = {"timeout", "rate_limited", "upstream_unavailable", "upstream_error",
+                             "network_error", "connection_failed", "connection_refused", "dns_resolution_failed",
+                             "proxy_connection_failed", "remote_protocol_error", "stream_ended_before_completion",
+                             "generation_not_completed", "extraction_failed"}
+                if code not in transient or self.background.state("memory_extraction")["attempts"] >= 3:
+                    self._set_extraction_attention(self.settings.version(), code)
+                    self._memory_extraction_state["phase"] = "needs_attention"
+            await self.emit("memory_extraction", self._memory_extraction_state, trace)
+        finally:
+            self.memory_extraction_task = None
+            self.background.cancel("memory_extraction")
 
     async def _index_pending(self):
         config = self.settings.provider("embedding")
@@ -1680,10 +1900,6 @@ class Runtime:
     async def reset_session(self):
         await self._invalidate_audio()
         await self.interrupt("new_session")
-        if self.compression_task:
-            self.compression_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.compression_task
         self.recent_transcripts.clear()
         self.proactive_seen.clear()
         self.session_id = self.memory.new_session()
@@ -1707,10 +1923,6 @@ class Runtime:
         self.recent_transcripts.clear()
         self.proactive_seen.clear()
         self.trace_times.clear()
-        if self.compression_task:
-            self.compression_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.compression_task
 
     async def _housekeeping(self):
         next_cleanup = 0

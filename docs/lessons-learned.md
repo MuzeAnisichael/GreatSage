@@ -94,3 +94,24 @@
 - **界面与隔离**：用稳定 `turn_id` 更新原转写行，以 `speech_phase`／`pending_turns` 区分收音和确认；停止后的临时文字标明未提交，会话切换清空实时列表。会话、来源和数据代际检查继续独立执行。
 - **何时复查**：调整服务端点、静音阈值、并发提交或语音审批时。优先用受控回调顺序验证，不靠重复付费语音碰概率。
 - **依据与边界**：[voice_turns.py](../greatsage/voice_turns.py)、[话轮调用链](code-map.md#v05-音源话轮与取消链)、[test_voice_turns.py](../tests/test_voice_turns.py)、[test_streaming_commit.py](../tests/test_streaming_commit.py)、[桌面冒烟脚本](../scripts/smoke_desktop.cjs)。真实连续语音与 Deepgram 尚未验证；最新执行证据见 [validation-v0.5.md](validation-v0.5.md)。
+
+## L14 · 提取为空与不支持协议必须区分
+
+- **原因**：LangMem 可以把没有工具调用的普通回复返回为空列表；直接提交进度会悄悄跳过整批来源。框架 `max_steps=1` 也不等于 trustcall 内部没有重试。
+- **处理**：使用明确 NoMemory schema，普通文本或无效提案失败时不推进检查点；限制 trustcall 尝试与实际请求次数。确定性错误暂停，瞬态最多三次自动尝试，安全暂停标记跨重启保留。手动操作／配置变化才解除。
+- **何时复查**：升级 LangMem/trustcall 或更换模型时检查真实最终请求及工具输出，不能用 SDK 假模型成功代替实际模型能力。
+- **证据**：[memory_extraction.py](../greatsage/memory_extraction.py)、[test_memory_extraction.py](../tests/test_memory_extraction.py)、[v0.6 验证](validation-v0.6.md)。
+
+## L15 · 有界批次也会发生饥饿，取消也可能不合作
+
+- **原因**：最早八条都超预算会让第九条永远取不到；对子任务直接 `await cancel` 会等待吞取消的服务。只测无设备编号的麦克风标签也会漏掉真实来源。
+- **处理**：超长完整原文按预算指纹延后，既不截断也不标已处理；新预算重新尝试。前台取消最多等待 0.25 秒，保留旧任务占位并用代际拒绝写回，避免无限替代任务；来源谓词覆盖真实 `microphone:<device>` 标签。
+- **何时复查**：加入新后台任务、输入来源或上下文预算时，优先用具体竞态及长来源夹具检查，不反复运行性能基准。
+- **证据**：[test_memory_runtime.py](../tests/test_memory_runtime.py)、[test_structured_memory.py](../tests/test_structured_memory.py)。
+
+## L16 · 弹窗关闭要同步失效，后台刷新不能负责打开
+
+- **症状／原因**：实体弹窗关闭后被异步列表刷新重新打开，拦住冲突入口；原生 `close` 事件排队执行，不能用它作为唯一的请求失效时刻。
+- **处理**：用户关闭时先同步清理选择与详情代际；列表和详情分别维护请求身份。只有用户入口打开弹窗，后台只能更新仍打开且身份一致的详情；迟到的成功和失败都丢弃。
+- **何时复查**：新增弹窗自动刷新、详情跳转或原生窗口事件时，用可控 Promise 在关闭与事件回调之间释放响应。
+- **证据**：[structured-memory.js](../ui/structured-memory.js)、[包内界面回归](../scripts/smoke_desktop.cjs)、[v0.6 验证](validation-v0.6.md)。

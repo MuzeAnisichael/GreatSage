@@ -183,7 +183,19 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     const sessionId = (await request('/api/status')).session_id;
     const fixtureCode = `import json,sys\nfrom pathlib import Path\nfrom greatsage.memory import MemoryStore\ndata=json.load(sys.stdin)\nstore=MemoryStore(Path(data['directory']))\nolder_session=store.new_session()\nolder=store.add_message('user','SYNTHETIC OLDER SOURCE FOR DESKTOP SEARCH',session_id=older_session)\nsummary=store.save_summary('SYNTHETIC READ ONLY DESKTOP SUMMARY',[older['id']],model='smoke-fixture')\nfor index in range(115): store.add_message('observation','SYNTHETIC FILLER '+str(index),source='system',session_id=older_session)\nsource=store.add_message('user','SYNTHETIC CASCADE SOURCE',session_id=data['session'])\nstore.add_message('assistant','SYNTHETIC CASCADE DERIVED ANSWER',session_id=data['session'],metadata={'source_ids':[source['id']]})\nstore.close()\nprint(json.dumps({'older_id':older['id'],'summary_id':summary['id'],'source_id':source['id']}))`;
     const v02Fixture = fixtureCode.replace('store.close()', "old=store.add_memory('SYNTHETIC preference A')\nstore.add_memory('SYNTHETIC preference B',conflicts=[old['id']])\nstore.save_snapshot('fixture-audit-trace','fixture_audit',{'llm':{'model':'fixture'}},[{'role':'user','content':'SYNTHETIC PRIVATE REQUEST BODY'}],[source['id']],retain_content=True)\nstore.close()");
-    const fixture = childProcess.spawnSync(path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe'), ['-c', v02Fixture], { cwd: path.resolve(__dirname, '..'), input: JSON.stringify({ directory: process.env.GREATSAGE_DATA_DIR, session: sessionId }), encoding: 'utf8', windowsHide: true, timeout: 15000 });
+    const structuredFixture = `def add_structured(text,subject,predicate,value,kind='fact',policy='mostly',object_type='literal'):
+ record=store.add_message('user',text,session_id=data['session'])
+ snapshot=next(item for item in store.extraction_sources() if item['id']==record['id'])
+ saved=store.save_extraction([{'text':text,'kind':kind,'subject':subject,'subject_type':'person','predicate':predicate,'value':value,'object_type':object_type,'evidence':[{'source_id':record['id'],'quote':text}],'review_reasons':[]}],[snapshot],policy,'smoke-fixture')
+ return {'memory_id':saved['items'][0]['id'],'source_id':record['id']}
+relation=add_structured('SYNTHETIC Alice <img src=x onerror=window.__memoryUnsafe=true> belongs to SYNTHETIC Orion.','SYNTHETIC Alice','member_of','SYNTHETIC Orion','relationship',object_type='project')
+rejected=add_structured('SYNTHETIC UI rejected fact.','SYNTHETIC Rejected','note','rejected')
+orphan=add_structured('SYNTHETIC UI source deletion fact.','SYNTHETIC Orphan','note','source deletion')
+active=add_structured('SYNTHETIC UI language English.','SYNTHETIC Settings','language','English','preference','auto')
+conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','language','Chinese','preference')
+`;
+    const v06Fixture = v02Fixture.replace('store.close()', structuredFixture + 'store.close()').replace("'source_id':source['id']", "'source_id':source['id'],'relation':relation,'rejected':rejected,'orphan':orphan,'conflict':conflict");
+    const fixture = childProcess.spawnSync(path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe'), ['-c', v06Fixture], { cwd: path.resolve(__dirname, '..'), input: JSON.stringify({ directory: process.env.GREATSAGE_DATA_DIR, session: sessionId }), encoding: 'utf8', windowsHide: true, timeout: 15000 });
     if (fixture.status !== 0) throw new Error(`Memory fixture failed: ${redact(fixture.stderr)}`);
     const fixtureIds = JSON.parse(fixture.stdout);
     await new Promise(resolve => { main.webContents.once('did-finish-load', resolve); main.webContents.reload(); });
@@ -191,6 +203,12 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
     await until(() => evaluate("document.querySelector('#toasts').textContent.includes('设置已保存')"), 'settings save');
     check(true, 'Settings load and save through the UI');
+    check(await evaluate("!document.querySelector('[name=memory_extraction_enabled]').checked && document.querySelector('[name=memory_confirmation]').value === 'mostly'"), 'Memory extraction defaults off with mostly confirmation');
+    for (const policy of ['necessary', 'auto', 'mostly']) {
+      await evaluate(`document.querySelector('[name=memory_confirmation]').value=${JSON.stringify(policy)};document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))`);
+      await until(async () => !await evaluate("document.querySelector('#save-settings').disabled") && (await request('/api/settings')).memory_confirmation === policy, `memory confirmation ${policy}`);
+      check(!(await request('/api/settings')).memory_extraction_enabled, `Saving ${policy} policy preserves disabled extraction`);
+    }
     await evaluate("document.querySelector('#mcp-id').value='fixture';document.querySelector('#mcp-url').value='http://127.0.0.1:1/mcp';document.querySelector('#mcp-form').requestSubmit()");
     await until(async () => (await request('/api/settings')).mcp_servers.length === 1, 'MCP settings save');
     await evaluate("document.querySelector('#settings-form').requestSubmit(document.querySelector('#save-settings'))");
@@ -234,11 +252,90 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
     await evaluate("document.querySelector('#confirm-dialog button[value=confirm]').click()");
     await until(() => evaluate(`!(${card(revised)})`), 'fixture memory removal');
     check(true, 'Synthetic memory add, revise and delete through the UI');
-    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 1"), 'pending memory conflict');
-    await evaluate("document.querySelector('.conflict-card .panel-tools button:last-child').click()");
-    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 0"), 'resolve memory conflict');
+    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 2"), 'pending memory conflicts');
+    await evaluate("[...document.querySelectorAll('.conflict-card')].find(node=>node.textContent.includes('SYNTHETIC preference B')).querySelector('.panel-tools button:last-child').click()");
+    await until(() => evaluate("document.querySelectorAll('.conflict-card').length === 1"), 'resolve explicit memory conflict');
     check((await request('/api/memories')).filter(row => row.text.startsWith('SYNTHETIC preference')).length === 2, 'Conflict stays pending until explicit keep-both choice');
     await screenshot(main, 'memory-v02.png');
+    await until(() => evaluate("document.querySelectorAll('.candidate-card').length === 4"), 'structured memory candidates');
+    check(await evaluate("!document.querySelector('#memory-candidates img') && !window.__memoryUnsafe"), 'Extracted candidate text never becomes HTML');
+    await evaluate("document.querySelector('#extract-current-session').click()");
+    check(await evaluate("!document.querySelector('#view-settings').hidden && document.activeElement.name === 'memory_extraction_enabled'"), 'Manual extraction while disabled points to saved opt-in settings');
+    await evaluate("document.querySelector('[data-view=memory]').click()");
+    const candidate = id => `document.querySelector('.candidate-card[data-id="${id}"]')`;
+    await evaluate(`${candidate(fixtureIds.relation.memory_id)}.querySelector('button').click()`);
+    await until(() => evaluate("document.querySelector('#record-dialog').open && Boolean(document.querySelector('#record-detail .evidence-quote'))"), 'structured original evidence');
+    check(await evaluate("document.querySelector('#record-detail .evidence-quote').textContent.includes('<img') && !document.querySelector('#record-detail img') && document.querySelector('#record-detail').textContent.includes('smoke-fixture')"), 'Evidence shows literal quote, provenance and extraction model');
+    await evaluate("document.querySelector('#record-close').click()");
+    await evaluate(`${candidate(fixtureIds.relation.memory_id)}.querySelector('.primary').click()`);
+    await until(() => evaluate(`!${candidate(fixtureIds.relation.memory_id)} && Boolean(document.querySelector('.memory-card[data-id="${fixtureIds.relation.memory_id}"]'))`), 'candidate accepted into existing memory controls');
+    await evaluate(`${candidate(fixtureIds.rejected.memory_id)}.querySelector('button:last-child').click()`);
+    await until(() => evaluate(`!${candidate(fixtureIds.rejected.memory_id)}`), 'candidate rejected');
+    check(!(await request('/api/memories')).some(row => row.id === fixtureIds.rejected.memory_id), 'Rejected extraction stays out of active memories');
+    await evaluate("[...document.querySelectorAll('.entity-card')].find(node=>node.querySelector('strong').textContent==='SYNTHETIC Alice').click()");
+    await until(() => evaluate("document.querySelector('#entity-dialog').open && document.querySelector('#entity-detail').textContent.includes('member_of')"), 'entity relationships');
+    check(await evaluate("document.querySelector('#entity-detail').textContent.includes('已生效') && document.querySelector('#entity-detail').textContent.includes('SYNTHETIC Orion')"), 'Entity detail distinguishes active relationship and target entity');
+    const entityRows = await request('/api/memory/entities');
+    await evaluate(`(async () => {
+      const { SageClient } = await import('./client.js');
+      window.__entityRace = { original: SageClient.prototype.request, client: SageClient, releases: [], items: ${JSON.stringify(entityRows)} };
+      SageClient.prototype.request = function (route, options) {
+        const fixture = window.__entityRace;
+        if (route.startsWith('/api/memory/entities?')) return new Promise(resolve => fixture.releases.push(resolve));
+        return fixture.original.call(this, route, options);
+      };
+      document.querySelector('#refresh-memory').click();
+    })()`);
+    await until(() => evaluate("window.__entityRace.releases.length > 0"), 'entity refresh held before close');
+    await evaluate(`(async () => {
+      const fixture = window.__entityRace;
+      [...document.querySelectorAll('#entity-detail button')].find(node=>node.textContent==='修正或删除').click();
+      fixture.client.prototype.request = fixture.original;
+      for (const release of fixture.releases) release(fixture.items);
+      await Promise.resolve(); await Promise.resolve();
+      fixture.reopened = document.querySelector('#entity-dialog').open;
+    })()`);
+    check(await evaluate("!window.__entityRace.reopened && !document.querySelector('#entity-dialog').open"), 'Closing entity detail invalidates refresh before the queued native close event');
+    await until(() => evaluate("!document.querySelector('#refresh-memory').disabled"), 'entity refresh completes after close');
+    check(await evaluate("!document.querySelector('#entity-dialog').open && !document.querySelector('#entity-detail').children.length"), 'Late entity refresh cannot reopen or refill a closed dialog');
+    await evaluate("delete window.__entityRace");
+    check(await evaluate(`!document.querySelector('#entity-dialog').open && document.activeElement.closest('.memory-card')?.dataset.id === ${JSON.stringify(fixtureIds.relation.memory_id)}`), 'Entity mutation links reuse existing memory controls');
+    check(await evaluate(`!${candidate(fixtureIds.conflict.memory_id)}.querySelector('.primary')`), 'Conflicting candidate cannot bypass conflict resolution');
+    await evaluate(`${candidate(fixtureIds.conflict.memory_id)}.querySelector('button:nth-child(2)').click()`);
+    await until(() => evaluate(`document.activeElement.closest('.conflict-card')?.dataset.id === ${JSON.stringify(fixtureIds.conflict.memory_id)}`), 'candidate directs to existing conflict resolution');
+    await evaluate(`document.querySelector('.conflict-card[data-id="${fixtureIds.conflict.memory_id}"] .panel-tools button:last-child').click()`);
+    await until(() => evaluate(`!${candidate(fixtureIds.conflict.memory_id)} && document.querySelectorAll('.conflict-card').length === 0`), 'structured conflict resolved');
+    await request(`/api/history/${fixtureIds.orphan.source_id}`, 'DELETE');
+    await until(() => evaluate(`!${candidate(fixtureIds.orphan.memory_id)}`), 'deleted source removes visible candidate');
+    check((await request('/api/memory/candidates')).length === 0, 'Accepted, rejected and source-deleted candidates clear after refresh');
+    await screenshot(main, 'memory-v06.png');
+    // Opt-in state and extraction responses are simulated in this renderer only.
+    // The real backend remains disabled, so this never sends history to a model.
+    await evaluate(`(async () => {
+      const { SageClient } = await import('./client.js');
+      window.__memorySmoke = { originalFetch: window.fetch, calls: [], status: { enabled: true, confirmation: 'mostly', model: 'fixture-extractor', phase: 'idle', eligible_sources: 7, processed_sources: 5, pending_sources: 2, active: 3, pending: 0, conflicts: 0, background: {} } };
+      window.fetch = async (url, options = {}) => {
+        const fixture = window.__memorySmoke, route = new URL(url, location.href).pathname;
+        if (route === '/api/memory/extraction') {
+          if (options.method === 'POST') { fixture.calls.push(options.method); fixture.status.phase = 'queued'; fixture.status.scheduled = true; }
+          return new Response(JSON.stringify(fixture.status), { headers: { 'Content-Type': 'application/json' } });
+        }
+        const response = await fixture.originalFetch.call(window, url, options);
+        if (route !== '/api/settings') return response;
+        return new Response(JSON.stringify({ ...await response.json(), memory_extraction_enabled: true }), { headers: { 'Content-Type': 'application/json' } });
+      };
+      const connect = SageClient.prototype.connect;
+      SageClient.prototype.connect = function () { window.__memorySmoke.client = this; SageClient.prototype.connect = connect; return connect.call(this); };
+      document.querySelector('#reconnect').click();
+    })()`);
+    await until(() => evaluate("!document.querySelector('#reconnect').disabled && document.querySelector('#extraction-status').textContent.includes('fixture-extractor')"), 'synthetic enabled extraction status');
+    await evaluate("document.querySelector('#extract-current-session').click()");
+    await until(() => evaluate("window.__memorySmoke.calls.length === 1 && document.querySelector('#extraction-status').textContent.includes('等待后台处理')"), 'nonblocking manual extraction request');
+    await evaluate("window.__memorySmoke.status.phase='failed';window.__memorySmoke.status.error='timeout';window.__memorySmoke.client.dispatchEvent(new CustomEvent('event',{detail:{id:crypto.randomUUID(),kind:'memory_extraction',data:{phase:'failed'},created_at:new Date().toISOString()}}))");
+    await until(() => evaluate("!document.querySelector('#extraction-error').hidden && document.querySelector('#extraction-error').textContent.includes('超时')"), 'extraction event status and error');
+    check(!(await request('/api/settings')).memory_extraction_enabled, 'Renderer extraction fixtures never enable backend model calls');
+    await evaluate("window.fetch=window.__memorySmoke.originalFetch;delete window.__memorySmoke;document.querySelector('#reconnect').click()");
+    await until(() => evaluate("!document.querySelector('#reconnect').disabled && document.querySelector('#extraction-status').textContent.includes('已关闭')"), 'real extraction state restored');
     if (!live) {
       const task = await request('/api/tasks', 'POST', { title: 'SYNTHETIC GRAPH INSPECTION', use_session: true });
       await until(async () => ['failed', 'succeeded'].includes((await request(`/api/tasks/${task.id}`)).status), 'graph fixture completion');

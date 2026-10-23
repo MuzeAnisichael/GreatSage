@@ -80,7 +80,7 @@ async def inspect_runtime(runtime):
         changes = []
         for event in events:
             data = json.loads(event["data"])
-            action = data.get("action") if data.get("action") in ("revise", "delete", "resolve_conflict") else (
+            action = data.get("action") if data.get("action") in ("revise", "delete", "resolve_conflict", "accept", "reject") else (
                 "clear" if data.get("cleared") else "delete" if data.get("deleted_id") else "update")
             changes.append({"id": event["id"], "kind": event["kind"], "created_at": event["created_at"], "action": action})
     settings = runtime.settings.raw()
@@ -90,4 +90,6 @@ async def inspect_runtime(runtime):
             "background": runtime.background.snapshot(), "audit_content": settings["audit_content"],
             "model": {"provider": settings["llm"]["provider"], "name": settings["llm"]["model"]},
             "mcp_tools": len(runtime.tasks.mcp.specs), "voice": voice_snapshot(runtime),
-            "entity_memory": "planned", "multi_agent": "planned"}
+            "entity_memory": {"enabled": True, "entities": len(memory.memory_entities()),
+                              "extraction": runtime.memory_extraction_status()},
+            "multi_agent": "planned"}

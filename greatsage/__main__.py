@@ -37,7 +37,15 @@ def main():
                         help="Exit gracefully when the owning desktop closes stdin or sends shutdown.")
     parser.add_argument("--check-voice-runtime", action="store_true",
                         help="Check voice package imports and a synthetic pipeline offline; print safe JSON and exit.")
+    parser.add_argument("--check-memory-runtime", action="store_true",
+                        help="Check LangMem with a synthetic model offline; print safe JSON and exit.")
     args = parser.parse_args()
+    if args.check_memory_runtime:
+        from .memory_diagnostics import check_memory_runtime
+
+        report = asyncio.run(check_memory_runtime())
+        print(json.dumps(report, ensure_ascii=True))
+        raise SystemExit(0 if report["ok"] else 1)
     if args.check_voice_runtime:
         from .diagnostics import check_voice_runtime
 

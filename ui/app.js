@@ -92,7 +92,8 @@ function getPath(object, path) { return path.split('.').reduce((current, key) =>
 function setPath(object, path, value) { const parts = path.split('.'); const leaf = parts.pop(); let parent = object; for (const part of parts) parent = parent[part] ||= {}; parent[leaf] = value; }
 
 function fillSettings(settings) {
-  state.settings = settings;
+  state.settings = { memory_extraction_enabled: false, memory_confirmation: 'mostly', ...settings };
+  settings = state.settings;
   for (const input of $$('#settings-form [name]')) {
     if (input.name.endsWith('.api_key')) { input.value = ''; input.placeholder = getPath(settings, input.name.split('.')[0] + '.key_configured') ? '密钥已配置，留空保留' : '可填写密钥，或使用环境变量'; continue; }
     const value = getPath(settings, input.name);
@@ -544,6 +545,7 @@ async function refreshMemory({ refreshChat = false } = {}) {
   renderMemories(); renderHistory();
   if (refreshChat) renderChat({ preserveStreams: true });
   if ($('#history-search')?.value.trim()) scheduleHistorySearch();
+  await enhancements?.refreshMemory();
 }
 
 function renderMemories() {
@@ -555,11 +557,16 @@ function renderMemories() {
   if (!memories.length) list.append(element('div', 'small-empty', query ? '没有匹配的记忆。' : '这里会保存偏好、重要事实与上下文摘要。你也可以添加第一条记忆。'));
   for (const memory of memories) {
     const row = element('article', 'memory-card');
+    row.dataset.id = memory.id;
     const body = element('div', 'memory-content');
     body.append(element('p', 'memory-text', memory.text || memory.content || memory.summary));
     const meta = element('div', 'memory-meta');
-    const type = memory.read_only_summary ? 'summary' : memory.kind || memory.type || 'memory';
-    meta.append(element('span', 'tag', ({ summary: '摘要', preference: '偏好', fact: '事实', manual: '手动添加', memory: '长期记忆' })[type] || type), element('time', '', timeLabel(memory.updated_at || memory.created_at, true)));
+    const type = memory.read_only_summary ? 'summary' : memory.structured?.kind || memory.memory_kind || memory.kind || memory.type || 'memory';
+    meta.append(element('span', 'tag', ({ summary: '摘要', preference: '偏好', fact: '事实', relationship: '关系', manual: '手动添加', memory: '长期记忆' })[type] || type), element('time', '', timeLabel(memory.updated_at || memory.created_at, true)));
+    if (memory.structured) {
+      const evidence = element('button', 'source-link', '提取依据'); evidence.type = 'button';
+      evidence.addEventListener('click', () => enhancements.showRecord(memory.id)); meta.append(evidence);
+    }
     const sources = memory.source_ids || memory.sources || memory.source_message_ids;
     if (sources?.length) {
       for (const source of sources) {
@@ -794,7 +801,14 @@ async function loadInitial() {
   state.initialized = true;
 }
 
-enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory });
+enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory,
+  focusMemory(id) {
+    $('#memory-search').value = ''; renderMemories();
+    const row = $$('.memory-card').find(item => item.dataset.id === id);
+    if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('.record-actions button')?.focus(); }
+    else toast('该记忆已变化，请刷新列表后查看。');
+  },
+});
 work = setupWork({ client, toast, busy, confirmAction });
 mcp = setupMCP({ client, toast, busy });
 voiceHealth = setupVoiceHealth({ client, busy, toast,

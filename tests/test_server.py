@@ -112,11 +112,39 @@ def test_inspector_reports_messages_context_and_memory_without_archived_bodies(c
     assert record["metadata"]["context"]["tools_estimated"] > 0
     assert {row["kind"] for row in record["metadata"]["source_manifest"]} == {"memory", "message"}
     assert response.json()["memory"]["active_memories"] == 1
-    assert response.json()["entity_memory"] == response.json()["multi_agent"] == "planned"
+    assert response.json()["entity_memory"]["entities"] == 0
+    assert response.json()["entity_memory"]["extraction"]["enabled"] is False
+    assert response.json()["multi_agent"] == "planned"
     session.delete(f"/api/history/{source['id']}")
     record = next(row for row in session.get("/api/inspector").json()["requests"] if row["id"] == snapshot)
     assert record["metadata"]["content_status"] == "source_deleted"
     assert session.get("/api/inspector").json()["memory"]["active_memories"] == 0
+
+
+def test_structured_memory_review_entities_and_delete_via_api(client):
+    session, runtime = client
+    assert session.get("/api/memory/candidates", headers={"Authorization": ""}).status_code == 401
+    assert session.post("/api/memory/extraction").status_code == 400
+    source = runtime.memory.add_message("user", "PRIVATE_MEMORY_PERSON develops ProjectP", session_id=runtime.session_id)
+    item = {"text": source["text"], "kind": "relationship", "subject": "PRIVATE_MEMORY_PERSON",
+            "subject_type": "person", "predicate": "develops", "value": "ProjectP", "object_type": "project",
+            "evidence": [{"source_id": source["id"], "quote": source["text"]}], "review_reasons": []}
+    saved = runtime.memory.save_extraction([item], runtime.memory.extraction_sources(), "mostly", "fixture")
+    candidate = session.get("/api/memory/candidates").json()[0]
+    assert candidate["id"] == saved["items"][0]["id"]
+    assert session.get("/api/memories").json() == []
+    # Changing future policy cannot approve a pending proposal.
+    assert session.put("/api/settings", json={"memory_confirmation": "auto"}).status_code == 200
+    assert session.get("/api/memory/candidates").json()[0]["status"] == "pending"
+    assert "PRIVATE_MEMORY_PERSON" not in session.get("/api/inspector").text
+    entity = session.get("/api/memory/entities", params={"q": "ProjectP"}).json()[0]
+    detail = session.get(f"/api/memory/entities/{entity['id']}").json()
+    assert detail["relationships"][0]["structured"]["evidence"][0]["source_id"] == source["id"]
+    assert session.post(f"/api/memory/candidates/{candidate['id']}/resolve", json={"action": "accept"}).status_code == 200
+    assert session.get("/api/memories").json()[0]["id"] == candidate["id"]
+    assert session.delete(f"/api/memories/{candidate['id']}").status_code == 200
+    assert session.get("/api/memory/entities").json() == []
+    assert runtime.memory.extraction_sources() == []
 
 
 def test_validation_and_unavailable_audio(client):

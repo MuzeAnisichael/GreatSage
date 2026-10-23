@@ -1,6 +1,7 @@
 // Memory sources, conflicts, semantic indexing, request budgets and audit controls.
 import { setupAudit } from './audit.js';
-export function setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory }) {
+import { setupStructuredMemory, appendStructuredEvidence } from './structured-memory.js';
+export function setupMemoryPanel({ client, state, toast, busy, confirmAction, refreshMemory, focusMemory }) {
   const audit = setupAudit({ client, busy, toast, confirmAction });
   const $ = selector => document.querySelector(selector);
   const node = (tag, className, text) => { const el = document.createElement(tag); el.className = className; if (text !== undefined) el.textContent = text; return el; };
@@ -29,7 +30,7 @@ export function setupMemoryPanel({ client, state, toast, busy, confirmAction, re
   index.innerHTML = `<div class="panel-heading"><h2>语义索引与后台任务</h2><button class="button small subtle" id="refresh-index">刷新状态</button></div><div class="panel-body"><p id="index-status" role="status">正在读取索引状态…</p><p class="source-note" id="background-status"></p><div class="panel-tools"><button class="button ghost small" id="rebuild-index">重建语义索引</button><button class="button subtle small" id="retry-background">立即重试后台任务</button></div><p class="source-note">原文保持在本机。后台在对话空闲时建立索引，服务不可用时仍可按关键词检索。</p></div>`;
   const conflicts = document.createElement('section');
   conflicts.className = 'panel conflict-panel'; conflicts.hidden = true;
-  conflicts.innerHTML = '<div class="panel-heading"><h2>待确认的记忆</h2><span class="tag">保留你的决定</span></div><p class="panel-hint">新内容可能与已有记忆矛盾。在你选择之前，新候选不参与长期记忆检索。识别只是建议，请结合原文判断。</p><div id="memory-conflicts"></div>';
+  conflicts.innerHTML = '<div class="panel-heading"><h2>需要裁决的冲突</h2><span class="tag">保留你的决定</span></div><p class="panel-hint">新内容可能与已有记忆矛盾。所有生效策略都保留冲突裁决；在你选择之前，新候选不参与长期记忆检索。识别只是建议，请结合原文判断。</p><div id="memory-conflicts"></div>';
   $('#view-memory .view-header').after(conflicts);
   const details = document.createElement('dialog');
   details.className = 'record-dialog'; details.id = 'record-dialog';
@@ -47,7 +48,9 @@ export function setupMemoryPanel({ client, state, toast, busy, confirmAction, re
       if (epoch !== recordEpoch) return;
       const body = $('#record-detail'); body.replaceChildren();
       const record = result.record;
-      body.append(node('p', 'source-note', `${record.kind} · ${record.created_at} · ${record.id}${record.level ? ` · 第 ${record.level} 层摘要` : ''}`), node('p', 'record-text', record.text), node('h3', '', `直接来源 · ${result.sources.length}`));
+      body.append(node('p', 'source-note', `${record.kind} · ${record.created_at} · ${record.id}${record.level ? ` · 第 ${record.level} 层摘要` : ''}`), node('p', 'record-text', record.text));
+      appendStructuredEvidence(body, result.structured, showRecord);
+      body.append(node('h3', '', `直接来源 · ${result.sources.length}`));
       for (const source of result.sources) {
         const button = node('button', 'source-record button ghost', `${source.kind} · ${source.id.slice(0, 8)}\n${source.text.slice(0, 160)}`);
         button.type = 'button'; button.addEventListener('click', () => showRecord(source.id)); body.append(button);
@@ -91,18 +94,24 @@ export function setupMemoryPanel({ client, state, toast, busy, confirmAction, re
   $('#archive-more').addEventListener('click', () => busy($('#archive-more'), () => loadArchive()));
   $('#archive-session').addEventListener('change', () => busy($('#archive-session'), () => loadArchive(true)));
 
+  let conflictEpoch = 0;
   async function refreshConflicts() {
+    const request = ++conflictEpoch;
     const rows = await client.request('/api/memory/conflicts');
+    if (request !== conflictEpoch) return;
     conflicts.hidden = !rows.length;
     $('#memory-conflicts').replaceChildren();
     for (const item of rows) {
       const row = node('article', 'conflict-card');
+      row.dataset.id = item.candidate.id;
       row.append(node('strong', '', '新候选'), node('p', 'record-text', item.candidate.text), node('strong', '', '已有记忆'));
       for (const existing of item.existing) {
         const link = node('button', 'source-record button ghost', existing.text); link.type = 'button';
         link.addEventListener('click', () => showRecord(existing.id)); row.append(link);
       }
       const actions = node('div', 'panel-tools');
+      const evidence = node('button', 'button small ghost', '原文证据'); evidence.type = 'button';
+      evidence.addEventListener('click', () => showRecord(item.candidate.id)); actions.append(evidence);
       for (const [resolution, label] of [['replace', '用新内容替换'], ['keep_existing', '丢弃新候选'], ['keep_both', '同时保留']]) {
         const button = node('button', 'button small ghost', label); button.type = 'button';
         button.addEventListener('click', () => busy(button, async () => {
@@ -115,11 +124,21 @@ export function setupMemoryPanel({ client, state, toast, busy, confirmAction, re
     }
   }
 
+  const structured = setupStructuredMemory({ client, state, toast, busy, refreshMemory, showRecord, focusMemory,
+    showConflicts: id => busy($('#refresh-memory'), async () => {
+      await refreshConflicts();
+      const row = [...$('#memory-conflicts').children].find(item => item.dataset.id === id);
+      if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('button')?.focus(); }
+      else { await refreshMemory(); toast('该冲突已变化，候选列表已刷新。'); }
+    }),
+  });
+  const refreshMemoryPanels = () => Promise.all([refreshConflicts(), structured.refresh()]);
+
   async function refresh() {
     await audit.refresh();
-    const [index, budget] = await Promise.all([client.request('/api/memory/index'), client.request('/api/tokenizer'), refreshConflicts()]);
+    const [index, budget] = await Promise.all([client.request('/api/memory/index'), client.request('/api/tokenizer'), refreshMemoryPanels()]);
     $('#index-status').textContent = index.enabled ? `已索引 ${index.indexed} / ${index.total} 条，${index.pending} 条待处理，${index.chunks} 个文本片段。` : '语义检索已关闭；当前使用关键词检索。';
-    const labels = { index: '索引', compression: '摘要', retrieval: '检索' };
+    const labels = { index: '索引', compression: '摘要', retrieval: '检索', memory_extraction: '记忆提取' };
     $('#background-status').textContent = Object.entries(index.background || {}).map(([name, job]) => `${labels[name] || name}：${job.running ? '处理中' : job.retry_in_seconds > 0 ? `${job.retry_in_seconds} 秒后重试` : '等待空闲'}`).join(' · ');
     $('#tokenizer-note').textContent = `当前预算方式：${budget.method}。${budget.requested && !budget.ready ? '保存设置后准备编码文件即可启用。' : '预算仍包含协议开销预留。'}`;
   }
@@ -150,10 +169,13 @@ export function setupMemoryPanel({ client, state, toast, busy, confirmAction, re
   let timer;
   return {
     showRecord,
+    refreshMemory: refreshMemoryPanels,
     refresh: () => refresh().catch(error => { $('#index-status').textContent = error.message; }),
     onEvent: event => {
       audit.onEvent(event);
+      structured.onEvent(event);
       if (event.kind === 'memory_updated') {
+        conflictEpoch++;
         if (details.open && recordStack.length) showRecord(recordStack.at(-1), true);
         if (archive.open) loadArchive(true).catch(() => {});
       }
