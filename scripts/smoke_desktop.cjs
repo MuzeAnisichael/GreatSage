@@ -275,7 +275,30 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     await evaluate("[...document.querySelectorAll('.entity-card')].find(node=>node.querySelector('strong').textContent==='SYNTHETIC Alice').click()");
     await until(() => evaluate("document.querySelector('#entity-dialog').open && document.querySelector('#entity-detail').textContent.includes('member_of')"), 'entity relationships');
     check(await evaluate("document.querySelector('#entity-detail').textContent.includes('已生效') && document.querySelector('#entity-detail').textContent.includes('SYNTHETIC Orion')"), 'Entity detail distinguishes active relationship and target entity');
-    await evaluate("[...document.querySelectorAll('#entity-detail button')].find(node=>node.textContent==='修正或删除').click()");
+    const entityRows = await request('/api/memory/entities');
+    await evaluate(`(async () => {
+      const { SageClient } = await import('./client.js');
+      window.__entityRace = { original: SageClient.prototype.request, client: SageClient, releases: [], items: ${JSON.stringify(entityRows)} };
+      SageClient.prototype.request = function (route, options) {
+        const fixture = window.__entityRace;
+        if (route.startsWith('/api/memory/entities?')) return new Promise(resolve => fixture.releases.push(resolve));
+        return fixture.original.call(this, route, options);
+      };
+      document.querySelector('#refresh-memory').click();
+    })()`);
+    await until(() => evaluate("window.__entityRace.releases.length > 0"), 'entity refresh held before close');
+    await evaluate(`(async () => {
+      const fixture = window.__entityRace;
+      [...document.querySelectorAll('#entity-detail button')].find(node=>node.textContent==='修正或删除').click();
+      fixture.client.prototype.request = fixture.original;
+      for (const release of fixture.releases) release(fixture.items);
+      await Promise.resolve(); await Promise.resolve();
+      fixture.reopened = document.querySelector('#entity-dialog').open;
+    })()`);
+    check(await evaluate("!window.__entityRace.reopened && !document.querySelector('#entity-dialog').open"), 'Closing entity detail invalidates refresh before the queued native close event');
+    await until(() => evaluate("!document.querySelector('#refresh-memory').disabled"), 'entity refresh completes after close');
+    check(await evaluate("!document.querySelector('#entity-dialog').open && !document.querySelector('#entity-detail').children.length"), 'Late entity refresh cannot reopen or refill a closed dialog');
+    await evaluate("delete window.__entityRace");
     check(await evaluate(`!document.querySelector('#entity-dialog').open && document.activeElement.closest('.memory-card')?.dataset.id === ${JSON.stringify(fixtureIds.relation.memory_id)}`), 'Entity mutation links reuse existing memory controls');
     check(await evaluate(`!${candidate(fixtureIds.conflict.memory_id)}.querySelector('.primary')`), 'Conflicting candidate cannot bypass conflict resolution');
     await evaluate(`${candidate(fixtureIds.conflict.memory_id)}.querySelector('button:nth-child(2)').click()`);

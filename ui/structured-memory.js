@@ -43,9 +43,17 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
   const detail = node('dialog', 'record-dialog entity-dialog'); detail.id = 'entity-dialog';
   detail.innerHTML = '<div class="dialog-actions"><button type="button" class="button ghost small" id="entity-close">关闭</button></div><h2 id="entity-title">实体与关系</h2><div id="entity-detail"></div>';
   document.body.append(detail);
-  let epoch = 0, entityEpoch = 0, statusEpoch = 0, selectedEntity = '', timer, searchTimer;
-  $('#entity-close').onclick = () => detail.close();
-  detail.addEventListener('close', () => { selectedEntity = ''; entityEpoch++; $('#entity-detail').replaceChildren(); });
+  let epoch = 0, entityEpoch = 0, detailEpoch = 0, statusEpoch = 0, selectedEntity = '', timer, searchTimer;
+  function invalidateEntityDetail() {
+    selectedEntity = ''; detailEpoch++; $('#entity-detail').replaceChildren();
+  }
+  function closeEntity() {
+    // The native close event is queued; invalidate before any request can resume.
+    invalidateEntityDetail(); detail.close();
+  }
+  $('#entity-close').onclick = closeEntity;
+  detail.addEventListener('cancel', event => { event.preventDefault(); closeEntity(); });
+  detail.addEventListener('close', () => { if (!detail.open) invalidateEntityDetail(); });
 
   function openSettings() {
     $('[data-view=settings]').click();
@@ -113,14 +121,20 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
     }
   }
 
-  async function showEntity(id) {
+  function showEntity(id) {
     selectedEntity = id;
-    const request = ++entityEpoch;
-    $('#entity-detail').textContent = '正在读取…';
+    $('#entity-title').textContent = '实体与关系';
     if (!detail.open) detail.showModal();
+    return loadEntityDetail(id);
+  }
+  async function loadEntityDetail(id) {
+    // Refresh may update an open dialog, but only a user action may open one.
+    if (!detail.open || selectedEntity !== id) return;
+    const request = ++detailEpoch;
+    $('#entity-detail').textContent = '正在读取…';
     try {
       const result = await client.request(`/api/memory/entities/${encodeURIComponent(id)}`);
-      if (request !== entityEpoch || selectedEntity !== id) return;
+      if (request !== detailEpoch || selectedEntity !== id || !detail.open) return;
       $('#entity-title').textContent = `${result.entity.name} · ${entityLabels[result.entity.type] || result.entity.type}`;
       const body = $('#entity-detail'); body.replaceChildren();
       const facts = result.facts.filter(item => item.structured?.kind !== 'relationship');
@@ -135,14 +149,14 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
           row.append(node('span', 'tag', item.status === 'active' ? '已生效' : '待确认'));
           const actions = node('div', 'panel-tools'); actions.append(button('原文证据', () => showRecord(item.id)));
           actions.append(button(item.status === 'active' ? '修正或删除' : '查看候选', () => {
-            detail.close();
+            closeEntity();
             if (item.status === 'active') focusMemory(item.id);
             else { const candidate = [...$('#memory-candidates').children].find(el => el.dataset.id === item.id); candidate?.scrollIntoView({ block: 'center' }); candidate?.querySelector('button')?.focus(); }
           }));
           row.append(actions); body.append(row);
         }
       }
-    } catch (error) { if (request === entityEpoch) { $('#entity-title').textContent = '实体与关系'; $('#entity-detail').textContent = `此实体当前不可用：${error.message}`; } }
+    } catch (error) { if (request === detailEpoch && selectedEntity === id && detail.open) { $('#entity-title').textContent = '实体与关系'; $('#entity-detail').textContent = `此实体当前不可用：${error.message}`; } }
   }
   async function refreshEntities() {
     const request = ++entityEpoch;
@@ -156,7 +170,7 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
         card.append(node('strong', '', item.name), node('span', 'tag', entityLabels[item.type] || item.type), node('small', 'source-note', `${item.fact_count} 条有效记忆 · ${item.pending_count} 条待确认`)); list.append(card);
       }
       if (!items.length) list.append(node('p', 'small-empty', $('#entity-search').value.trim() ? '没有匹配的实体。' : '提取到明确名称和类型后，将在这里显示实体与关系。'));
-      if (selectedEntity) await showEntity(selectedEntity);
+      if (detail.open && selectedEntity) await loadEntityDetail(selectedEntity);
     } catch (error) { if (request === entityEpoch) { $('#entity-count').textContent = '—'; $('#memory-entities').replaceChildren(node('p', 'small-empty', `实体读取失败：${error.message}`)); } }
   }
   $('#entity-search').addEventListener('input', () => { entityEpoch++; clearTimeout(searchTimer); searchTimer = setTimeout(refreshEntities, 250); });
@@ -169,7 +183,7 @@ export function setupStructuredMemory({ client, state, toast, busy, refreshMemor
   }
   return { refresh, onEvent(event) {
     if (!['memory_updated', 'memory_extraction', 'settings_updated', 'session', 'stream_reset'].includes(event.kind)) return;
-    epoch++; entityEpoch++; statusEpoch++; clearTimeout(timer);
+    epoch++; entityEpoch++; detailEpoch++; statusEpoch++; clearTimeout(timer);
     timer = setTimeout(refresh, 250);
   } };
 }
