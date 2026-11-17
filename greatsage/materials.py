@@ -249,13 +249,22 @@ class MaterialsMixin:
             return []
         with self._lock:
             ids: set[str] = set()
+            scope = ""
+            scope_args = []
+            if material_ids is not None:
+                if not material_ids:
+                    return []
+                scope = " AND material_id IN (%s)" % ",".join("?" * len(material_ids))
+                scope_args = list(material_ids)
             if self._fts:
                 fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+                fts_scope = (" AND id IN (SELECT id FROM material_chunks WHERE 1=1" + scope + ")") if scope else ""
                 ids.update(row[0] for row in self._db.execute(
-                    "SELECT id FROM chunk_fts WHERE chunk_fts MATCH ? ORDER BY bm25(chunk_fts) LIMIT 100", (fts_query,)))
+                    "SELECT id FROM chunk_fts WHERE chunk_fts MATCH ?" + fts_scope + " ORDER BY bm25(chunk_fts) LIMIT 100",
+                    [fts_query, *scope_args]))
             conditions = " OR ".join("instr(lower(text),?)>0" for _ in terms)
             ids.update(row[0] for row in self._db.execute(
-                "SELECT id FROM material_chunks WHERE " + conditions + " LIMIT 300", terms))
+                "SELECT id FROM material_chunks WHERE (" + conditions + ")" + scope + " LIMIT 300", [*terms, *scope_args]))
         chunks = self.material_chunks(material_ids=material_ids, ids=sorted(ids))
         chunks.sort(key=lambda item: _relevance(query, item["heading"] + " " + item["text"]), reverse=True)
         return chunks[:max(0, min(int(limit), 50))]
