@@ -225,6 +225,12 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def new_session():
         return await runtime.reset_session()
 
+    @app.post("/api/sessions/{session_id}/activate", dependencies=api)
+    async def activate_session(session_id: str):
+        await runtime.activate_session(session_id)
+        return {"session_id": runtime.session_id, "status": runtime.status(),
+                "history": runtime.memory.history(100, runtime.session_id)}
+
     @app.get("/api/events", dependencies=api)
     async def events(limit: int = 200):
         return redact(runtime.memory.events(min(max(limit, 1), 1000)))
@@ -359,6 +365,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             raise ValueError("清空历史需要明确确认。")
         await runtime.before_delete()
         runtime.memory.clear_history()
+        await runtime.reset_session()
         for path in (runtime.data_dir / "recordings").glob("*.wav"):
             path.unlink(missing_ok=True)
         await runtime.emit("memory_updated", {"cleared": True})
@@ -491,8 +498,8 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         return {"ok": True}
 
     @app.get("/api/tasks", dependencies=api)
-    async def tasks():
-        return runtime.memory.tasks()
+    async def tasks(session_id: str | None = None):
+        return runtime.memory.tasks(session_id=session_id or None)
 
     @app.post("/api/tasks", dependencies=api)
     async def create_task(body: dict):
@@ -509,6 +516,8 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
             params["session_ids"] = id_list(body, "session_ids")
         if kind == "research":
             params.update(save_path=text_field(body, "save_path", 240), overwrite=body.get("overwrite", False))
+            from .source_selection import selection_options
+            params.update(selection_options(body))
             return await runtime.tasks.start_research(params, "console", runtime.session_id)
         return await runtime.tasks.start_minutes(params, "console", runtime.session_id)
 
@@ -517,6 +526,29 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         detail = runtime.memory.task(task_id)
         detail.pop("state", None)  # conversation copies stay internal
         return detail
+
+    def research_task(task_id):
+        detail = runtime.memory.task(task_id)
+        if detail["kind"] != "research":
+            raise ValueError("该任务不支持资料片段选择。")
+        return detail
+
+    @app.get("/api/tasks/{task_id}/sources", dependencies=api)
+    async def task_sources(task_id: str):
+        from .source_selection import SourceSelection
+        return SourceSelection(runtime.tasks).inspect(research_task(task_id))
+
+    @app.get("/api/tasks/{task_id}/sources/{source_id}", dependencies=api)
+    async def task_source(task_id: str, source_id: str):
+        from .source_selection import SourceSelection
+        return SourceSelection(runtime.tasks).source(research_task(task_id), source_id)
+
+    @app.post("/api/tasks/{task_id}/reselect", dependencies=api)
+    async def reselect_sources(task_id: str, body: dict):
+        from .research import ResearchWorkflow
+        if type(body.get("update_sources", False)) is not bool:
+            raise ValueError("update_sources 必须是布尔值。")
+        return await ResearchWorkflow(runtime.tasks).reselect(task_id, body, body.get("update_sources", False))
 
     @app.post("/api/tasks/{task_id}/cancel", dependencies=api)
     async def cancel_task(task_id: str):
@@ -579,25 +611,38 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         return {"ok": True}
 
     @app.get("/api/artifacts", dependencies=api)
-    async def artifacts():
-        return runtime.memory.artifacts()
+    async def artifacts(session_id: str | None = None):
+        return runtime.memory.artifacts(session_id=session_id or None)
 
     @app.get("/api/artifacts/{artifact_id}", dependencies=api)
     async def artifact(artifact_id: str, version: int | None = None):
         return runtime.memory.artifact(artifact_id, version)
+
+    @app.get("/api/artifacts/{artifact_id}/review", dependencies=api)
+    async def artifact_review(artifact_id: str, version: int | None = None, compare_to: int | None = None):
+        return runtime.memory.artifact_review(artifact_id, version, compare_to)
+
+    def expected_version(body):
+        version = body.get("expected_version")
+        if version is not None and (type(version) is not int or version < 1):
+            raise ValueError("expected_version 必须是正整数。")
+        return version
 
     @app.put("/api/artifacts/{artifact_id}", dependencies=api)
     async def revise_artifact(artifact_id: str, body: dict):
         if runtime.memory.artifact(artifact_id)["kind"] == "todos":
             raise ValueError("待办清单请逐条编辑。")
         result = runtime.memory.add_artifact_version(artifact_id, text_field(body, "content", 400_000, True), "edited",
-                                                     text_field(body, "note", 2000))
+                                                     text_field(body, "note", 2000), expected_version=expected_version(body))
         await runtime.emit("artifact_updated", {"id": artifact_id, "version": result["version"]})
         return result
 
     @app.post("/api/artifacts/{artifact_id}/regenerate", dependencies=api)
     async def regenerate_artifact(artifact_id: str, body: dict):
-        return await runtime.tasks.regenerate(artifact_id, text_field(body, "instructions", 4000))
+        if type(body.get("update_sources", False)) is not bool:
+            raise ValueError("update_sources 必须是布尔值。")
+        return await runtime.tasks.regenerate(artifact_id, text_field(body, "instructions", 4000),
+                                              expected_version=expected_version(body), update_sources=body.get("update_sources", False))
 
     @app.get("/api/artifacts/{artifact_id}/export", dependencies=api)
     async def export_artifact(artifact_id: str):

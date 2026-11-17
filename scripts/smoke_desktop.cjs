@@ -88,7 +88,13 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
       main = BrowserWindow.getAllWindows().find(window => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(window.webContents.getURL()));
       return Boolean(main);
     }, 'desktop startup', 45000);
-    const evaluate = code => main.webContents.executeJavaScript(code, true);
+    const evaluate = async code => {
+      try { return await main.webContents.executeJavaScript(code, true); }
+      catch (error) {
+        const location = String(code).replace(/\s+/g, ' ').slice(0, 220);
+        throw new Error(`Renderer evaluate failed near: ${location}\n${error.message}`);
+      }
+    };
     await until(() => evaluate("document.querySelector('#connection-label')?.textContent === '本地服务已连接' && document.querySelector('#model-stat')?.textContent !== '—'"), 'settings and WebSocket');
     const connection = await evaluate('window.greatsage.getConnection()');
     token = connection.token;
@@ -234,6 +240,59 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     await evaluate("document.querySelector('.task-dialog button[value=cancel]').click()");
     check(true, 'New task dialog lists imported materials');
 
+    // Session workspace uses bounded renderer fixtures. This verifies that an old
+    // session is activated atomically and that related tasks are requested with a
+    // server-side session filter; it never changes the backend's active session.
+    await evaluate(`(() => {
+      const current = ${JSON.stringify(sessionId)}, historical = 'synthetic-historical-session';
+      const stamp = new Date().toISOString();
+      const fixture = window.__sessionSmoke = {
+        originalFetch: window.fetch, current, historical, active: current, taskQueries: [], activations: [],
+      };
+      const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      fixture.sessions = () => [
+        { id: current, title: 'SYNTHETIC 当前会话', active: fixture.active === current, message_count: 4, updated_at: stamp },
+        { id: historical, title: 'SYNTHETIC 历史会话', active: fixture.active === historical, message_count: 2, updated_at: new Date(Date.now() - 60000).toISOString() },
+      ];
+      window.fetch = async (url, options = {}) => {
+        const target = new URL(url, location.href), route = target.pathname, method = options.method || 'GET';
+        if (route === '/api/sessions' && method === 'GET') return json(fixture.sessions());
+        const sessionPrefix = '/api/sessions/', activationSuffix = '/activate';
+        const activation = method === 'POST' && route.startsWith(sessionPrefix) && route.endsWith(activationSuffix)
+          ? route.slice(sessionPrefix.length, -activationSuffix.length) : '';
+        if (activation && !activation.includes('/')) {
+          const id = decodeURIComponent(activation);
+          fixture.active = id; fixture.activations.push(id);
+          return json({ session_id: id, status: { session_id: id, state: 'idle', listening: false }, history: [
+            { id: 'synthetic-session-message-' + id, role: 'user', text: id === historical ? 'SYNTHETIC 已继续历史会话' : 'SYNTHETIC 已恢复当前会话', source: 'text', created_at: stamp, session_id: id },
+          ] });
+        }
+        if (route === '/api/tasks' && method === 'GET' && target.searchParams.has('session_id')) {
+          fixture.taskQueries.push(target.searchParams.get('session_id'));
+          return json([]);
+        }
+        return fixture.originalFetch.call(window, url, options);
+      };
+    })()`);
+    await evaluate("document.querySelector('#session-label').click()");
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true && document.querySelectorAll('.session-card').length === 2"), 'session workspace');
+    await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 历史会话')).querySelector('button:last-child').click()");
+    await until(() => evaluate("window.__sessionSmoke?.taskQueries?.at(-1) === window.__sessionSmoke?.historical && document.querySelector('#task-session-filter')?.value.endsWith(window.__sessionSmoke.historical) === true"), 'session-scoped task navigation');
+    check(await evaluate("document.querySelector('#view-tasks').hidden === false && document.querySelector('#task-list').textContent.includes('此会话还没有关联任务')"), 'Related tasks use the selected session server filter');
+    await evaluate("document.querySelector('#session-label').click()");
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true && document.querySelectorAll('.session-card').length === 2"), 'reopen session workspace');
+    await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 历史会话')).querySelector('.primary').click()");
+    await until(() => evaluate("window.__sessionSmoke?.activations?.at(-1) === window.__sessionSmoke?.historical && document.querySelector('#chat-messages')?.textContent.includes('SYNTHETIC 已继续历史会话') === true"), 'activate historical session');
+    check(await evaluate("document.querySelector('#session-label').textContent.includes('syntheti') && document.querySelectorAll('#chat-messages .chat-message').length === 1"), 'Old session activation replaces the visible history atomically');
+    await evaluate("document.querySelector('#session-label').click()");
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true"), 'restore current session dialog');
+    await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 当前会话')).querySelector('.primary').click()");
+    await until(() => evaluate(`window.__sessionSmoke?.activations?.at(-1) === ${JSON.stringify(sessionId)} && document.querySelector('#chat-messages')?.textContent.includes('SYNTHETIC 已恢复当前会话') === true`), 'restore current session');
+    await evaluate("document.querySelector('#task-session-filter').value='all';document.querySelector('#task-session-filter').dispatchEvent(new Event('change',{bubbles:true}))");
+    await until(() => evaluate("document.querySelector('#task-session-filter')?.disabled === false"), 'clear session task filter');
+    await evaluate("window.fetch=window.__sessionSmoke.originalFetch;delete window.__sessionSmoke");
+    check(true, 'Session workspace continues history and can jump to server-filtered related tasks');
+
     // Bounded research UI fixture: all task, approval and artifact responses stay
     // inside this renderer. It verifies the desktop contract without starting a
     // backend research job, model request, filesystem write or download.
@@ -241,6 +300,8 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       const fixture = window.__researchSmoke = {
         originalFetch: window.fetch, posts: [], approvals: true, approveCalls: [],
         holdArtifact: false, artifactReleases: [], id: 'synthetic-research-task',
+        reselectPosts: [], regeneratePosts: [], editPosts: [], reviewRequests: [], sourceTextRequests: [],
+        reselected: false, regenerated: false,
       };
       const stamp = new Date().toISOString();
       fixture.call = {
@@ -266,8 +327,8 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       };
       fixture.detail = {
         ...fixture.summary,
-        params: { material_ids: [], session_ids: [${JSON.stringify(sessionId)}], instructions: '',
-          save_path: 'documents/smoke-research.md', overwrite: false }, state: {},
+        params: { material_ids: [], session_ids: [${JSON.stringify(sessionId)}], instructions: '', selection_mode: 'relevant',
+          pinned_source_ids: [], excluded_source_ids: [], save_path: 'documents/smoke-research.md', overwrite: false }, state: {},
         steps: [
           { task_id: fixture.id, ordinal: 0, name: 'collect', title: '收集来源', status: 'succeeded', detail: {}, started_at: stamp, finished_at: stamp },
           { task_id: fixture.id, ordinal: 1, name: 'research', title: '规划、整理与证据核对', status: 'succeeded',
@@ -287,10 +348,36 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       };
       fixture.artifact = version => ({
         id: 'synthetic-research-document', task_id: fixture.id, kind: 'document', title: 'SYNTHETIC 研究文档',
-        status: 'active', version, current_version: 2, content: version === 2 ? 'SYNTHETIC LATE ARTIFACT VERSION' : '# SYNTHETIC 研究文档\\n\\n有来源支持的结论 [S1]。',
-        versions: [{ version: 1, origin: 'generated', created_at: stamp }, { version: 2, origin: 'edited', created_at: stamp }],
+        status: 'active', version, current_version: 2, content: version === 2
+          ? '# SYNTHETIC 研究文档\\n\\n有来源支持的结论 [S1]。' : '# SYNTHETIC 研究文档旧版\\n\\n旧结论 [S1]。',
+        generating_task_id: fixture.id, parent_version: version === 2 ? 1 : null, correction_source_id: version === 2 ? 'correction-1' : null,
+        correction_source_valid: true, lineage: [],
+        versions: [{ version: 1, origin: 'generated', generating_task_id: fixture.id, parent_version: null, created_at: stamp },
+          { version: 2, origin: 'edited', generating_task_id: fixture.id, parent_version: 1, correction_source_id: 'correction-1', created_at: stamp }],
         citations: [{ marker: 'S1', valid: true, label: '资料 plan.md · 时间', excerpt: '发布时间需要在周五前确认。' }],
         unknown_markers: [], todos: [],
+      });
+      fixture.sources = {
+        task_id: fixture.id, mode: 'relevant', scope: { material_ids: ['synthetic-material'], session_ids: [${JSON.stringify(sessionId)}] },
+        total_sources: 2, selected_count: 1, selected_chars: 28, max_sources: 8, max_chars: 64000,
+        pinned_source_ids: [], excluded_source_ids: [], all_selected: false, selection_status: 'stale',
+        error: null, candidates_limited: true, candidates: [
+          { id: 'source-plan', kind: 'chunk', label: 'plan.md · 时间', selected: true, pinned: false, excluded: false,
+            reason: 'relevant', chars: 28, content_hash: 'plan-hash', available: true, excerpt: 'SYNTHETIC 发布时间需要在周五前确认。', handle: 'S1' },
+          { id: 'source-chat', kind: 'message', label: '历史会话原文', selected: false, pinned: false, excluded: false,
+            reason: 'not_relevant', chars: 24, content_hash: 'chat-hash', available: true, excerpt: 'SYNTHETIC 负责人是林同学。' },
+        ],
+      };
+      fixture.review = (version, compareTo) => ({
+        artifact_id: 'synthetic-research-document', version, current_version: 2, generating_task_id: fixture.id,
+        parent_version: version === 2 ? 1 : null, correction_source_id: version === 2 ? 'correction-1' : null,
+        correction_source_valid: true, lineage: [], semantic_verification: false,
+        citations: [{ marker: 'S1', source_kind: 'chunk', source_id: 'source-plan', label: '资料 plan.md · 时间',
+          excerpt: '发布时间需要在周五前确认。', valid: true,
+          locator: { kind: 'chunk', source_id: 'source-plan', material_id: 'synthetic-material', name: 'plan.md', version: 1, heading: '时间', line_start: 3, line_end: 3 } }],
+        passages: [{ line_number: 3, text: '有来源支持的结论 [S1]。', markers: ['S1'], invalid_markers: [], unknown_markers: [], citation_status: 'cited', text_truncated: false }],
+        invalid_markers: [], unknown_markers: [], passages_truncated: false,
+        diff: compareTo == null && version === 1 ? null : { from_version: compareTo == null ? 1 : compareTo, to_version: version, text: '- 旧结论\\n+ 新结论 [S1]', truncated: false, input_truncated: false, output_truncated: false },
       });
       const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } });
       window.fetch = async (url, options = {}) => {
@@ -301,15 +388,33 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
           fixture.summary.title = body.title;
           fixture.detail.title = body.title;
           fixture.detail.params = { material_ids: body.material_ids, session_ids: [${JSON.stringify(sessionId)}],
-            instructions: body.instructions, save_path: body.save_path || 'documents/' + fixture.id + '.md', overwrite: body.overwrite };
+            instructions: body.instructions, selection_mode: body.selection_mode, pinned_source_ids: body.pinned_source_ids,
+            excluded_source_ids: body.excluded_source_ids, save_path: body.save_path || 'documents/' + fixture.id + '.md', overwrite: body.overwrite };
           fixture.call.target = fixture.detail.params.save_path;
           fixture.call.arguments.path = fixture.detail.params.save_path;
           fixture.approval.target = fixture.detail.params.save_path;
           fixture.approval.arguments = fixture.call.arguments;
           return json(fixture.summary);
         }
-        if (route === '/api/tasks' && method === 'GET') return json([fixture.summary]);
-        if (route === '/api/tasks/' + fixture.id && method === 'GET') return json(fixture.detail);
+        if (route === '/api/tasks' && method === 'GET') {
+          const tasks = [fixture.summary];
+          if (fixture.reselected) tasks.unshift({ ...fixture.summary, id: 'synthetic-research-reselected', title: 'SYNTHETIC 研究文档（重选来源）' });
+          if (fixture.regenerated) tasks.unshift({ ...fixture.summary, id: 'synthetic-research-regenerated', title: 'SYNTHETIC 研究文档（纠正版本）' });
+          return json(tasks);
+        }
+        if (route === '/api/tasks/' + fixture.id + '/sources' && method === 'GET') return json(fixture.sources);
+        if (route === '/api/tasks/' + fixture.id + '/sources/source-plan' && method === 'GET') {
+          fixture.sourceTextRequests.push('source-plan');
+          return json({ id: 'source-plan', label: 'plan.md · 时间', text: '# 时间\\nSYNTHETIC 发布时间需要在周五前确认。', content_hash: 'plan-hash', available: true });
+        }
+        if (route === '/api/tasks/' + fixture.id + '/reselect' && method === 'POST') {
+          fixture.reselectPosts.push(JSON.parse(options.body || '{}')); fixture.reselected = true;
+          return json({ ...fixture.summary, id: 'synthetic-research-reselected', title: 'SYNTHETIC 研究文档（重选来源）' });
+        }
+        if (route.startsWith('/api/tasks/synthetic-research-') && method === 'GET') {
+          const id = route.split('/').at(-1);
+          return json({ ...fixture.detail, id, title: id === fixture.id ? fixture.detail.title : id.endsWith('reselected') ? 'SYNTHETIC 研究文档（重选来源）' : 'SYNTHETIC 研究文档（纠正版本）' });
+        }
         if (route === '/api/approvals' && method === 'GET') return json(fixture.approvals ? [fixture.approval] : []);
         if (route === '/api/tool-calls/' + fixture.call.id + '/approve' && method === 'POST') {
           fixture.approveCalls.push({ method, body: JSON.parse(options.body || '{}') });
@@ -317,9 +422,23 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
           fixture.call.status = 'succeeded';
           return json(fixture.call);
         }
-        if (route === '/api/artifacts/synthetic-research-document' && method === 'GET') {
+        if (route === '/api/artifacts/synthetic-research-document/review' && method === 'GET') {
           const version = Number(target.searchParams.get('version') || 1);
-          if (fixture.holdArtifact) return new Promise(resolve => fixture.artifactReleases.push(() => resolve(json(fixture.artifact(version)))));
+          const compare = target.searchParams.has('compare_to') ? Number(target.searchParams.get('compare_to')) : null;
+          fixture.reviewRequests.push({ version, compare });
+          return json(fixture.review(version, compare));
+        }
+        if (route === '/api/artifacts/synthetic-research-document/regenerate' && method === 'POST') {
+          fixture.regeneratePosts.push(JSON.parse(options.body || '{}')); fixture.regenerated = true;
+          return json({ ...fixture.summary, id: 'synthetic-research-regenerated', title: 'SYNTHETIC 研究文档（纠正版本）' });
+        }
+        if (route === '/api/artifacts/synthetic-research-document' && method === 'PUT') {
+          fixture.editPosts.push(JSON.parse(options.body || '{}'));
+          return json(fixture.artifact(2));
+        }
+        if (route === '/api/artifacts/synthetic-research-document' && method === 'GET') {
+          const version = Number(target.searchParams.get('version') || 2);
+          if (fixture.holdArtifact) return new Promise(resolve => fixture.artifactReleases.push(() => resolve(json({ ...fixture.artifact(version), content: 'SYNTHETIC LATE ARTIFACT VERSION' }))));
           return json(fixture.artifact(version));
         }
         return fixture.originalFetch.call(window, url, options);
@@ -329,8 +448,10 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
         for (const release of fixture.artifactReleases.splice(0)) release();
       };
     })()`);
+    await evaluate("document.querySelector('[data-view=tasks]').click()");
+    await until(() => evaluate("document.querySelector('#view-tasks')?.hidden === false && document.querySelector('#task-list')?.textContent.includes('SYNTHETIC 研究文档') === true"), 'visible research task surface');
     await evaluate("document.querySelector('#new-research-task').click()");
-    await until(() => evaluate("document.querySelector('.research-task-dialog').open && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
+    await until(() => evaluate("document.querySelector('.research-task-dialog')?.open === true && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
     await evaluate(`(() => {
       const form = document.querySelector('.research-task-dialog form');
       form.elements.task_title.value = 'SYNTHETIC 研究文档';
@@ -340,12 +461,13 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       form.elements.save_path.value = 'documents/smoke-research.md';
       form.requestSubmit(form.querySelector('button[value=start]'));
     })()`);
-    await until(() => evaluate("window.__researchSmoke.posts.length === 1 && document.querySelector('#task-detail')?.textContent.includes('SYNTHETIC 截止时间仍待确认')"), 'synthetic research detail');
+    await until(() => evaluate("window.__researchSmoke?.posts?.length === 1 && document.querySelector('#task-detail')?.textContent.includes('SYNTHETIC 截止时间仍待确认') === true"), 'synthetic research detail');
     check(await evaluate(`(() => {
       const body = window.__researchSmoke.posts[0];
       return body.kind === 'research' && body.title === 'SYNTHETIC 研究文档'
         && body.instructions === '比较资料并列出无法确认的结论。'
         && body.use_session === true && body.material_ids.length === 1
+        && body.selection_mode === 'relevant' && body.pinned_source_ids.length === 0 && body.excluded_source_ids.length === 0
         && body.save_path === 'documents/smoke-research.md' && body.overwrite === false;
     })()`), 'Research form sends bounded flat task payload');
     check(await evaluate(`(() => {
@@ -365,25 +487,76 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       const metric = [...document.querySelectorAll('.research-metric')].find(node => node.firstElementChild.textContent === '实际费用');
       return metric?.querySelector('strong').textContent === '未返回' && !metric.textContent.includes('US$0');
     })()`), 'Research usage never turns unknown cost into zero');
+    await evaluate("[...document.querySelectorAll('#task-detail button')].find(node=>node.textContent.includes('查看 / 调整来源')).click()");
+    await until(() => evaluate("document.querySelector('.research-sources-dialog')?.open === true && document.querySelectorAll('.source-candidate').length === 2"), 'research source selection');
+    check(await evaluate(`(() => {
+      const dialog = document.querySelector('.research-sources-dialog');
+      const budget = [...dialog.querySelectorAll('.source-selection-stat')].find(node => node.firstElementChild.textContent === '字符预算');
+      const expectedBudget = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(64000);
+      return dialog.textContent.includes('1 / 2 段') && budget?.querySelector('strong').textContent === '28 / ' + expectedBudget
+        && dialog.textContent.includes('与研究问题相关') && dialog.textContent.includes('相关性不足')
+        && dialog.textContent.includes('不会自动采用新内容') && dialog.textContent.includes('已选片段优先显示')
+        && dialog.textContent.includes('本轮选中') && !dialog.querySelector('.source-update-scope').hidden;
+    })()`), 'Research source view shows actual selection, reasons, bounded budget and stale scope');
+    await evaluate("document.querySelector('.source-original-details summary').click()");
+    await until(() => evaluate("window.__researchSmoke?.sourceTextRequests?.length === 1 && document.querySelector('.source-original')?.textContent.includes('发布时间需要在周五前确认') === true"), 'research raw source');
+    check(true, 'Selected research source opens exact task-scoped original text');
+    check(await evaluate(`(() => {
+      const card = document.querySelector('.source-candidate');
+      const [pin, exclude] = card.querySelectorAll('input[type=checkbox]');
+      exclude.checked = true; exclude.dispatchEvent(new Event('change', { bubbles: true }));
+      pin.checked = true; pin.dispatchEvent(new Event('change', { bubbles: true }));
+      return pin.checked && !exclude.checked;
+    })()`), 'Research source pin and exclude are mutually exclusive');
+    await evaluate("document.querySelector('.source-update-scope input').checked=true;document.querySelector('.source-rerun').click()");
+    await until(() => evaluate("window.__researchSmoke?.reselectPosts?.length === 1 && document.querySelector('#task-detail')?.textContent.includes('重选来源') === true"), 'research reselect task');
+    check(await evaluate(`(() => {
+      const body = window.__researchSmoke.reselectPosts[0];
+      return body.selection_mode === 'relevant' && body.pinned_source_ids.join(',') === 'source-plan'
+        && body.excluded_source_ids.length === 0 && body.update_sources === true;
+    })()`), 'Research reselect creates a new task with explicit updated-source adoption');
     await evaluate("document.querySelector('#refresh-tasks').click()");
-    await until(() => evaluate("Boolean(document.querySelector('.approval-card')) && !document.querySelector('#refresh-tasks').disabled"), 'synthetic research save approval');
+    await until(() => evaluate("Boolean(document.querySelector('.approval-card')) && document.querySelector('#refresh-tasks')?.disabled === false"), 'synthetic research save approval');
     check(await evaluate(`(() => {
       const card = document.querySelector('.approval-card');
       const labels = [...card.querySelectorAll('button')].map(node => node.textContent.trim());
       return labels.length === 2 && labels[0] === '允许一次' && labels[1] === '拒绝'
-        && !card.querySelector('.voice-hint') && !card.textContent.includes('本任务内都允许');
+        && !card.querySelector('.voice-hint') && !card.textContent.includes('本任务内都允许')
+        && card.textContent.includes('v1') && card.textContent.includes('aaaaaaaaaaaa')
+        && card.querySelector('.approval-technical') && !card.querySelector('.approval-technical').open;
     })()`), 'Research save approval exposes click-only one-time controls');
     await screenshot(main, 'research-task.png');
     await evaluate("document.querySelector('.approval-card button').click()");
-    await until(() => evaluate("window.__researchSmoke.approveCalls.length === 1 && document.querySelector('#approvals-panel').hidden"), 'research save click approval');
+    await until(() => evaluate("window.__researchSmoke?.approveCalls?.length === 1 && document.querySelector('#approvals-panel')?.hidden === true"), 'research save click approval');
     check(await evaluate("window.__researchSmoke.approveCalls[0].method === 'POST' && window.__researchSmoke.approveCalls[0].body.scope === 'once'"), 'Research save sends one-time click approval');
     await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
-    await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelector('.artifact-editor').value.includes('有来源支持的结论')"), 'research artifact detail');
-    await evaluate("(()=>{window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='2';select.dispatchEvent(new Event('change',{bubbles:true}))})()");
-    await until(() => evaluate("window.__researchSmoke.artifactReleases.length === 1"), 'held artifact version response');
+    await until(() => evaluate("document.querySelector('.artifact-dialog')?.open === true && document.querySelector('.artifact-editor')?.value.includes('有来源支持的结论') === true && Boolean(document.querySelector('.artifact-passages'))"), 'research artifact detail');
+    check(await evaluate(`(() => {
+      const dialog = document.querySelector('.artifact-dialog');
+      return dialog.textContent.includes('不会把模型结论标记为已经事实认证')
+        && dialog.textContent.includes('第 3 行') && dialog.textContent.includes('引用有效')
+        && dialog.querySelector('.citation[data-marker="S1"]').textContent.includes('plan.md')
+        && dialog.querySelector('.citation[data-marker="S1"]').textContent.includes('第 3–3 行');
+    })()`), 'Artifact review maps cited passages to valid original locators without semantic certification');
+    await evaluate("document.querySelector('.artifact-compare-version').value='1';document.querySelector('.artifact-compare-version').dispatchEvent(new Event('change',{bubbles:true}))");
+    await until(() => evaluate("document.querySelector('.artifact-diff')?.textContent.includes('旧结论') === true && window.__researchSmoke?.reviewRequests?.at(-1)?.compare === 1"), 'artifact version comparison');
+    check(true, 'Artifact review compares the selected version against an explicit version');
+    await evaluate("document.querySelector('.artifact-editor').value += '\\nSYNTHETIC 手动修正';document.querySelector('.artifact-save').click()");
+    await until(() => evaluate("window.__researchSmoke?.editPosts?.length === 1 && document.querySelector('.artifact-save')?.disabled === false"), 'artifact versioned edit');
+    check(await evaluate("window.__researchSmoke.editPosts[0].expected_version === 2 && window.__researchSmoke.editPosts[0].content.includes('SYNTHETIC 手动修正')"), 'Artifact edits send expected_version to prevent overwriting a newer version');
+    await evaluate("document.querySelector('.artifact-regenerate').click();document.querySelector('.regenerate-form textarea').value='把负责人纠正为林同学，并保留原文引用。';document.querySelector('.regenerate-update-sources input').checked=true;document.querySelector('.regenerate-start').click()");
+    await until(() => evaluate("window.__researchSmoke?.regeneratePosts?.length === 1 && document.querySelector('.artifact-dialog')?.open === false && document.querySelector('#task-detail')?.textContent.includes('纠正版本') === true"), 'artifact corrected regeneration');
+    check(await evaluate(`(() => {
+      const body = window.__researchSmoke.regeneratePosts[0];
+      return body.expected_version === 2 && body.update_sources === true && body.instructions === '把负责人纠正为林同学，并保留原文引用。';
+    })()`), 'Artifact correction becomes a versioned regeneration with explicit source refresh');
+    await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
+    await until(() => evaluate("document.querySelector('.artifact-dialog')?.open === true && document.querySelector('.artifact-review-content')?.children.length > 0"), 'reopen artifact after correction');
+    await evaluate("(()=>{window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='1';select.dispatchEvent(new Event('change',{bubbles:true}))})()");
+    await until(() => evaluate("window.__researchSmoke?.artifactReleases?.length === 1"), 'held artifact version response');
     await evaluate("document.querySelector('.artifact-close').click();window.__researchSmoke.releaseArtifacts()");
-    await until(() => evaluate("!document.querySelector('.artifact-version').disabled"), 'late artifact response settled');
-    check(await evaluate("!document.querySelector('.artifact-dialog').open && !document.querySelector('.artifact-body').children.length && !document.querySelector('.citation-list').children.length && !document.body.textContent.includes('SYNTHETIC LATE ARTIFACT VERSION')"), 'Closing artifact detail invalidates a late version response');
+    await until(() => evaluate("document.querySelector('.artifact-version')?.disabled === false"), 'late artifact response settled');
+    check(await evaluate("!document.querySelector('.artifact-dialog').open && !document.querySelector('.artifact-body').children.length && !document.querySelector('.citation-list').children.length && !document.querySelector('.artifact-review-content').children.length && !document.body.textContent.includes('SYNTHETIC LATE ARTIFACT VERSION')"), 'Closing artifact detail invalidates a late version response');
     await evaluate("window.fetch=window.__researchSmoke.originalFetch;delete window.__researchSmoke");
     check(!(await request('/api/tasks')).some(task => task.id === 'synthetic-research-task'), 'Research UI fixture never starts a backend model task');
     await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_approval]').click()");

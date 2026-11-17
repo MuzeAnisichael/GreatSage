@@ -1,0 +1,64 @@
+# v0.8 日常资料工作台验证
+
+更新日期：2026-11-18。范围见 [v0.8 方案](v0.8-plan.md)。本版不升级框架，也不重复付费模型探针；这里的合成检查不能替代真实资料质量、设备或人工安装验收。
+
+## 功能与定向记录
+
+| 检查 | 实际结果与范围 |
+| --- | --- |
+| 产物版本与证据数据层 | 新增 15 项通过；既有资料删除／纪要修订 2 项通过。真实 SQLite，验证幂等任务版本、乐观冲突、纠正来源依赖、定位和有界差异 |
+| 来源选择 | 初次 5 项通过、1 项夹具错误；夹具改为核对真实 Markdown 分块而非假设长度，仅复跑失败项通过。后补纠正词项优先 1 项通过；无网络或模型 |
+| 会话 | 6 项通过，另 3 项相邻音频隔离回归通过。测试输入为合成消息／音频事件，未打开麦克风 |
+| 任务生命周期 | 初片 11 项、原任务模块 17 项通过；窄审查新增 12 项通过，覆盖等待间隙、设置／会话变化、迟到工具异常保持 unknown、SQLite 关闭后不再访问 |
+| 研究工作流 | 旧研究 + 新闭环首轮 26 passed / 1 failed；失败是切会话后的旧预期 failed，更新为 v0.8 interrupted／unknown 后单项通过。程序审批、文件写入与持久化为真实执行，委派输出为 fixture |
+| 修订边界 | 手改后继续修订、旧草稿不作为来源、长旧要求不挤掉新纠正、关闭后迟到回调等定向检查通过。强化关闭用例直接拦截 SQLite 访问，API 接线检查同时通过 |
+| HTTP | 3 个会话／关联列表／清空历史用例通过，另 1 个真实来源／审阅／修订路由用例通过；验证越界来源 404、版本不符 400、纠正文独立保存 |
+| 前端源码 | npm check、独立新模块／smoke 语法和差异检查通过；整包结果在下节记录 |
+
+测试文件：[会话](../tests/test_sessions.py)、[任务运行身份](../tests/test_task_session_lifecycle.py)、[来源选择](../tests/test_source_selection.py)、[产物修订](../tests/test_artifact_revisions.py)、[工作台研究](../tests/test_workbench_research.py)、[工作台 API](../tests/test_workbench_api.py)。开发日志保留首次失败原因与修正范围；不把多轮重叠检查相加当作独立样本量。
+
+本机定向测试使用项目 `.venv` 和 `.runtime/pytest-v08-*` 下全新隔离数据目录。一轮系统临时目录写入被沙箱 WinError 5 拦截，换隔离目录后通过，没有弱化产品原子写入机制。Python 3.11.7；依赖版本见 pyproject.toml，与 v0.7 保持一致。
+
+## CI、构建和交付
+
+Python 运行逻辑基准 `b165974`；后续 UI 可读性修正为 `92d53d5`。测试预期／夹具修正 `163cace` 的 [Windows CI](https://github.com/MuzeAnisichael/GreatSage/actions/runs/44165933157) 为 **474 passed、3 skipped、2 warnings**（168.93 秒），后端、JS 与仓库检查全部通过。此前 `b165974` 的 [CI](https://github.com/MuzeAnisichael/GreatSage/actions/runs/44164824942) 为 473 passed / 1 failed / 3 skipped；唯一失败是旧记忆恢复用例仍假设重启更换会话，单项修正后通过。没有因此改变恢复产品语义。
+
+首轮冻结后端 **14/14** 通过，合成服务 4 次模型／1 次工具调用，验证重启重审批和无重复副作用；报告 `.runtime/backend-smoke/20261117T200352Z-dae704/result.json`。模型是假服务，无真实 API 费用。
+
+包内界面收尾保留以下失败证据，不计成功：
+
+1. `.runtime/desktop-smoke/2026-11-17T20-04-49-851Z/result.json`：新增 session fixture 的正则在 template literal 中丢失转义；修为前后缀路径解析，全部 43 段生成 renderer 源码通过 `vm.Script`。
+2. `.runtime/desktop-smoke/2026-11-17T20-07-32-996Z/result.json`：旧会话／任务关联通过，来源预算的紧凑数字与精确数字断言不一致。截图发现单选控件被全宽样式挤压，改为固定控件宽度和精确预算。
+3. `.runtime/desktop-smoke/2026-11-17T20-11-04-690Z/result.json`：仅重建桌面后仍显示旧 UI。核对发现 HTTP 页面来自 PyInstaller `_internal/ui`，必须刷新冻结静态资源；该轮不代表 UI 修复无效或最终包通过。
+4. `.runtime/desktop-smoke/2026-11-17T20-15-09-170Z/result.json`：正确新 UI 已通过来源面板检查，夹具在原文请求已发出、DOM 尚未创建时提前解引用空节点。只给异步等待表达式补空状态处理，并保留最终内容断言，未修改产品包。
+
+最终静态资源已刷新，`work.js`、`styles.css`、`app.js`、`session-workspace.js` 与冻结目录哈希一致，并再次确认包内实际 HTTP 服务的 `work.js` 与源码一致。Python 3.11.7、Electron 40.10.6；框架版本未变。UI 运行代码为 `92d53d5`，之后仅文档与测试夹具变化。
+
+最终包内桌面 **75/75** 通过：packaged=true、parallelSources=true、live=false、退出码0；报告 `.runtime/desktop-smoke/2026-11-17T20-17-23-082Z/result.json`，驱动日志 `.runtime/desktop-smoke-driver/20261118-041722/`，stderr 为空。来源面板与任务审批截图经开发 Agent 目视核对；这不是用户人工验收。检查覆盖旧会话继续／关联任务、来源预算和原文、固定排除／显式更新、证据定位、版本差异、乐观编辑／纠正修订、逐次保存审批及关闭后迟到响应。
+
+Windows 资产与 [v0.8.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 对应；安装器未签名，也未进行人工安装／升级／卸载验收：
+
+| 资产 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `GreatSage-0.8.0-alpha.1-win-x64.zip` | 292265032 | `1301f7a685d835aa688600dfbaa62006417cee58b8fe7e476f56ac0e5a7c9587` |
+| `GreatSage-0.8.0-alpha.1-win-x64-Setup.exe` | 218557441 | `74399de80ce78ce74d9aa102cefafc098f84201ecc021f80163d7082da7e46e3` |
+
+本机构建日志为 `.runtime/v08-final-pyinstaller.log` 与 `.runtime/v08-release-build.log`；发布时同时提供 UTF-8 无 BOM 的 `SHA256SUMS.txt`。`release/`、`.runtime/` 与测试资料均不进入 Git。构建命令为项目虚拟环境下的 `python -m PyInstaller --noconfirm greatsage-backend.spec`，然后 `electron-builder --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`；必须按这个先后顺序刷新 HTTP UI。
+
+## 已知边界和未测项
+
+- 来源选择是有界本地词法相关性排序，最多 1500 条范围候选、本轮 8 段／64000 字符，候选界面最多显示 100 条。中文词项／双字匹配不是语义检索或全文理解；明确全文超预算会停止。
+- 单段至多 32000 字符，旧修订草稿至多 12000 字符，合并指令至多 16000 字符，实际完整模型请求仍受配置和工具 token 预算限制；没有自动截断来绕过预算。
+- 程序校验来源 ID、版本、逐字引文和报告覆盖，不证明结论语义正确。v0.7 的 GPT-4.1 单例成功及 mini 失败属于历史记录；本版未进行新的真实 API／Ollama 研究、排名质量或修订质量测量。
+- 会话重启只恢复入口；任务需显式继续，失效来源需明确更新，旧审批不复用。副作用已经发出后无法保证撤回，unknown 不自动重放。永久忽略取消的外部任务可能仍占用资源；有界控制返回不等于强杀进程或线程。
+- 原有真实语音设备、回声、自然话轮、人工安装／升级／卸载、干净电脑与整天运行待验收项继续保留。本版没有新增这些实测，也没有性能提升或使用规模结论。
+
+## 最小复现
+
+1. 运行源码或最终 ZIP，导入两个虚构 Markdown 文件，新建资料文档任务并选择“相关片段”。
+2. 在任务详情打开“来源范围”，检查选择数、固定／排除与原文；要求全文超限时应得到明确错误且没有模型产物。
+3. 在文档中查看证据、父版本和差异，输入纠正，确认新任务生成同一文档的新版本。
+4. 新保存审批显示独立路径、版本与指纹；拒绝后产物仍存在、工作目录没有新文件。再次运行的保存不能复用已决定的审批。
+5. 新建会话后返回旧会话，查看原聊天与关联工作；重启后仍恢复该入口，但不自动监听或继续任务。
+
+离线检查使用合成输入：`.\.venv\Scripts\python.exe -m pytest tests/test_workbench_research.py tests/test_workbench_api.py -q --basetemp .runtime/pytest-v08-reproduce`。请选择尚不存在的隔离 basetemp；不要指向用户数据目录。实际模型使用需自行配置，本命令不会调用真实服务。

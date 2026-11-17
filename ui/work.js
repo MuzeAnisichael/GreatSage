@@ -3,7 +3,9 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const $ = (selector, parent = document) => parent.querySelector(selector);
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const action = (label, className, handler) => { const el = node('button', className, label); el.type = 'button'; if (handler) el.addEventListener('click', () => busy(el, handler)); return el; };
-  const work = { tasks: [], materials: [], approvals: [], tools: [], selected: null, artifact: null };
+  const work = { tasks: [], materials: [], approvals: [], tools: [], selected: null, artifact: null,
+                 activeSessionId: '', sessionFilter: 'all' };
+  let taskRefreshGeneration = 0;
   const statusLabels = { queued: '排队中', running: '进行中', started: '进行中', waiting_approval: '等待确认', succeeded: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', pending: '未开始', unknown: '结果未知', expired: '已失效', denied: '已拒绝', approved: '已批准', proposed: '待决定', awaiting_approval: '等待确认', undone: '已撤销', active: '有效', stale: '来源已变更', missing: '原文件已移走', unreadable: '无法读取' };
   const tones = { succeeded: 'ok', completed: 'ok', active: 'ok', approved: 'ok', running: 'busy', started: 'busy', queued: 'busy', waiting_approval: 'warn', awaiting_approval: 'warn', interrupted: 'warn', unknown: 'warn', stale: 'warn', missing: 'warn', failed: 'bad', unreadable: 'bad' };
   const badge = status => node('span', `badge ${tones[status] || ''}`, statusLabels[status] || status);
@@ -16,6 +18,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
 
   const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
   const compactNumber = value => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
+  const integerNumber = value => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Number(value) || 0);
   function callUsage(calls = []) {
     const totals = { calls: calls.length, input: 0, output: 0, total: 0, cost: 0, hasTokens: false, hasCost: false };
     for (const call of calls) {
@@ -126,16 +129,50 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   }));
 
   // ---- tasks --------------------------------------------------------------
-  async function refreshTasks() {
-    work.tasks = await client.request('/api/tasks');
+  function filteredSessionId() {
+    if (work.sessionFilter === 'active') return work.activeSessionId || '';
+    return work.sessionFilter.startsWith('session:') ? work.sessionFilter.slice(8) : '';
+  }
+
+  function setSessionFilter(sessionId) {
+    const select = $('#task-session-filter');
+    for (const option of [...select.options]) if (option.dataset.dynamic) option.remove();
+    if (sessionId) {
+      const option = new Option(`会话 ${String(sessionId).slice(0, 8)}`, `session:${sessionId}`);
+      option.dataset.dynamic = 'true';
+      select.add(option);
+      select.value = option.value;
+      work.sessionFilter = option.value;
+    } else {
+      select.value = 'all';
+      work.sessionFilter = 'all';
+    }
+    work.selected = null;
+    work.tasks = [];
     renderTaskList();
-    if (work.selected) await showTask(work.selected);
+    $('#task-detail').replaceChildren(node('div', 'small-empty', '选择左侧的任务，查看步骤、操作和产物。'));
+  }
+
+  async function refreshTasks() {
+    const sessionId = filteredSessionId();
+    const generation = ++taskRefreshGeneration;
+    const result = await client.request(`/api/tasks${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`);
+    if (generation !== taskRefreshGeneration || sessionId !== filteredSessionId()) return;
+    work.tasks = Array.isArray(result) ? result : result.tasks || [];
+    renderTaskList();
+    if (work.selected && work.tasks.some(task => task.id === work.selected)) await showTask(work.selected);
+    else if (work.selected) {
+      work.selected = null;
+      $('#task-detail').replaceChildren(node('div', 'small-empty', '当前会话筛选中没有这项任务。'));
+    }
   }
 
   function renderTaskList() {
     const list = $('#task-list');
     list.replaceChildren();
-    if (!work.tasks.length) list.append(node('div', 'small-empty', '还没有任务。可以新建纪要，或让研究任务核对资料并生成文档。'));
+    if (!work.tasks.length) list.append(node('div', 'small-empty', filteredSessionId()
+      ? '此会话还没有关联任务。可以切换到“全部会话”，或从当前会话新建任务。'
+      : '还没有任务。可以新建纪要，或让研究任务核对资料并生成文档。'));
     for (const task of work.tasks) {
       const item = node('button', `task-item${work.selected === task.id ? ' selected' : ''}`);
       item.type = 'button';
@@ -210,7 +247,9 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       : '未选择资料';
     scope.append(
       scopeItem('会话范围', sessionLabel),
-      scopeItem('资料范围', materialsLabel, materialIds.length ? '仅使用任务启动时选定的资料快照' : ''),
+      scopeItem('资料范围', materialsLabel, materialIds.length ? '只在启动时圈定的资料内选择' : ''),
+      scopeItem('片段选取', params.selection_mode === 'full' ? '完整范围' : '自动相关',
+        params.selection_mode === 'full' ? '超出预算会停止，不会截断' : '按问题选取相关原文，可固定或排除'),
       scopeItem('保存位置', savePath, params.overwrite ? '已允许覆盖；执行前仍需确认' : '工作目录内的 Markdown 文件'),
     );
     overview.append(node('h4', '', '研究范围'), scope);
@@ -292,6 +331,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     const actions = node('div', 'panel-tools');
     if (active(task.status)) actions.append(action('取消任务', 'button ghost small danger-hover', async () => { await client.request(`/api/tasks/${id}/cancel`, { method: 'POST' }); await refreshTasks(); }));
     if (['interrupted', 'failed', 'cancelled'].includes(task.status)) actions.append(action('继续', 'button ghost small', async () => { await client.request(`/api/tasks/${id}/resume`, { method: 'POST' }); await refreshTasks(); }));
+    if (task.kind === 'research') actions.append(action('查看 / 调整来源', 'button ghost small', () => openResearchSources(task.id)));
     if (!active(task.status)) actions.append(action('删除记录', 'button subtle small danger-hover', async () => {
       if (!await confirmAction('删除这条任务记录？', '只删除任务、步骤和操作记录；已经生成的产物会保留。')) return;
       await client.request(`/api/tasks/${id}`, { method: 'DELETE' });
@@ -327,8 +367,28 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     }
   }
   $('#refresh-tasks').addEventListener('click', () => busy($('#refresh-tasks'), () => Promise.all([refreshTasks(), refreshApprovals()])));
+  $('#task-session-filter').addEventListener('change', event => busy(event.target, async () => {
+    work.sessionFilter = event.target.value;
+    work.selected = null;
+    work.tasks = [];
+    renderTaskList();
+    $('#task-detail').replaceChildren(node('div', 'small-empty', '选择左侧的任务，查看步骤、操作和产物。'));
+    await refreshTasks();
+  }));
 
   // ---- approvals ----------------------------------------------------------
+  function approvalSummary(call) {
+    const args = call.arguments || {};
+    if (call.tool === 'export_artifact') {
+      const version = args.version ? ` v${args.version}` : '';
+      const fingerprint = args.content_hash ? ` · 内容指纹 ${String(args.content_hash).slice(0, 12)}` : '';
+      return `将已审阅的产物${version}保存到 ${call.target || args.path || '工作目录'}${fingerprint}。批准只绑定当前版本和内容；版本或来源变化后需要重新确认。`;
+    }
+    if (call.effect === 'write') return `将写入 ${call.target || '指定目标'}。请先核对目标和任务说明。`;
+    if (call.effect === 'launch') return `将打开 ${call.target || '外部目标'}。`;
+    return call.reason || '请核对目标与影响后再决定。';
+  }
+
   async function refreshApprovals() {
     work.approvals = await client.request('/api/approvals');
     const count = work.approvals.length;
@@ -342,7 +402,9 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       const card = node('article', 'approval-card');
       const head = node('div', 'call-head');
       head.append(node('strong', '', call.title), node('span', `effect ${call.effect}`, call.effect_label), node('small', '', `来自「${call.task_title}」· ${origins[call.origin] || call.origin}`));
-      card.append(head, node('code', '', call.target || '（无目标）'), node('pre', 'call-arguments', JSON.stringify(call.arguments, null, 2)));
+      const technical = node('details', 'approval-technical');
+      technical.append(node('summary', '', '技术详情'), node('pre', 'call-arguments', JSON.stringify(call.arguments, null, 2)));
+      card.append(head, node('p', 'approval-summary', approvalSummary(call)), node('code', '', call.target || '（无目标）'), technical);
       if (call.effect === 'execute') card.append(node('p', 'approval-warning', '命令可能修改文件、访问网络或产生其他影响，而且无法撤销。只在你理解这条命令时批准。'));
       if (call.effect === 'destructive') card.append(node('p', 'approval-warning', '文件会移入 GreatSage 回收区，之后可以在操作记录中撤销。'));
       const actions = node('div', 'panel-tools');
@@ -416,7 +478,8 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     <label class="field"><span>标题</span><input name="task_title" maxlength="80" placeholder="例如：实时语音 Agent 技术方案调研" required /></label>
     <label class="field"><span>研究问题与交付要求</span><textarea name="instructions" rows="5" maxlength="4000" placeholder="说明要回答的问题、重点比较项和期望的文档结构。" required></textarea></label>
     <label class="switch-row"><span><strong>包含当前会话原文</strong><small>把当前会话作为研究来源之一</small></span><input type="checkbox" role="switch" name="use_session" checked /></label>
-    <div class="field"><span>资料</span><div class="material-picker"></div><small class="field-hint">研究代理只能读取这里选定的资料快照。本版最多使用 8 段来源、共 64,000 字符，单段最多 32,000；超出时会要求缩小范围，不会自动截断原文。</small></div>
+    <div class="field"><span>资料范围</span><div class="material-picker"></div><small class="field-hint">先圈定允许使用的资料；默认会按研究问题自动选取相关片段，不会在范围外检索。</small></div>
+    <label class="field"><span>片段选取方式</span><select name="selection_mode"><option value="relevant">自动选择相关片段（推荐）</option><option value="full">读取范围内全部片段</option></select><small class="field-hint">最终最多读取 8 段、共 64,000 字符。完整范围或固定片段超出预算时任务会停止，不会静默截断或改成局部研究。</small></label>
     <label class="field"><span>保存位置</span><input name="save_path" maxlength="240" placeholder="留空则保存为 documents/任务ID.md" /><small class="field-hint">工作目录内的相对 .md 路径，例如 documents/realtime-agent.md</small></label>
     <label class="switch-row"><span><strong>允许覆盖同名文件</strong><small>默认关闭；即使开启，写入前仍需点击批准</small></span><input type="checkbox" role="switch" name="overwrite" /></label>
     <div class="research-flow" aria-label="研究流程"><span>收集来源</span><i></i><span>规划 · 整理 · 核对</span><i></i><span>生成文档</span><i></i><span>审批保存</span></div>
@@ -443,6 +506,9 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       instructions: researchField('instructions').value.trim(),
       material_ids: [...researchForm.querySelectorAll('[name=material]:checked')].map(item => item.value),
       use_session: researchField('use_session').checked,
+      selection_mode: researchField('selection_mode').value || 'relevant',
+      pinned_source_ids: [],
+      excluded_source_ids: [],
       save_path: researchField('save_path').value.trim(),
       overwrite: researchField('overwrite').checked,
     };
@@ -473,14 +539,188 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     });
   });
 
+  // ---- research source selection -----------------------------------------
+  const sourceDialog = node('dialog', 'record-dialog research-sources-dialog');
+  sourceDialog.innerHTML = `<div class="dialog-actions"><button type="button" class="button small ghost source-close">关闭</button></div>
+    <div class="source-dialog-head"><div><h2>研究来源</h2><p>这里显示任务范围内的候选与本轮选中的原文片段。固定、排除或更改模式会创建新任务，原任务与产物不变。</p></div></div>
+    <div class="source-selection-alert" hidden></div>
+    <div class="source-selection-stats"></div>
+    <fieldset class="source-mode"><legend>片段选取方式</legend><label><input type="radio" name="source_mode" value="relevant" /> 自动选择相关片段</label><label><input type="radio" name="source_mode" value="full" /> 读取范围内全部片段</label><small>固定片段或完整范围超出 8 段 / 64,000 字符预算时会停止，不会截断或自动改成局部研究。</small></fieldset>
+    <div class="source-candidates"></div>
+    <label class="switch-row source-update-scope" hidden><span><strong>采用更新后的来源</strong><small>原资料或会话已变化；只有明确开启才会用新版本替换旧范围。</small></span><input type="checkbox" role="switch" /></label>
+    <p class="field-error source-selection-error" hidden></p>
+    <div class="dialog-actions"><button type="button" class="button primary source-rerun">按此范围重新运行</button></div>`;
+  document.body.append(sourceDialog);
+  let sourceRequestGeneration = 0;
+  let sourceOpenIntent = false;
+  let sourceSnapshot = null;
+  let sourcePinned = new Set();
+  let sourceExcluded = new Set();
+
+  const sourceReason = reason => ({
+    pinned: '用户固定', relevant: '与研究问题相关', full: '完整范围', full_scope: '完整范围',
+    small_scope: '范围较小，已全部选取', selected: '已选取', excluded: '用户排除',
+    not_relevant: '相关性不足', budget: '超出预算', not_selected: '未被选取', unavailable: '来源已失效',
+  })[reason] || reason || '候选来源';
+
+  function invalidateSourceDialog() {
+    sourceOpenIntent = false;
+    sourceRequestGeneration += 1;
+    sourceSnapshot = null;
+    sourcePinned = new Set();
+    sourceExcluded = new Set();
+    $('.source-candidates', sourceDialog).replaceChildren();
+  }
+
+  function closeSourceDialog() {
+    invalidateSourceDialog();
+    if (sourceDialog.open) sourceDialog.close();
+  }
+
+  async function loadSourceText(taskId, candidate, container, generation) {
+    container.replaceChildren(node('div', 'small-empty', '正在读取任务范围内的原文…'));
+    try {
+      const result = await client.request(`/api/tasks/${encodeURIComponent(taskId)}/sources/${encodeURIComponent(candidate.id)}`);
+      if (!sourceOpenIntent || generation !== sourceRequestGeneration || sourceSnapshot?.task_id !== taskId) return;
+      const pre = node('pre', 'source-original', result.text || '');
+      const meta = node('small', 'source-original-meta', `${result.label || candidate.label} · ${result.available === false ? '已失效' : '内容哈希 ' + String(result.content_hash || '').slice(0, 12)}`);
+      container.replaceChildren(meta, pre);
+    } catch (error) {
+      if (!sourceOpenIntent || generation !== sourceRequestGeneration) return;
+      container.closest('details')?.removeAttribute('data-loaded');
+      container.replaceChildren(node('div', 'small-empty', error.message || '原文已不可用。'));
+    }
+  }
+
+  function renderResearchSources(snapshot, generation) {
+    sourceSnapshot = snapshot;
+    sourcePinned = new Set(snapshot.pinned_source_ids || []);
+    sourceExcluded = new Set(snapshot.excluded_source_ids || []);
+    const mode = sourceDialog.querySelector(`[name=source_mode][value="${snapshot.mode === 'full' ? 'full' : 'relevant'}"]`);
+    if (mode) mode.checked = true;
+    const stats = $('.source-selection-stats', sourceDialog);
+    const stat = (label, value, hint) => {
+      const item = node('div', 'source-selection-stat');
+      item.append(node('span', '', label), node('strong', '', value), node('small', '', hint));
+      return item;
+    };
+    stats.replaceChildren(
+      stat('实际选取', `${snapshot.selected_count || 0} / ${snapshot.total_sources || 0} 段`, snapshot.all_selected ? '范围内候选已全部选中' : '仅在选中来源内研究'),
+      stat('字符预算', `${integerNumber(snapshot.selected_chars)} / ${integerNumber(snapshot.max_chars || 64000)}`, `上限 ${snapshot.max_sources || 8} 段`),
+      stat('范围', `${snapshot.scope?.material_ids?.length || 0} 份资料 · ${snapshot.scope?.session_ids?.length || 0} 个会话`, snapshot.mode === 'full' ? '完整范围模式' : '相关片段模式'),
+    );
+    const alert = $('.source-selection-alert', sourceDialog);
+    const messages = [];
+    if (snapshot.selection_status === 'stale') messages.push('任务来源已变化；重跑时不会自动采用新内容。');
+    if (snapshot.selection_status === 'needs_attention') messages.push('当前来源范围需要处理后才能运行。');
+    if (snapshot.error) messages.push(snapshot.error);
+    if (snapshot.candidates_limited) messages.push('候选列表只显示前 100 段；已选片段优先显示，其余请缩小来源范围。');
+    alert.hidden = !messages.length;
+    alert.className = `source-selection-alert ${snapshot.selection_status === 'selected' ? '' : 'warn'}`;
+    alert.textContent = messages.join(' ');
+    const update = $('.source-update-scope', sourceDialog);
+    update.hidden = snapshot.selection_status !== 'stale';
+    $('input', update).checked = false;
+
+    const list = $('.source-candidates', sourceDialog);
+    list.replaceChildren();
+    if (!snapshot.candidates?.length) list.append(node('div', 'small-empty', '此范围没有可用原文。请返回任务并调整资料或会话范围。'));
+    for (const candidate of snapshot.candidates || []) {
+      const card = node('article', `source-candidate${candidate.selected ? ' selected' : ''}${candidate.available === false ? ' unavailable' : ''}`);
+      const head = node('div', 'source-candidate-head');
+      const title = node('div', 'source-candidate-title');
+      title.append(node('strong', '', candidate.label || `来源 ${String(candidate.id).slice(0, 8)}`),
+        node('small', '', `${candidate.kind === 'message' ? '会话原文' : '资料片段'} · ${compactNumber(candidate.chars || 0)} 字符 · ${sourceReason(candidate.reason)}`));
+      const badges = node('div', 'source-candidate-badges');
+      if (candidate.handle) badges.append(node('span', 'tag', candidate.handle));
+      if (candidate.selected) badges.append(node('span', 'badge ok', '本轮选中'));
+      if (candidate.available === false) badges.append(node('span', 'badge bad', '已失效'));
+      head.append(title, badges);
+      card.append(head, node('p', 'source-excerpt', candidate.excerpt || '没有可显示的摘要。'));
+      const controls = node('div', 'source-candidate-controls');
+      const pin = node('label', 'check-label');
+      const pinBox = node('input'); pinBox.type = 'checkbox'; pinBox.checked = sourcePinned.has(candidate.id);
+      pin.append(pinBox, document.createTextNode('固定选取'));
+      const exclude = node('label', 'check-label');
+      const excludeBox = node('input'); excludeBox.type = 'checkbox'; excludeBox.checked = sourceExcluded.has(candidate.id);
+      exclude.append(excludeBox, document.createTextNode('排除'));
+      pinBox.addEventListener('change', () => {
+        if (pinBox.checked) { sourcePinned.add(candidate.id); sourceExcluded.delete(candidate.id); excludeBox.checked = false; }
+        else sourcePinned.delete(candidate.id);
+      });
+      excludeBox.addEventListener('change', () => {
+        if (excludeBox.checked) { sourceExcluded.add(candidate.id); sourcePinned.delete(candidate.id); pinBox.checked = false; }
+        else sourceExcluded.delete(candidate.id);
+      });
+      controls.append(pin, exclude);
+      if (candidate.available !== false) {
+        const details = node('details', 'source-original-details');
+        details.append(node('summary', '', '查看任务范围内原文'), node('div', 'source-original-wrap'));
+        details.addEventListener('toggle', () => {
+          if (details.open && !details.dataset.loaded) {
+            details.dataset.loaded = 'true';
+            loadSourceText(snapshot.task_id, candidate, $('.source-original-wrap', details), generation);
+          }
+        });
+        controls.append(details);
+      }
+      card.append(controls);
+      list.append(card);
+    }
+  }
+
+  async function openResearchSources(taskId) {
+    sourceOpenIntent = true;
+    const generation = ++sourceRequestGeneration;
+    $('.source-candidates', sourceDialog).replaceChildren(node('div', 'small-empty', '正在读取候选与实际选取范围…'));
+    $('.source-selection-stats', sourceDialog).replaceChildren();
+    $('.source-selection-alert', sourceDialog).hidden = true;
+    $('.source-selection-error', sourceDialog).hidden = true;
+    if (!sourceDialog.open) sourceDialog.showModal();
+    try {
+      const snapshot = await client.request(`/api/tasks/${encodeURIComponent(taskId)}/sources`);
+      if (!sourceOpenIntent || generation !== sourceRequestGeneration) return;
+      renderResearchSources(snapshot, generation);
+    } catch (error) {
+      if (!sourceOpenIntent || generation !== sourceRequestGeneration) return;
+      $('.source-candidates', sourceDialog).replaceChildren(node('div', 'small-empty', error.message || '研究来源加载失败。'));
+    }
+  }
+
+  $('.source-close', sourceDialog).addEventListener('click', closeSourceDialog);
+  sourceDialog.addEventListener('cancel', invalidateSourceDialog);
+  sourceDialog.addEventListener('close', invalidateSourceDialog);
+  $('.source-rerun', sourceDialog).addEventListener('click', () => busy($('.source-rerun', sourceDialog), async () => {
+    if (!sourceSnapshot) return;
+    const snapshot = sourceSnapshot;
+    const generation = sourceRequestGeneration;
+    const error = $('.source-selection-error', sourceDialog);
+    error.hidden = true;
+    const mode = sourceDialog.querySelector('[name=source_mode]:checked')?.value || 'relevant';
+    const updateSources = !$('.source-update-scope', sourceDialog).hidden && $('input', $('.source-update-scope', sourceDialog)).checked;
+    const task = await client.request(`/api/tasks/${encodeURIComponent(snapshot.task_id)}/reselect`, {
+      method: 'POST', body: { selection_mode: mode, pinned_source_ids: [...sourcePinned],
+        excluded_source_ids: [...sourceExcluded], update_sources: updateSources },
+    });
+    if (!sourceOpenIntent || generation !== sourceRequestGeneration || sourceSnapshot !== snapshot) {
+      toast('来源重选任务已创建；你已离开原来源窗口，可在任务列表查看进度。');
+      return;
+    }
+    closeSourceDialog();
+    work.selected = task.id;
+    await refreshTasks();
+    toast(updateSources ? '已采用更新后的来源创建新任务；保存仍需重新批准。' : '已按新的来源范围创建任务；原任务与产物保持不变。');
+  }));
+
   // ---- artifacts ----------------------------------------------------------
   const artifactDialog = node('dialog', 'record-dialog artifact-dialog');
   artifactDialog.innerHTML = `<div class="dialog-actions"><select class="artifact-version" aria-label="选择版本"></select><button type="button" class="button small ghost artifact-close">关闭</button></div>
     <div class="artifact-head"><h2></h2><span class="artifact-badges"></span></div>
     <p class="approval-warning artifact-stale" hidden>部分来源已删除或已变更，对应引用已失效。可以按修改意见重新生成，或核对后自己修改。</p>
     <div class="artifact-body"></div>
-    <h3>来源</h3><div class="citation-list"></div>
-    <div class="regenerate-form" hidden><label class="field"><span>修改意见</span><textarea rows="2" maxlength="4000" placeholder="例如：负责人写全名；删掉与发布无关的内容。"></textarea></label><div class="panel-tools"><button type="button" class="button primary small regenerate-start">开始重新生成</button><button type="button" class="button subtle small regenerate-cancel">取消</button></div></div>
+    <section class="artifact-review-panel"><div class="artifact-review-head"><div><h3>证据审阅与版本对比</h3><small>引用状态只说明标记能否定位原文，不代表结论已经过事实认证。</small></div><label><span>对比</span><select class="artifact-compare-version" aria-label="选择对比版本"></select></label></div><div class="artifact-review-content"><div class="small-empty">正在读取证据审阅信息…</div></div></section>
+    <h3>引用原文与定位</h3><div class="citation-list"></div>
+    <div class="regenerate-form" hidden><label class="field"><span>纠正或修改要求</span><textarea rows="3" maxlength="4000" placeholder="例如：负责人应为林岚；保留两个冲突日期并标为待确认。"></textarea><small>纠正会单独保存为用户来源；旧模型产物只作为待修改对象，不会成为原始事实证据。</small></label><label class="switch-row regenerate-update-sources"><span><strong>采用更新后的来源</strong><small>只有明确开启，重新生成任务才会用当前资料替换旧来源版本</small></span><input type="checkbox" role="switch" /></label><p class="field-error regenerate-error" hidden></p><div class="panel-tools"><button type="button" class="button primary small regenerate-start">开始重新生成</button><button type="button" class="button subtle small regenerate-cancel">取消</button></div></div>
     <div class="panel-tools artifact-actions"><button type="button" class="button primary small artifact-save">保存为新版本</button><button type="button" class="button ghost small artifact-regenerate">按修改意见重新生成</button><button type="button" class="button ghost small artifact-export">导出 .md</button><button type="button" class="button subtle small danger-hover artifact-delete">删除</button></div>`;
   document.body.append(artifactDialog);
   const inDialog = selector => $(selector, artifactDialog);
@@ -490,8 +730,10 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   function invalidateArtifactDialog() {
     artifactOpenIntent = false;
     artifactRequestGeneration += 1;
+    work.artifact = null;
     inDialog('.artifact-body').replaceChildren();
     inDialog('.citation-list').replaceChildren();
+    inDialog('.artifact-review-content').replaceChildren();
   }
   function closeArtifactDialog() {
     invalidateArtifactDialog();
@@ -519,6 +761,136 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     return table;
   }
 
+  const citationStatusLabel = { cited: '引用有效', invalid: '引用已失效', unknown: '未知引用', uncited: '未标引用' };
+  function locatorText(locator) {
+    if (!locator) return '';
+    if (locator.kind === 'chunk') {
+      return [locator.name, locator.version ? `v${locator.version}` : '', locator.heading,
+        locator.line_start ? `第 ${locator.line_start}–${locator.line_end || locator.line_start} 行` : ''].filter(Boolean).join(' · ');
+    }
+    return [`会话 ${String(locator.session_id || '').slice(0, 8)}`, locator.created_at ? when(locator.created_at) : ''].filter(Boolean).join(' · ');
+  }
+
+  function renderCitations(artifact, review) {
+    const citations = inDialog('.citation-list');
+    const rows = review?.citations || artifact.citations || [];
+    citations.replaceChildren(...rows.map(item => {
+      const row = node('details', `citation${item.valid ? '' : ' invalid'}`);
+      row.dataset.marker = item.marker;
+      const summary = node('summary');
+      summary.append(node('strong', '', `[${item.marker}]`), node('span', '', item.label || '未命名来源'),
+        node('small', '', item.valid ? locatorText(item.locator) || '可定位原文' : '来源已删除或已变更'));
+      const body = node('div', 'citation-evidence');
+      body.append(node('small', '', '引用原文'), node('p', 'record-text', item.valid ? item.excerpt || '此引用没有可显示的摘录。' : '失效引用不再显示旧原文。'));
+      if (item.locator) body.append(node('small', '', `定位：${locatorText(item.locator)}`));
+      row.append(summary, body);
+      return row;
+    }), ...(review?.unknown_markers || artifact.unknown_markers || []).map(marker => node('div', 'citation invalid', `[${marker}] 没有对应来源`)));
+    if (!citations.children.length) citations.append(node('small', 'field-hint', '这份产物没有引用标记。'));
+  }
+
+  function renderArtifactReview(artifact, review, compareTo = '') {
+    const container = inDialog('.artifact-review-content');
+    if (!review || review.error) {
+      container.replaceChildren(node('div', 'small-empty', review?.error || '证据审阅信息暂不可用。'));
+      renderCitations(artifact, null);
+      return;
+    }
+    const compare = inDialog('.artifact-compare-version');
+    const versions = artifact.versions || [];
+    const parentLabel = review.parent_version ? `父版本 v${review.parent_version}（默认）` : '首版（没有父版本）';
+    compare.replaceChildren(new Option(parentLabel, ''), ...versions
+      .filter(item => Number(item.version) !== Number(review.version))
+      .map(item => new Option(`v${item.version} · ${when(item.created_at)}`, item.version)));
+    compare.value = compareTo === '' || compareTo == null ? '' : String(compareTo);
+    compare.disabled = versions.length <= 1;
+
+    const summary = node('div', 'artifact-review-summary');
+    const origin = versions.find(item => Number(item.version) === Number(review.version));
+    const fields = [
+      ['当前审阅', `v${review.version}${Number(review.version) === Number(review.current_version) ? '（最新）' : `（最新为 v${review.current_version}）`}`],
+      ['生成任务', review.generating_task_id ? String(review.generating_task_id).slice(0, 12) : '原始任务'],
+      ['版本来源', origin?.origin === 'edited' ? '手动编辑' : origin?.origin === 'regenerated' ? '按纠正重新生成' : '模型生成'],
+      ['用户纠正', review.correction_source_id ? (review.correction_source_valid === false ? '纠正来源已失效' : '已保存并关联') : '无'],
+    ];
+    for (const [label, value] of fields) {
+      const item = node('div'); item.append(node('span', '', label), node('strong', '', value)); summary.append(item);
+    }
+    container.replaceChildren(summary);
+    if (Number(review.version) !== Number(review.current_version)) {
+      container.append(node('p', 'inline-warning artifact-version-warning', `你正在审阅旧版本 v${review.version}。旧版本只读；请切换到最新版本 v${review.current_version} 后再保存或重新生成，保存前会再次检查版本以防误覆盖。`));
+    }
+    if (review.semantic_verification === false) {
+      container.append(node('p', 'artifact-review-note', '本页核对引用标记、原文定位和版本来源；不会把模型结论标记为已经事实认证。'));
+    }
+    const passages = node('div', 'artifact-passages');
+    for (const passage of review.passages || []) {
+      const row = node('article', `artifact-passage ${passage.citation_status || 'uncited'}`);
+      const head = node('div', 'artifact-passage-head');
+      head.append(node('strong', '', `第 ${passage.line_number} 行`), node('span', 'tag', citationStatusLabel[passage.citation_status] || passage.citation_status));
+      const markers = node('div', 'artifact-passage-markers');
+      for (const marker of passage.markers || []) {
+        const button = node('button', 'source-link', `[${marker}]`); button.type = 'button';
+        button.addEventListener('click', () => {
+          const target = inDialog(`.citation[data-marker="${CSS.escape(marker)}"]`);
+          if (target) { target.open = true; target.scrollIntoView({ block: 'center' }); target.focus(); }
+        });
+        markers.append(button);
+      }
+      head.append(markers);
+      row.append(head, node('p', 'record-text', passage.text || ''));
+      if (passage.text_truncated) row.append(node('small', 'field-hint', '此行文本在审阅响应中已截断。'));
+      passages.append(row);
+    }
+    if (!passages.children.length) passages.append(node('div', 'small-empty', '没有可审阅的 Markdown 正文行。'));
+    container.append(node('h4', '', '正文与引用覆盖'), passages);
+    if (review.passages_truncated) container.append(node('p', 'inline-warning', '正文行数超过审阅上限，只显示有界片段；请勿把此视图当作全文。'));
+
+    const diffBlock = node('div', 'artifact-diff');
+    diffBlock.append(node('h4', '', '版本差异'));
+    if (review.diff) {
+      diffBlock.append(node('small', '', `v${review.diff.from_version} → v${review.diff.to_version}`), node('pre', '', review.diff.text || '没有文本差异。'));
+      if (review.diff.truncated || review.diff.input_truncated || review.diff.output_truncated) {
+        diffBlock.append(node('p', 'inline-warning', '差异或参与比较的版本超过显示上限，当前内容已明确截断。'));
+      }
+    } else diffBlock.append(node('p', 'source-note', review.parent_version ? '该版本没有可显示的差异。' : '首版没有父版本可比较。'));
+    container.append(diffBlock);
+    renderCitations(artifact, review);
+  }
+
+  function syncArtifactActions(artifact = work.artifact) {
+    if (!artifact) return;
+    const latest = Number(artifact.version) === Number(artifact.current_version);
+    inDialog('.artifact-save').hidden = artifact.kind === 'todos';
+    inDialog('.artifact-save').disabled = !latest;
+    inDialog('.artifact-regenerate').disabled = !latest;
+    inDialog('.artifact-export').disabled = !latest;
+    inDialog('.artifact-save').title = latest ? '把当前内容保存为新版本' : '旧版本只读，请先切换到最新版本';
+    inDialog('.artifact-regenerate').title = latest ? '根据纠正生成新版本' : '旧版本只读，请先切换到最新版本';
+    inDialog('.artifact-export').title = latest ? '导出当前最新版本' : '当前接口只导出最新版本，请先切换到最新版本';
+  }
+
+  function resyncArtifactActionsAfterBusy() {
+    setTimeout(() => syncArtifactActions(), 0);
+  }
+
+  async function loadArtifactReview(compareTo = '') {
+    const artifact = work.artifact;
+    if (!artifact) return;
+    const generation = ++artifactRequestGeneration;
+    const query = new URLSearchParams({ version: String(artifact.version) });
+    if (compareTo !== '' && compareTo != null) query.set('compare_to', String(compareTo));
+    inDialog('.artifact-review-content').replaceChildren(node('div', 'small-empty', '正在读取证据与版本差异…'));
+    try {
+      const review = await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}/review?${query}`);
+      if (!artifactOpenIntent || generation !== artifactRequestGeneration || work.artifact?.id !== artifact.id || work.artifact?.version !== artifact.version) return;
+      renderArtifactReview(artifact, review, compareTo);
+    } catch (error) {
+      if (!artifactOpenIntent || generation !== artifactRequestGeneration) return;
+      renderArtifactReview(artifact, { error: error.message }, compareTo);
+    }
+  }
+
   async function openArtifact(id, version, requestOpen = true) {
     if (requestOpen) artifactOpenIntent = true;
     else if (!artifactOpenIntent) return;
@@ -530,6 +902,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     inDialog('.artifact-badges').replaceChildren(node('span', 'tag', kinds[artifact.kind] || artifact.kind), badge(artifact.status));
     inDialog('.artifact-version').replaceChildren(...artifact.versions.map(item => new Option(`v${item.version} · ${({ generated: '生成', edited: '编辑', regenerated: '重新生成' })[item.origin] || item.origin} · ${when(item.created_at)}`, item.version)));
     inDialog('.artifact-version').value = artifact.version;
+    inDialog('.artifact-compare-version').replaceChildren(new Option('父版本（默认）', ''));
     inDialog('.artifact-stale').hidden = artifact.status !== 'stale';
     const body = inDialog('.artifact-body');
     if (artifact.kind === 'todos') body.replaceChildren(todoTable(artifact));
@@ -538,49 +911,79 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       editor.value = artifact.content; editor.rows = 18; editor.setAttribute('aria-label', 'Markdown 内容');
       body.replaceChildren(editor);
     }
-    inDialog('.artifact-save').hidden = artifact.kind === 'todos';
-    const citations = inDialog('.citation-list');
-    citations.replaceChildren(...artifact.citations.map(item => {
-      const row = node('div', `citation${item.valid ? '' : ' invalid'}`);
-      row.append(node('strong', '', `[${item.marker}]`), node('span', '', item.label), node('small', '', item.valid ? item.excerpt || '' : '来源已删除或已变更'));
-      return row;
-    }), ...artifact.unknown_markers.map(marker => node('div', 'citation invalid', `[${marker}] 没有对应来源`)));
-    if (!citations.children.length) citations.append(node('small', 'field-hint', '这份产物没有引用标记。'));
+    syncArtifactActions(artifact);
+    renderCitations(artifact, null);
     inDialog('.regenerate-form').hidden = true;
+    inDialog('.regenerate-form textarea').value = '';
+    inDialog('.regenerate-update-sources input').checked = false;
+    inDialog('.regenerate-error').hidden = true;
     if (!artifactDialog.open) artifactDialog.showModal();
+    await loadArtifactReview();
   }
 
   inDialog('.artifact-close').addEventListener('click', closeArtifactDialog);
   inDialog('.artifact-version').addEventListener('change', event => busy(event.target, () => openArtifact(work.artifact.id, Number(event.target.value), false)));
+  inDialog('.artifact-compare-version').addEventListener('change', event => busy(event.target, () => loadArtifactReview(event.target.value)));
   inDialog('.artifact-save').addEventListener('click', () => busy(inDialog('.artifact-save'), async () => {
-    const id = work.artifact.id;
+    const artifact = work.artifact;
+    const id = artifact.id;
     const content = inDialog('.artifact-editor').value;
     if (!content.trim()) throw new Error('内容不能为空。');
-    await client.request(`/api/artifacts/${encodeURIComponent(id)}`, { method: 'PUT', body: { content } });
-    await openArtifact(id, undefined, false);
-    toast('已保存为新版本，引用仍指向原来的来源。');
+    try {
+      await client.request(`/api/artifacts/${encodeURIComponent(id)}`, { method: 'PUT', body: { content, expected_version: artifact.version } });
+      if (!artifactOpenIntent || work.artifact !== artifact) {
+        toast('新版本已保存；当前打开的产物没有被旧请求覆盖。');
+        return;
+      }
+      await openArtifact(id, undefined, false);
+      toast('已保存为新版本，引用仍指向原来的来源。');
+    } finally {
+      resyncArtifactActionsAfterBusy();
+    }
   }));
-  inDialog('.artifact-regenerate').addEventListener('click', () => { inDialog('.regenerate-form').hidden = false; inDialog('.regenerate-form textarea').focus(); });
-  inDialog('.regenerate-cancel').addEventListener('click', () => { inDialog('.regenerate-form').hidden = true; });
+  inDialog('.artifact-regenerate').addEventListener('click', () => { inDialog('.regenerate-form').hidden = false; inDialog('.regenerate-error').hidden = true; inDialog('.regenerate-form textarea').focus(); });
+  inDialog('.regenerate-cancel').addEventListener('click', () => { inDialog('.regenerate-form').hidden = true; inDialog('.regenerate-error').hidden = true; });
   inDialog('.regenerate-start').addEventListener('click', () => busy(inDialog('.regenerate-start'), async () => {
-    if (work.artifact.kind === 'todos' && !await confirmAction('重新生成待办清单？', '新清单会替换当前的待办，你手动修改过的条目会被覆盖；旧清单保留在版本记录中。', '重新生成')) return;
-    const task = await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}/regenerate`, { method: 'POST', body: { instructions: inDialog('.regenerate-form textarea').value.trim() } });
+    const artifact = work.artifact;
+    if (artifact.kind === 'todos' && !await confirmAction('重新生成待办清单？', '新清单会替换当前的待办，你手动修改过的条目会被覆盖；旧清单保留在版本记录中。', '重新生成')) return;
+    const instructions = inDialog('.regenerate-form textarea').value.trim();
+    const updateSources = inDialog('.regenerate-update-sources input').checked;
+    const error = inDialog('.regenerate-error');
+    if (!instructions && !updateSources) {
+      error.textContent = '请填写纠正或修改要求，或明确选择采用更新后的来源。';
+      error.hidden = false;
+      return;
+    }
+    error.hidden = true;
+    const task = await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}/regenerate`, {
+      method: 'POST', body: { instructions, expected_version: artifact.version, update_sources: updateSources },
+    });
+    if (!artifactOpenIntent || work.artifact !== artifact) {
+      toast('重新生成任务已创建；你已离开原产物窗口，可在任务列表查看进度。');
+      return;
+    }
     closeArtifactDialog();
     work.selected = task.id;
     await refreshTasks();
-    toast('已开始重新生成，完成后会成为新的版本。');
+    toast(updateSources ? '已按纠正和更新后的来源开始生成新版本；完成后仍需重新批准保存。' : '已按纠正开始生成新版本；完成后仍需重新批准保存。');
   }));
   inDialog('.artifact-export').addEventListener('click', () => busy(inDialog('.artifact-export'), async () => {
-    const text = await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}/export`);
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
-    const link = node('a');
-    link.href = url; link.download = `${work.artifact.title.replace(/[<>:"/\\|?*]/g, '')}.md`; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const artifact = work.artifact;
+    try {
+      const text = await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}/export`);
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+      const link = node('a');
+      link.href = url; link.download = `${artifact.title.replace(/[<>:"/\\|?*]/g, '')}.md`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      resyncArtifactActionsAfterBusy();
+    }
   }));
   inDialog('.artifact-delete').addEventListener('click', () => busy(inDialog('.artifact-delete'), async () => {
+    const artifact = work.artifact;
     if (!await confirmAction('删除这份产物？', '会删除它的所有版本和引用记录。已经导出的文件不受影响。')) return;
-    await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}`, { method: 'DELETE' });
-    closeArtifactDialog();
+    await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}`, { method: 'DELETE' });
+    if (artifactOpenIntent && work.artifact === artifact) closeArtifactDialog();
     await refreshTasks();
     toast('产物已删除。');
   }));
@@ -669,6 +1072,18 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   return {
     init: () => Promise.all([refreshApprovals(), loadTools()]),
     fillSettings: () => editors.forEach(render => render()),
+    setActiveSession(id) {
+      work.activeSessionId = id || '';
+      const activeOption = $('#task-session-filter option[value="active"]');
+      activeOption.textContent = id ? `当前会话 ${String(id).slice(0, 8)}` : '当前会话';
+      if (work.sessionFilter === 'active' && visible('tasks')) {
+        work.selected = null;
+        work.tasks = [];
+        renderTaskList();
+        refreshTasks().catch(error => toast(error.message, 'error'));
+      }
+    },
+    setSessionFilter,
     async refresh(view) {
       if (view === 'tasks') { await Promise.all([refreshApprovals(), refreshMaterials()]); await refreshTasks(); }
       if (view === 'materials') await refreshMaterials();
@@ -679,7 +1094,11 @@ export function setupWork({ client, toast, busy, confirmAction }) {
         case 'mcp_updated': loadTools().catch(() => {}); break;
         case 'task_updated': {
           const index = work.tasks.findIndex(task => task.id === data.id);
-          if (index >= 0) work.tasks[index] = data; else work.tasks.unshift(data);
+          const sessionId = filteredSessionId();
+          if (sessionId && data.session_id !== sessionId) {
+            if (index >= 0) work.tasks.splice(index, 1);
+          } else if (index >= 0) work.tasks[index] = data;
+          else work.tasks.unshift(data);
           if (visible('tasks')) { renderTaskList(); if (work.selected === data.id) scheduleTasks(); }
           break;
         }

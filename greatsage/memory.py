@@ -17,6 +17,7 @@ from .artifacts import ArtifactsMixin
 from .materials import MaterialsMixin, chunk_label
 from .task_store import TaskStoreMixin
 from .structured_memory import StructuredMemoryMixin
+from .sessions import SessionsMixin
 
 
 def _now() -> str:
@@ -48,7 +49,7 @@ def _relevance(query: str, text: str) -> float:
                for term in _terms(query) if term in folded)
 
 
-class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, TaskStoreMixin):
+class MemoryStore(SessionsMixin, StructuredMemoryMixin, VectorIndexMixin, AuditMixin, MaterialsMixin, ArtifactsMixin, TaskStoreMixin):
     """One WAL database, serialized transactions, and immutable source IDs.
 
     A revision creates a new ID, invalidating all derived records first. This
@@ -117,6 +118,7 @@ class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, Materials
         self._init_artifacts()
         self._init_tasks()
         self._init_structured_memory()
+        self._init_sessions()
         self._db.commit()
 
     @staticmethod
@@ -169,15 +171,6 @@ class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, Materials
             rows = self._db.execute("SELECT * FROM messages" + clause + " ORDER BY rowid DESC LIMIT ?",
                                     [*args, max(0, min(int(limit), 100000))]).fetchall()
             return [self._row(row) for row in reversed(rows)]
-
-    def sessions(self) -> list[dict]:
-        with self._lock:
-            return [dict(row) for row in self._db.execute("""
-                SELECT s.id,s.created_at,count(m.id) AS message_count,
-                       max(m.created_at) AS last_message_at
-                FROM sessions s LEFT JOIN messages m ON m.session_id=s.id
-                GROUP BY s.id ORDER BY coalesce(max(m.created_at),s.created_at) DESC
-            """)]
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
         terms = _terms(query)
