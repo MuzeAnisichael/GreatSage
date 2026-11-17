@@ -176,7 +176,8 @@ async def test_pending_sources_remain_discoverable_after_restart(runtime):
     await runtime.pause_background()
     restarted = Runtime(runtime.data_dir, providers=ProposalProvider())
     try:
-        assert restarted.session_id != runtime.session_id
+        assert restarted.session_id == runtime.session_id
+        assert not restarted._background_enabled and restarted.providers.calls == []
         await restarted.extract_memories()
         assert restarted.memory.extraction_status()["processed_sources"] == 1
         assert len(restarted.providers.calls) == 1

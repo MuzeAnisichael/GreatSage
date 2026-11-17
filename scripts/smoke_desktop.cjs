@@ -251,9 +251,11 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       window.fetch = async (url, options = {}) => {
         const target = new URL(url, location.href), route = target.pathname, method = options.method || 'GET';
         if (route === '/api/sessions' && method === 'GET') return json(fixture.sessions());
-        const activation = route.match(/^\/api\/sessions\/([^/]+)\/activate$/);
-        if (activation && method === 'POST') {
-          const id = decodeURIComponent(activation[1]);
+        const sessionPrefix = '/api/sessions/', activationSuffix = '/activate';
+        const activation = method === 'POST' && route.startsWith(sessionPrefix) && route.endsWith(activationSuffix)
+          ? route.slice(sessionPrefix.length, -activationSuffix.length) : '';
+        if (activation && !activation.includes('/')) {
+          const id = decodeURIComponent(activation);
           fixture.active = id; fixture.activations.push(id);
           return json({ session_id: id, status: { session_id: id, state: 'idle', listening: false }, history: [
             { id: 'synthetic-session-message-' + id, role: 'user', text: id === historical ? 'SYNTHETIC 已继续历史会话' : 'SYNTHETIC 已恢复当前会话', source: 'text', created_at: stamp, session_id: id },
