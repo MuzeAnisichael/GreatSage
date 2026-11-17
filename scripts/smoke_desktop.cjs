@@ -379,7 +379,7 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     check(await evaluate("window.__researchSmoke.approveCalls[0].method === 'POST' && window.__researchSmoke.approveCalls[0].body.scope === 'once'"), 'Research save sends one-time click approval');
     await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
     await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelector('.artifact-editor').value.includes('有来源支持的结论')"), 'research artifact detail');
-    await evaluate("window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='2';select.dispatchEvent(new Event('change',{bubbles:true}))");
+    await evaluate("(()=>{window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='2';select.dispatchEvent(new Event('change',{bubbles:true}))})()");
     await until(() => evaluate("window.__researchSmoke.artifactReleases.length === 1"), 'held artifact version response');
     await evaluate("document.querySelector('.artifact-close').click();window.__researchSmoke.releaseArtifacts()");
     await until(() => evaluate("!document.querySelector('.artifact-version').disabled"), 'late artifact response settled');
