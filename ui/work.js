@@ -4,14 +4,59 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const action = (label, className, handler) => { const el = node('button', className, label); el.type = 'button'; if (handler) el.addEventListener('click', () => busy(el, handler)); return el; };
   const work = { tasks: [], materials: [], approvals: [], tools: [], selected: null, artifact: null };
-  const statusLabels = { queued: '排队中', running: '进行中', waiting_approval: '等待确认', succeeded: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', pending: '未开始', unknown: '结果未知', expired: '已失效', denied: '已拒绝', approved: '已批准', proposed: '待决定', awaiting_approval: '等待确认', undone: '已撤销', active: '有效', stale: '来源已变更', missing: '原文件已移走', unreadable: '无法读取' };
-  const tones = { succeeded: 'ok', active: 'ok', approved: 'ok', running: 'busy', queued: 'busy', waiting_approval: 'warn', awaiting_approval: 'warn', interrupted: 'warn', unknown: 'warn', stale: 'warn', missing: 'warn', failed: 'bad', unreadable: 'bad' };
+  const statusLabels = { queued: '排队中', running: '进行中', started: '进行中', waiting_approval: '等待确认', succeeded: '已完成', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', pending: '未开始', unknown: '结果未知', expired: '已失效', denied: '已拒绝', approved: '已批准', proposed: '待决定', awaiting_approval: '等待确认', undone: '已撤销', active: '有效', stale: '来源已变更', missing: '原文件已移走', unreadable: '无法读取' };
+  const tones = { succeeded: 'ok', completed: 'ok', active: 'ok', approved: 'ok', running: 'busy', started: 'busy', queued: 'busy', waiting_approval: 'warn', awaiting_approval: 'warn', interrupted: 'warn', unknown: 'warn', stale: 'warn', missing: 'warn', failed: 'bad', unreadable: 'bad' };
   const badge = status => node('span', `badge ${tones[status] || ''}`, statusLabels[status] || status);
   const when = value => value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) : '';
   const kinds = { minutes: '纪要', todos: '待办', document: '文档草稿' };
   const origins = { user_text: '你的文字', user_voice: '你的语音', console: '控制台' };
+  const taskKinds = { action: '操作', minutes: '纪要', research: '研究文档' };
   const active = status => ['queued', 'running', 'waiting_approval'].includes(status);
   const toolTitle = name => work.tools.find(tool => tool.name === name)?.title || name;
+
+  const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  const compactNumber = value => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
+  function callUsage(calls = []) {
+    const totals = { calls: calls.length, input: 0, output: 0, total: 0, cost: 0, hasTokens: false, hasCost: false };
+    for (const call of calls) {
+      const usage = call?.usage || {};
+      const input = finite(usage.prompt_tokens ?? usage.input_tokens);
+      const output = finite(usage.completion_tokens ?? usage.output_tokens);
+      const total = finite(usage.total_tokens) || input + output;
+      if (input || output || total) totals.hasTokens = true;
+      totals.input += input; totals.output += output; totals.total += total;
+      if (typeof usage.cost === 'number' && Number.isFinite(usage.cost)) {
+        totals.hasCost = true;
+        totals.cost += usage.cost;
+      }
+    }
+    return totals;
+  }
+  const allCalls = task => (task.steps || []).flatMap(step => Array.isArray(step.detail?.calls) ? step.detail.calls : []);
+  function usageText(calls) {
+    const usage = callUsage(calls);
+    const parts = [`模型调用 ${usage.calls} 次`];
+    if (usage.hasTokens) parts.push(usage.input || usage.output ? `输入 ${compactNumber(usage.input)} · 输出 ${compactNumber(usage.output)} tokens` : `共 ${compactNumber(usage.total)} tokens`);
+    if (usage.hasCost) parts.push(`实际费用 US$${usage.cost < .0001 ? usage.cost.toPrecision(2) : usage.cost.toFixed(4)}`);
+    return parts.join(' · ');
+  }
+  function safeLines(value, depth = 0) {
+    if (value == null || value === '') return [];
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+    if (depth > 2) return [];
+    if (Array.isArray(value)) return value.flatMap(item => safeLines(item, depth + 1)).slice(0, 30);
+    if (typeof value === 'object') {
+      const preferred = value.text ?? value.title ?? value.summary ?? value.description ?? value.question ?? value.issue ?? value.detail;
+      if (preferred != null) return safeLines(preferred, depth + 1);
+      return Object.entries(value).flatMap(([key, item]) => safeLines(item, depth + 1).map(text => `${key}：${text}`)).slice(0, 30);
+    }
+    return [];
+  }
+  function lineList(value, className = '') {
+    const list = node('ul', className);
+    for (const text of safeLines(value)) list.append(node('li', '', text));
+    return list;
+  }
 
   // ---- materials ----------------------------------------------------------
   async function refreshMaterials() {
@@ -90,7 +135,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   function renderTaskList() {
     const list = $('#task-list');
     list.replaceChildren();
-    if (!work.tasks.length) list.append(node('div', 'small-empty', '还没有任务。点击“新建纪要任务”，或在对话中说“帮我整理刚才的会议纪要”。'));
+    if (!work.tasks.length) list.append(node('div', 'small-empty', '还没有任务。可以新建纪要，或让研究任务核对资料并生成文档。'));
     for (const task of work.tasks) {
       const item = node('button', `task-item${work.selected === task.id ? ' selected' : ''}`);
       item.type = 'button';
@@ -101,7 +146,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       bar.style.width = `${Math.round(100 * task.steps_done / Math.max(1, task.steps_total))}%`;
       progress.append(bar);
       const step = active(task.status) && task.current_step ? ` · ${task.current_step}${task.progress ? ` ${task.progress}` : ''}` : '';
-      item.append(head, progress, node('small', '', `${task.kind === 'action' ? '操作' : '纪要'} · ${origins[task.origin] || task.origin} · ${when(task.created_at)}${step}`));
+      item.append(head, progress, node('small', '', `${taskKinds[task.kind] || task.kind} · ${origins[task.origin] || task.origin} · ${when(task.created_at)}${step}`));
       item.addEventListener('click', () => showTask(task.id).catch(error => toast(error.message, 'error')));
       list.append(item);
     }
@@ -126,6 +171,110 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     return row;
   }
 
+  const researchRole = (child, index = 0) => ({
+    planner: '研究主任务',
+    organize: '资料整理', organizer: '资料整理', materials: '资料整理', source_researcher: '资料整理',
+    verify: '证据核对', verifier: '证据核对', review: '证据核对', reviewer: '证据核对', evidence_reviewer: '证据核对',
+  })[child?.name] || child?.name || `只读子任务 ${index + 1}`;
+  const researchAgentName = value => typeof value === 'string'
+    ? researchRole({ name: value })
+    : value?.name ? researchRole(value) : safeLines(value)[0] || '研究任务';
+
+  function researchOverview(task) {
+    const params = task.params || {};
+    const research = (task.steps || []).find(step => step.name === 'research');
+    const researchDetail = research?.detail || {};
+    const calls = allCalls(task);
+    const usage = callUsage(calls);
+    const selectedSessions = new Set(Array.isArray(params.session_ids) ? params.session_ids.filter(Boolean) : []);
+    if (params.use_session && task.session_id) selectedSessions.add(task.session_id);
+    const materialIds = Array.isArray(params.material_ids) ? params.material_ids : [];
+    const materialNames = materialIds.map(id => work.materials.find(item => item.id === id)?.name).filter(Boolean);
+    const savePath = params.save_path || `documents/${task.id}.md`;
+    const children = Array.isArray(researchDetail.children) ? researchDetail.children : [];
+    const completedChildren = children.filter(child => ['succeeded', 'completed'].includes(child.status)).length;
+
+    const overview = node('section', 'research-overview');
+    const scope = node('div', 'research-source-grid');
+    const scopeItem = (label, value, hint = '') => {
+      const item = node('div', 'research-source-item');
+      item.append(node('span', '', label), node('strong', '', value));
+      if (hint) item.append(node('small', '', hint));
+      return item;
+    };
+    const sessionLabel = selectedSessions.size
+      ? `${selectedSessions.size} 个会话${selectedSessions.has(task.session_id) ? '（含当前会话）' : ''}`
+      : '不含会话原文';
+    const materialsLabel = materialIds.length
+      ? (materialNames.length === materialIds.length ? materialNames.join('、') : `${materialIds.length} 份已选资料`)
+      : '未选择资料';
+    scope.append(
+      scopeItem('会话范围', sessionLabel),
+      scopeItem('资料范围', materialsLabel, materialIds.length ? '仅使用任务启动时选定的资料快照' : ''),
+      scopeItem('保存位置', savePath, params.overwrite ? '已允许覆盖；执行前仍需确认' : '工作目录内的 Markdown 文件'),
+    );
+    overview.append(node('h4', '', '研究范围'), scope);
+    if (params.instructions) {
+      const brief = node('div', 'research-brief');
+      brief.append(node('span', '', '任务要求'), node('p', '', params.instructions));
+      overview.append(brief);
+    }
+
+    const metrics = node('div', 'research-metrics');
+    const metric = (label, value, hint) => {
+      const item = node('div', 'research-metric');
+      item.append(node('span', '', label), node('strong', '', value), node('small', '', hint));
+      return item;
+    };
+    metrics.append(
+      metric('研究职责', children.length ? `${completedChildren}/${children.length} 完成` : '等待分派', children.length ? children.map(researchRole).join('、') : '主任务会安排资料整理与证据核对'),
+      metric('模型调用', `${usage.calls} 次`, usage.hasTokens ? (usage.input || usage.output ? `输入 ${compactNumber(usage.input)} · 输出 ${compactNumber(usage.output)} tokens` : `共 ${compactNumber(usage.total)} tokens`) : '服务尚未返回 token 用量'),
+      metric('实际费用', usage.hasCost ? `US$${usage.cost < .0001 ? usage.cost.toPrecision(2) : usage.cost.toFixed(4)}` : '未返回', '只汇总服务实际返回的费用，不作价格估算'),
+    );
+    overview.append(metrics);
+
+    if (researchDetail.plan?.length) {
+      const plan = node('div', 'research-detail-block');
+      plan.append(node('h4', '', '研究计划'), lineList(researchDetail.plan, 'research-plan'));
+      overview.append(plan);
+    }
+    if (children.length) {
+      const agents = node('div', 'research-detail-block');
+      const list = node('div', 'research-agents');
+      for (const [index, child] of children.entries()) {
+        const row = node('div', 'research-agent');
+        row.append(node('strong', '', researchRole(child, index)), badge(child.status || 'pending'));
+        list.append(row);
+      }
+      agents.append(node('h4', '', '研究职责进度'), list);
+      overview.append(agents);
+    }
+    if (researchDetail.review_summary || researchDetail.uncertainties?.length) {
+      const review = node('div', 'research-review');
+      review.append(node('h4', '', '证据核对'));
+      if (researchDetail.review_summary) review.append(node('p', 'research-review-summary', researchDetail.review_summary));
+      if (researchDetail.review_summary) review.append(node('small', 'research-review-note', '“有来源支持”是模型对所选资料的核对结果，不等于事实已经认证。'));
+      if (researchDetail.uncertainties?.length) {
+        review.append(node('strong', 'research-subtitle', '待确认项'), lineList(researchDetail.uncertainties, 'research-uncertainties'));
+      }
+      overview.append(review);
+    } else if (research?.status === 'running') {
+      const review = node('div', 'research-review pending');
+      review.append(node('h4', '', '证据核对'), node('p', '', '只读研究任务正在整理资料并核对证据，结果会在这里更新。'));
+      overview.append(review);
+    }
+
+    const saveCall = (task.tool_calls || []).find(call => call.target === savePath || /(?:save|write).*artifact|write_file/i.test(call.tool || ''));
+    if (task.status === 'waiting_approval' || saveCall?.status === 'awaiting_approval') {
+      overview.append(node('p', 'approval-warning research-save-state', `文档已生成，正在等待你批准保存到 ${saveCall?.target || savePath}。批准前不会写入文件。`));
+    } else if (saveCall?.status === 'succeeded') {
+      overview.append(node('p', 'research-save-state ok', `已保存到 ${saveCall.target || savePath}。`));
+    } else if (['denied', 'expired', 'unknown', 'failed'].includes(saveCall?.status)) {
+      overview.append(node('p', 'research-save-state warn', `文档没有保存：${statusLabels[saveCall.status] || saveCall.status}。`));
+    }
+    return overview;
+  }
+
   async function showTask(id) {
     work.selected = id;
     renderTaskList();
@@ -137,7 +286,9 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     detail.replaceChildren();
     const head = node('div', 'task-detail-head');
     const title = node('div');
-    title.append(node('h3', '', task.title), node('small', '', `${origins[task.origin] || task.origin}发起 · ${when(task.created_at)}`));
+    const titleLine = node('div', 'task-title-line');
+    titleLine.append(node('h3', '', task.title), node('span', 'tag', taskKinds[task.kind] || task.kind));
+    title.append(titleLine, node('small', '', `${origins[task.origin] || task.origin}发起 · ${when(task.created_at)}`));
     const actions = node('div', 'panel-tools');
     if (active(task.status)) actions.append(action('取消任务', 'button ghost small danger-hover', async () => { await client.request(`/api/tasks/${id}/cancel`, { method: 'POST' }); await refreshTasks(); }));
     if (['interrupted', 'failed', 'cancelled'].includes(task.status)) actions.append(action('继续', 'button ghost small', async () => { await client.request(`/api/tasks/${id}/resume`, { method: 'POST' }); await refreshTasks(); }));
@@ -151,19 +302,21 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     head.append(title, badge(task.status), actions);
     detail.append(head);
     if (task.error) detail.append(node('p', 'task-error', task.error));
+    if (task.kind === 'research') detail.append(researchOverview(task));
     const steps = node('ol', 'step-list');
     for (const step of task.steps) {
       const seconds = step.started_at && step.finished_at ? ` · ${((new Date(step.finished_at) - new Date(step.started_at)) / 1000).toFixed(1)} 秒` : '';
-      const calls = step.detail?.calls?.length ? ` · 模型调用 ${step.detail.calls.length} 次` : '';
+      const calls = Array.isArray(step.detail?.calls) && step.detail.calls.length ? ` · ${usageText(step.detail.calls)}` : '';
+      const agent = step.detail?.agent ? ` · ${researchAgentName(step.detail.agent)}` : '';
       const running = step.status === 'running';
       const retries = step.detail?.retries?.length ? (running && step.detail.retrying ? ` · 模型服务波动，正在重试 ${step.detail.retrying}` : ` · 重试 ${step.detail.retries.length} 次`) : '';
       const item = node('li', `step ${step.status}`);
-      item.append(node('span', 'step-dot'), node('strong', '', step.title), node('small', '', `${statusLabels[step.status] || step.status}${step.detail?.progress && running ? ` · 第 ${step.detail.progress} 批` : ''}${seconds}${calls}${retries}`));
+      item.append(node('span', 'step-dot'), node('strong', '', step.title), node('small', '', `${statusLabels[step.status] || step.status}${step.detail?.progress && running ? ` · ${step.detail.progress}` : ''}${agent}${seconds}${calls}${retries}`));
       steps.append(item);
     }
     detail.append(node('h4', '', '步骤'), steps);
-    if (task.tool_calls.length) detail.append(node('h4', '', '操作记录'), ...task.tool_calls.map(callRow));
-    if (task.artifacts.length) {
+    if (task.tool_calls?.length) detail.append(node('h4', '', '操作记录'), ...task.tool_calls.map(callRow));
+    if (task.artifacts?.length) {
       detail.append(node('h4', '', '产物'));
       for (const artifact of task.artifacts) {
         const row = node('div', 'artifact-row');
@@ -219,16 +372,19 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   document.body.append(taskDialog);
   const taskForm = $('form', taskDialog);
   const field = name => taskForm.elements.namedItem(name);
-  $('#new-task').addEventListener('click', () => busy($('#new-task'), async () => {
-    await refreshMaterials();
-    const picker = $('.material-picker', taskDialog);
+  function fillMaterialPicker(dialog, emptyText) {
+    const picker = $('.material-picker', dialog);
     picker.replaceChildren(...(work.materials.length ? work.materials.map(item => {
       const label = node('label');
       const box = node('input');
       box.type = 'checkbox'; box.name = 'material'; box.value = item.id;
       label.append(box, document.createTextNode(`${item.name} · ${item.chunk_count} 段`));
       return label;
-    }) : [node('small', 'field-hint', '资料库里还没有资料，可以只整理当前会话。')]));
+    }) : [node('small', 'field-hint', emptyText)]));
+  }
+  $('#new-task').addEventListener('click', () => busy($('#new-task'), async () => {
+    await refreshMaterials();
+    fillMaterialPicker(taskDialog, '资料库里还没有资料，可以只整理当前会话。');
     $('.field-error', taskDialog).hidden = true;
     taskDialog.showModal();
   }));
@@ -254,6 +410,69 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     });
   });
 
+  const researchDialog = node('dialog', 'task-dialog research-task-dialog');
+  researchDialog.innerHTML = `<form method="dialog"><h2>新建研究文档任务</h2>
+    <p class="research-dialog-lead">GreatSage 会在后台规划研究、整理选定资料并核对证据，再生成带出处的 Markdown 文档。</p>
+    <label class="field"><span>标题</span><input name="task_title" maxlength="80" placeholder="例如：实时语音 Agent 技术方案调研" required /></label>
+    <label class="field"><span>研究问题与交付要求</span><textarea name="instructions" rows="5" maxlength="4000" placeholder="说明要回答的问题、重点比较项和期望的文档结构。" required></textarea></label>
+    <label class="switch-row"><span><strong>包含当前会话原文</strong><small>把当前会话作为研究来源之一</small></span><input type="checkbox" role="switch" name="use_session" checked /></label>
+    <div class="field"><span>资料</span><div class="material-picker"></div><small class="field-hint">研究代理只能读取这里选定的资料快照。本版最多使用 8 段来源、共 64,000 字符，单段最多 32,000；超出时会要求缩小范围，不会自动截断原文。</small></div>
+    <label class="field"><span>保存位置</span><input name="save_path" maxlength="240" placeholder="留空则保存为 documents/任务ID.md" /><small class="field-hint">工作目录内的相对 .md 路径，例如 documents/realtime-agent.md</small></label>
+    <label class="switch-row"><span><strong>允许覆盖同名文件</strong><small>默认关闭；即使开启，写入前仍需点击批准</small></span><input type="checkbox" role="switch" name="overwrite" /></label>
+    <div class="research-flow" aria-label="研究流程"><span>收集来源</span><i></i><span>规划 · 整理 · 核对</span><i></i><span>生成文档</span><i></i><span>审批保存</span></div>
+    <p class="research-approval-note">任务会在后台运行。文档生成后会出现在“待确认的操作”中；只有你点击批准才会写入工作目录，开始任务不会下载文件。</p>
+    <p class="field-error" hidden></p>
+    <div class="dialog-actions"><button type="button" class="button ghost research-cancel">取消</button><button class="button primary" value="start">开始研究</button></div></form>`;
+  document.body.append(researchDialog);
+  const researchForm = $('form', researchDialog);
+  const researchField = name => researchForm.elements.namedItem(name);
+  $('.research-cancel', researchDialog).addEventListener('click', () => researchDialog.close());
+  $('#new-research-task').addEventListener('click', () => busy($('#new-research-task'), async () => {
+    await refreshMaterials();
+    fillMaterialPicker(researchDialog, '资料库里还没有资料，可以使用当前会话；也可以先去资料库导入 Markdown 文件。');
+    $('.field-error', researchDialog).hidden = true;
+    researchDialog.showModal();
+  }));
+  researchForm.addEventListener('input', () => { $('.field-error', researchDialog).hidden = true; });
+  researchForm.addEventListener('submit', event => {
+    if (event.submitter?.value !== 'start') return;
+    event.preventDefault();
+    const body = {
+      kind: 'research',
+      title: researchField('task_title').value.trim(),
+      instructions: researchField('instructions').value.trim(),
+      material_ids: [...researchForm.querySelectorAll('[name=material]:checked')].map(item => item.value),
+      use_session: researchField('use_session').checked,
+      save_path: researchField('save_path').value.trim(),
+      overwrite: researchField('overwrite').checked,
+    };
+    const error = $('.field-error', researchDialog);
+    if (!body.title || !body.instructions) {
+      error.textContent = '请填写标题和研究问题。';
+      error.hidden = false;
+      return;
+    }
+    if (!body.use_session && !body.material_ids.length) {
+      error.textContent = '请至少包含当前会话，或选择一份资料。';
+      error.hidden = false;
+      return;
+    }
+    const segments = body.save_path.replace(/\\/g, '/').split('/');
+    if (body.save_path && (/^[\\/]/.test(body.save_path) || body.save_path.includes(':') || segments.includes('..') || !/\.md$/i.test(body.save_path))) {
+      error.textContent = '保存位置必须是工作目录内、不含“..”的相对 .md 路径。';
+      error.hidden = false;
+      return;
+    }
+    busy(event.submitter, async () => {
+      const task = await client.request('/api/tasks', { method: 'POST', body });
+      researchDialog.close();
+      researchForm.reset();
+      work.selected = task.id;
+      await refreshTasks();
+      toast('研究任务已在后台开始；需要保存时会在任务页等待你批准。');
+    });
+  });
+
   // ---- artifacts ----------------------------------------------------------
   const artifactDialog = node('dialog', 'record-dialog artifact-dialog');
   artifactDialog.innerHTML = `<div class="dialog-actions"><select class="artifact-version" aria-label="选择版本"></select><button type="button" class="button small ghost artifact-close">关闭</button></div>
@@ -265,6 +484,21 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     <div class="panel-tools artifact-actions"><button type="button" class="button primary small artifact-save">保存为新版本</button><button type="button" class="button ghost small artifact-regenerate">按修改意见重新生成</button><button type="button" class="button ghost small artifact-export">导出 .md</button><button type="button" class="button subtle small danger-hover artifact-delete">删除</button></div>`;
   document.body.append(artifactDialog);
   const inDialog = selector => $(selector, artifactDialog);
+  let artifactRequestGeneration = 0;
+  let artifactOpenIntent = false;
+
+  function invalidateArtifactDialog() {
+    artifactOpenIntent = false;
+    artifactRequestGeneration += 1;
+    inDialog('.artifact-body').replaceChildren();
+    inDialog('.citation-list').replaceChildren();
+  }
+  function closeArtifactDialog() {
+    invalidateArtifactDialog();
+    if (artifactDialog.open) artifactDialog.close();
+  }
+  artifactDialog.addEventListener('cancel', invalidateArtifactDialog);
+  artifactDialog.addEventListener('close', invalidateArtifactDialog);
 
   function todoTable(artifact) {
     const table = node('div', 'todo-table');
@@ -285,8 +519,12 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     return table;
   }
 
-  async function openArtifact(id, version) {
+  async function openArtifact(id, version, requestOpen = true) {
+    if (requestOpen) artifactOpenIntent = true;
+    else if (!artifactOpenIntent) return;
+    const generation = ++artifactRequestGeneration;
     const artifact = await client.request(`/api/artifacts/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`);
+    if (!artifactOpenIntent || generation !== artifactRequestGeneration) return;
     work.artifact = artifact;
     inDialog('h2').textContent = artifact.title;
     inDialog('.artifact-badges').replaceChildren(node('span', 'tag', kinds[artifact.kind] || artifact.kind), badge(artifact.status));
@@ -312,13 +550,14 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     if (!artifactDialog.open) artifactDialog.showModal();
   }
 
-  inDialog('.artifact-close').addEventListener('click', () => artifactDialog.close());
-  inDialog('.artifact-version').addEventListener('change', event => busy(event.target, () => openArtifact(work.artifact.id, Number(event.target.value))));
+  inDialog('.artifact-close').addEventListener('click', closeArtifactDialog);
+  inDialog('.artifact-version').addEventListener('change', event => busy(event.target, () => openArtifact(work.artifact.id, Number(event.target.value), false)));
   inDialog('.artifact-save').addEventListener('click', () => busy(inDialog('.artifact-save'), async () => {
+    const id = work.artifact.id;
     const content = inDialog('.artifact-editor').value;
     if (!content.trim()) throw new Error('内容不能为空。');
-    await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}`, { method: 'PUT', body: { content } });
-    await openArtifact(work.artifact.id);
+    await client.request(`/api/artifacts/${encodeURIComponent(id)}`, { method: 'PUT', body: { content } });
+    await openArtifact(id, undefined, false);
     toast('已保存为新版本，引用仍指向原来的来源。');
   }));
   inDialog('.artifact-regenerate').addEventListener('click', () => { inDialog('.regenerate-form').hidden = false; inDialog('.regenerate-form textarea').focus(); });
@@ -326,7 +565,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   inDialog('.regenerate-start').addEventListener('click', () => busy(inDialog('.regenerate-start'), async () => {
     if (work.artifact.kind === 'todos' && !await confirmAction('重新生成待办清单？', '新清单会替换当前的待办，你手动修改过的条目会被覆盖；旧清单保留在版本记录中。', '重新生成')) return;
     const task = await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}/regenerate`, { method: 'POST', body: { instructions: inDialog('.regenerate-form textarea').value.trim() } });
-    artifactDialog.close();
+    closeArtifactDialog();
     work.selected = task.id;
     await refreshTasks();
     toast('已开始重新生成，完成后会成为新的版本。');
@@ -341,7 +580,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   inDialog('.artifact-delete').addEventListener('click', () => busy(inDialog('.artifact-delete'), async () => {
     if (!await confirmAction('删除这份产物？', '会删除它的所有版本和引用记录。已经导出的文件不受影响。')) return;
     await client.request(`/api/artifacts/${encodeURIComponent(work.artifact.id)}`, { method: 'DELETE' });
-    artifactDialog.close();
+    closeArtifactDialog();
     await refreshTasks();
     toast('产物已删除。');
   }));
@@ -431,7 +670,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     init: () => Promise.all([refreshApprovals(), loadTools()]),
     fillSettings: () => editors.forEach(render => render()),
     async refresh(view) {
-      if (view === 'tasks') await Promise.all([refreshTasks(), refreshApprovals()]);
+      if (view === 'tasks') { await Promise.all([refreshApprovals(), refreshMaterials()]); await refreshTasks(); }
       if (view === 'materials') await refreshMaterials();
     },
     onEvent(event) {

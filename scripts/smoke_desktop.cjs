@@ -233,6 +233,159 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     await until(() => evaluate("document.querySelector('.task-dialog').open && document.querySelectorAll('.task-dialog [name=material]').length === 1"), 'new task dialog');
     await evaluate("document.querySelector('.task-dialog button[value=cancel]').click()");
     check(true, 'New task dialog lists imported materials');
+
+    // Bounded research UI fixture: all task, approval and artifact responses stay
+    // inside this renderer. It verifies the desktop contract without starting a
+    // backend research job, model request, filesystem write or download.
+    await evaluate(`(() => {
+      const fixture = window.__researchSmoke = {
+        originalFetch: window.fetch, posts: [], approvals: true, approveCalls: [],
+        holdArtifact: false, artifactReleases: [], id: 'synthetic-research-task',
+      };
+      const stamp = new Date().toISOString();
+      fixture.call = {
+        id: 'synthetic-research-save', task_id: fixture.id, call_key: 'research-save:1:fixture',
+        tool: 'export_artifact', arguments: { artifact_id: 'synthetic-research-document', version: 1,
+          content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          path: 'documents/smoke-research.md', overwrite: false },
+        effect: 'write', target: 'documents/smoke-research.md', decision: 'ask',
+        reason: '研究文档写入工作目录前需要确认。', status: 'awaiting_approval', approval: null,
+        result: null, undo: null, error: null, created_at: stamp, updated_at: stamp,
+      };
+      fixture.approval = {
+        id: fixture.call.id, task_id: fixture.id, task_title: 'SYNTHETIC 研究文档',
+        tool: 'export_artifact', title: '把产物导出到工作目录', effect: 'write', effect_label: '写入',
+        target: fixture.call.target, arguments: fixture.call.arguments, reason: fixture.call.reason,
+        origin: 'console', created_at: stamp, task_scope: false, voice: false,
+      };
+      fixture.summary = {
+        id: fixture.id, kind: 'research', title: 'SYNTHETIC 研究文档', status: 'waiting_approval',
+        origin: 'console', session_id: ${JSON.stringify(sessionId)}, trace_id: 'synthetic-research-trace', error: null,
+        created_at: stamp, updated_at: stamp, steps_done: 3, steps_total: 4, pending_approvals: 1,
+        current_step: '审批并保存文档', progress: '', artifact_ids: ['synthetic-research-document'],
+      };
+      fixture.detail = {
+        ...fixture.summary,
+        params: { material_ids: [], session_ids: [${JSON.stringify(sessionId)}], instructions: '',
+          save_path: 'documents/smoke-research.md', overwrite: false }, state: {},
+        steps: [
+          { task_id: fixture.id, ordinal: 0, name: 'collect', title: '收集来源', status: 'succeeded', detail: {}, started_at: stamp, finished_at: stamp },
+          { task_id: fixture.id, ordinal: 1, name: 'research', title: '规划、整理与证据核对', status: 'succeeded',
+            detail: { agent: 'planner', plan: ['整理选定来源', '逐项核对证据'],
+              children: [{ name: 'planner', status: 'completed' }, { name: 'source_researcher', status: 'completed' },
+                { name: 'evidence_reviewer', status: 'completed' }],
+              review_summary: '核对 3 项，其中 1 项有来源支持。',
+              uncertainties: ['SYNTHETIC 截止时间仍待确认'],
+              calls: [{ purpose: 'research_planner', latency_ms: 42, status: 'completed', usage: { prompt_tokens: 11, completion_tokens: 7 } }] },
+            started_at: stamp, finished_at: stamp },
+          { task_id: fixture.id, ordinal: 2, name: 'compose', title: '生成可审阅文档', status: 'succeeded', detail: {}, started_at: stamp, finished_at: stamp },
+          { task_id: fixture.id, ordinal: 3, name: 'save', title: '审批并保存文档', status: 'running', detail: {}, started_at: stamp, finished_at: null },
+        ],
+        tool_calls: [fixture.call],
+        artifacts: [{ id: 'synthetic-research-document', task_id: fixture.id, kind: 'document',
+          title: 'SYNTHETIC 研究文档', status: 'active', current_version: 1, created_at: stamp, updated_at: stamp }],
+      };
+      fixture.artifact = version => ({
+        id: 'synthetic-research-document', task_id: fixture.id, kind: 'document', title: 'SYNTHETIC 研究文档',
+        status: 'active', version, current_version: 2, content: version === 2 ? 'SYNTHETIC LATE ARTIFACT VERSION' : '# SYNTHETIC 研究文档\\n\\n有来源支持的结论 [S1]。',
+        versions: [{ version: 1, origin: 'generated', created_at: stamp }, { version: 2, origin: 'edited', created_at: stamp }],
+        citations: [{ marker: 'S1', valid: true, label: '资料 plan.md · 时间', excerpt: '发布时间需要在周五前确认。' }],
+        unknown_markers: [], todos: [],
+      });
+      const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      window.fetch = async (url, options = {}) => {
+        const target = new URL(url, location.href), route = target.pathname, method = options.method || 'GET';
+        if (route === '/api/tasks' && method === 'POST') {
+          const body = JSON.parse(options.body || '{}');
+          fixture.posts.push(body);
+          fixture.summary.title = body.title;
+          fixture.detail.title = body.title;
+          fixture.detail.params = { material_ids: body.material_ids, session_ids: [${JSON.stringify(sessionId)}],
+            instructions: body.instructions, save_path: body.save_path || 'documents/' + fixture.id + '.md', overwrite: body.overwrite };
+          fixture.call.target = fixture.detail.params.save_path;
+          fixture.call.arguments.path = fixture.detail.params.save_path;
+          fixture.approval.target = fixture.detail.params.save_path;
+          fixture.approval.arguments = fixture.call.arguments;
+          return json(fixture.summary);
+        }
+        if (route === '/api/tasks' && method === 'GET') return json([fixture.summary]);
+        if (route === '/api/tasks/' + fixture.id && method === 'GET') return json(fixture.detail);
+        if (route === '/api/approvals' && method === 'GET') return json(fixture.approvals ? [fixture.approval] : []);
+        if (route === '/api/tool-calls/' + fixture.call.id + '/approve' && method === 'POST') {
+          fixture.approveCalls.push({ method, body: JSON.parse(options.body || '{}') });
+          fixture.approvals = false;
+          fixture.call.status = 'succeeded';
+          return json(fixture.call);
+        }
+        if (route === '/api/artifacts/synthetic-research-document' && method === 'GET') {
+          const version = Number(target.searchParams.get('version') || 1);
+          if (fixture.holdArtifact) return new Promise(resolve => fixture.artifactReleases.push(() => resolve(json(fixture.artifact(version)))));
+          return json(fixture.artifact(version));
+        }
+        return fixture.originalFetch.call(window, url, options);
+      };
+      fixture.releaseArtifacts = () => {
+        fixture.holdArtifact = false;
+        for (const release of fixture.artifactReleases.splice(0)) release();
+      };
+    })()`);
+    await evaluate("document.querySelector('#new-research-task').click()");
+    await until(() => evaluate("document.querySelector('.research-task-dialog').open && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
+    await evaluate(`(() => {
+      const form = document.querySelector('.research-task-dialog form');
+      form.elements.task_title.value = 'SYNTHETIC 研究文档';
+      form.elements.instructions.value = '比较资料并列出无法确认的结论。';
+      form.elements.use_session.checked = true;
+      form.elements.material.checked = true;
+      form.elements.save_path.value = 'documents/smoke-research.md';
+      form.requestSubmit(form.querySelector('button[value=start]'));
+    })()`);
+    await until(() => evaluate("window.__researchSmoke.posts.length === 1 && document.querySelector('#task-detail')?.textContent.includes('SYNTHETIC 截止时间仍待确认')"), 'synthetic research detail');
+    check(await evaluate(`(() => {
+      const body = window.__researchSmoke.posts[0];
+      return body.kind === 'research' && body.title === 'SYNTHETIC 研究文档'
+        && body.instructions === '比较资料并列出无法确认的结论。'
+        && body.use_session === true && body.material_ids.length === 1
+        && body.save_path === 'documents/smoke-research.md' && body.overwrite === false;
+    })()`), 'Research form sends bounded flat task payload');
+    check(await evaluate(`(() => {
+      const detail = document.querySelector('#task-detail'), steps = [...detail.querySelectorAll('.step')];
+      return steps.length === 4
+        && steps.map(node => node.querySelector('strong').textContent).join('|') === '收集来源|规划、整理与证据核对|生成可审阅文档|审批并保存文档'
+        && detail.querySelector('.research-plan').textContent.includes('逐项核对证据')
+        && detail.querySelector('.research-agents').textContent.includes('研究主任务')
+        && detail.querySelector('.research-agents').textContent.includes('资料整理')
+        && detail.querySelector('.research-agents').textContent.includes('证据核对')
+        && detail.querySelector('.research-agents').textContent.match(/已完成/g)?.length === 3
+        && detail.querySelector('.research-review').textContent.includes('核对 3 项，其中 1 项有来源支持。')
+        && detail.querySelector('.research-review').textContent.includes('不等于事实已经认证')
+        && detail.querySelector('.research-review').textContent.includes('SYNTHETIC 截止时间仍待确认');
+    })()`), 'Research detail shows four stages, plan, child roles and evidence review');
+    check(await evaluate(`(() => {
+      const metric = [...document.querySelectorAll('.research-metric')].find(node => node.firstElementChild.textContent === '实际费用');
+      return metric?.querySelector('strong').textContent === '未返回' && !metric.textContent.includes('US$0');
+    })()`), 'Research usage never turns unknown cost into zero');
+    await evaluate("document.querySelector('#refresh-tasks').click()");
+    await until(() => evaluate("Boolean(document.querySelector('.approval-card')) && !document.querySelector('#refresh-tasks').disabled"), 'synthetic research save approval');
+    check(await evaluate(`(() => {
+      const card = document.querySelector('.approval-card');
+      const labels = [...card.querySelectorAll('button')].map(node => node.textContent.trim());
+      return labels.length === 2 && labels[0] === '允许一次' && labels[1] === '拒绝'
+        && !card.querySelector('.voice-hint') && !card.textContent.includes('本任务内都允许');
+    })()`), 'Research save approval exposes click-only one-time controls');
+    await screenshot(main, 'research-task.png');
+    await evaluate("document.querySelector('.approval-card button').click()");
+    await until(() => evaluate("window.__researchSmoke.approveCalls.length === 1 && document.querySelector('#approvals-panel').hidden"), 'research save click approval');
+    check(await evaluate("window.__researchSmoke.approveCalls[0].method === 'POST' && window.__researchSmoke.approveCalls[0].body.scope === 'once'"), 'Research save sends one-time click approval');
+    await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
+    await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelector('.artifact-editor').value.includes('有来源支持的结论')"), 'research artifact detail');
+    await evaluate("window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='2';select.dispatchEvent(new Event('change',{bubbles:true}))");
+    await until(() => evaluate("window.__researchSmoke.artifactReleases.length === 1"), 'held artifact version response');
+    await evaluate("document.querySelector('.artifact-close').click();window.__researchSmoke.releaseArtifacts()");
+    await until(() => evaluate("!document.querySelector('.artifact-version').disabled"), 'late artifact response settled');
+    check(await evaluate("!document.querySelector('.artifact-dialog').open && !document.querySelector('.artifact-body').children.length && !document.querySelector('.citation-list').children.length && !document.body.textContent.includes('SYNTHETIC LATE ARTIFACT VERSION')"), 'Closing artifact detail invalidates a late version response');
+    await evaluate("window.fetch=window.__researchSmoke.originalFetch;delete window.__researchSmoke");
+    check(!(await request('/api/tasks')).some(task => task.id === 'synthetic-research-task'), 'Research UI fixture never starts a backend model task');
     await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_approval]').click()");
     await until(() => evaluate("document.querySelector('#confirm-dialog').open && document.querySelector('#confirm-title').textContent.includes('语音确认')"), 'voice approval warning');
     await evaluate("document.querySelector('#confirm-dialog button[value=cancel]').click()");
