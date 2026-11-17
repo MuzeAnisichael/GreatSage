@@ -114,7 +114,7 @@ def test_inspector_reports_messages_context_and_memory_without_archived_bodies(c
     assert response.json()["memory"]["active_memories"] == 1
     assert response.json()["entity_memory"]["entities"] == 0
     assert response.json()["entity_memory"]["extraction"]["enabled"] is False
-    assert response.json()["multi_agent"] == "planned"
+    assert response.json()["multi_agent"] == "bounded_research"
     session.delete(f"/api/history/{source['id']}")
     record = next(row for row in session.get("/api/inspector").json()["requests"] if row["id"] == snapshot)
     assert record["metadata"]["content_status"] == "source_deleted"

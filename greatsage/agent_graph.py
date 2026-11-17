@@ -49,6 +49,12 @@ class AgentGraphs:
                 await self.saver.setup()
                 self.graphs = {"minutes": self._minutes(), "action": self._action()}
 
+    def graph(self, kind):
+        # Ordinary chat/minutes do not import the research framework.
+        if kind == "research" and kind not in self.graphs:
+            self.graphs[kind] = self._research()
+        return self.graphs[kind]
+
     async def close(self):
         await self.stack.aclose()
 
@@ -103,6 +109,21 @@ class AgentGraphs:
         graph.add_edge("reply", END)
         return graph.compile(checkpointer=self.saver, name="greatsage_action_v1")
 
+    def _research(self):
+        from .research import ResearchWorkflow
+        workflow = ResearchWorkflow(self.manager)
+        graph = StateGraph(ControlState)
+        names = ("collect", "research", "compose", "save")
+        for name in names:
+            async def work(task, step=name):
+                await self.manager._step(task["id"], step, lambda: getattr(workflow, step)(task))
+            graph.add_node(name, self._node(name, work))
+        graph.add_edge(START, names[0])
+        for left, right in zip(names, names[1:]):
+            graph.add_edge(left, right)
+        graph.add_edge(names[-1], END)
+        return graph.compile(checkpointer=self.saver, name="greatsage_research_v1")
+
     async def _tool(self, task):
         manager, state = self.manager, task["state"]
         if manager.memory.step(task["id"], "act")["status"] == "succeeded":
@@ -155,7 +176,7 @@ class AgentGraphs:
 
     async def run(self, task, approval=None):
         await self.ensure()
-        graph, config = self.graphs[task["kind"]], self.config(task["id"])
+        graph, config = self.graph(task["kind"]), self.config(task["id"])
         with tracing_context(enabled=False):
             saved = await graph.aget_state(config)
             value = Command(resume=approval) if approval is not None else (
@@ -171,7 +192,7 @@ class AgentGraphs:
     async def inspect(self, task):
         await self.ensure()
         with tracing_context(enabled=False):
-            state = await self.graphs[task["kind"]].aget_state(self.config(task["id"]))
+            state = await self.graph(task["kind"]).aget_state(self.config(task["id"]))
         return {"engine": "langgraph", "graph_version": 1, "task_id": task["id"],
                 "node": self.nodes.get(task["id"]), "next": list(state.next),
                 "checkpoint_id": (state.config or {}).get("configurable", {}).get("checkpoint_id"),
