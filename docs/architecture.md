@@ -164,6 +164,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 | tool_call（v0.3） | 工具名、效果、操作对象、状态、授权决策和错误；完整参数保存在任务的工具调用记录中 |
 | materials_updated、artifact_updated、artifact_export（v0.3） | 资料、产物变化与导出 |
 | agent_node、mcp_updated（v0.4） | 图节点控制状态、外部工具目录变化与监控刷新 |
+| research_validation（v0.7） | 角色、工具、schema 路径、校验类别、调用序号和是否进行有限格式修正；不含被拒绝的参数值 |
 
 慢订阅者优先丢弃普通日志事件，不能维持完整文字流时发送显式重载标记，避免界面误认为缺段内容完整。审计记录系统实际输入和结果，不声称能读取模型内部思维链。
 
@@ -251,7 +252,7 @@ flowchart TD
     Start["TaskManager.start_research → ResearchWorkflow.start"] -. "_schedule" .-> Run["TaskManager._run → AgentGraphs.run"]
     Run --> Collect["collect：ResearchWorkflow.collect"]
     Collect --> Bind["来源 ID／哈希 + research_sources 关联"]
-    Collect --> Research["research：ResearchWorkflow.research → run_delegation"]
+    Collect --> Research["research：ResearchWorkflow.research"]
     subgraph Inner["临时框架状态：无内层 checkpoint／store"]
         Planner["planner：write_todos 发布计划"] --> First["task → source_researcher"]
         First --> Findings["read_source → submit_findings"]
@@ -259,7 +260,8 @@ flowchart TD
         Second --> Review["独立 read_source → submit_review"]
         Review --> Confirm["planner：submit_report 仅确认子报告"]
     end
-    Research --> Planner
+    Research -. "空 Context 新 task；直接 await" .-> Delegate["run_delegation"]
+    Delegate --> Planner
     Confirm --> Validate["validate_report：来源、引文、逐项覆盖校验"]
     Validate --> Compose["compose：render_report → create_artifact"]
     Compose --> Save["save：TaskManager._call export_artifact"]
@@ -273,6 +275,8 @@ flowchart TD
 
 `ProviderDelegationModel` 复用 `Providers.stream_chat`，在每次实际请求前核对上下文及累计预算，保存角色级快照／用量／结局。自有结构工具的 canonical Pydantic schema 在 `bind_tools` 中恢复，避免 `StructuredTool` 转换丢失顶层 `additionalProperties` 等约束；返回参数先经过 JSON Schema 与严格 Pydantic 校验，再进入框架派发。来源 ID、完整原文哈希和逐字连续引文由应用再次核对；非法证据使任务失败。核对状态 `supported/uncertain/conflict/unsupported` 是模型判断，不能证明语义蕴含或事实为真。程序以 review 渲染文档，不再让模型自由改写；自由文本中的 `[S#]` 被转义，仅合法 evidence 映射能生成引用。
 
+格式错误允许有限修正：在一次 research 尝试中，每个角色累计至多一次 JSON／schema 修正，失败请求与修正请求都计入原有请求数、token 预算、用量和时间限制。`_agenerate()` 只捕获 `_SchemaFailure`，保留原授权上下文并附本地 schema 反馈，不重放被拒绝的模型正文或参数；来源不匹配、权限／调用边界错误、取消与过期身份不走修正重试。安全诊断写入步骤 `calls[].validation` 和 `research_validation` 事件，仅含本地 schema 字段路径、校验类别等白名单元数据；失败调用的用量与结局仍保留。
+
 | 边界 | 当前实现 |
 | --- | --- |
 | 来源容量 | 至多 8 段来源，共 64,000 字符，单段至多 32,000 字符；是会话消息／资料片段数，不是文件数 |
@@ -280,6 +284,6 @@ flowchart TD
 | 同一任务跨 resume | 累计至多 24 次模型请求、160,000 个预算预留 tokens、600 秒研究 active time；预算 tokens 是输入估算加输出预留，不是实际费用或实际用量 |
 | 恢复粒度 | 未完成的整个 research 阶段重新运行；两个子角色无独立 checkpoint。已完成 compose 可复用原产物，保存重新审批 |
 
-内层主规划器和两个子图均显式 `checkpointer=False, store=None`，避免默认 `None` 继承外层 SQLite 并落盘完整消息。只有外层控制信息进检查点，来源正文与研究报告归业务库的删除规则管理。`research_sources` 保留任务到来源 ID 的关联，完成后也保留到删除任务；来源修改／移除时事务清除相关中间正文与计划等可能含原文的详情。细节见 [记忆设计](memory-design.md)。研究重试保留步骤 `calls/budget`，累计请求与预留预算在出站前落盘；active time 在该轮收尾累计，不是强制杀进程前每毫秒都落盘的计时器。
+`ResearchWorkflow.research()` 用 `asyncio.create_task(..., context=contextvars.Context())` 启动并直接 await `run_delegation`，在外层与临时研究图之间清除继承的 Pregel 上下文，避免内层被误认为外层的持久化子图；直接等待保留取消传播，研究图内部自己的角色上下文不被拆散。内层主规划器和两个子图仍均显式 `checkpointer=False, store=None`，避免默认 `None` 继承外层 SQLite 并落盘完整消息。只有外层控制信息进检查点，来源正文与研究报告归业务库的删除规则管理。`research_sources` 保留任务到来源 ID 的关联，完成后也保留到删除任务；来源修改／移除时事务清除相关中间正文与计划等可能含原文的详情。细节见 [记忆设计](memory-design.md)。研究重试保留步骤 `calls/budget`，累计请求与预留预算在出站前落盘；active time 在该轮收尾累计，不是强制杀进程前每毫秒都落盘的计时器。
 
 保存始终要求控制台逐次点击，不能用语音、任务级授权或普通 allow 规则跳过。审批绑定 `artifact_id/version/content_hash` 与会话／设置版本／数据代际；拒绝保存仍保留可审阅产物。模型返回和写入边界还核对运行 token、当前身份及来源；`TaskManager._call` 在线程池真正开始执行后持存储锁再调用 guard，`ToolRunner` 同锁复核产物再写入，覆盖批准后排队期间发生的来源／版本变化。取消先使运行 token 失效，即使服务吞掉取消也不能提交迟到报告。显式 resume 可以在当前会话继续旧任务，但不会把研究结果自动写进当前对话。

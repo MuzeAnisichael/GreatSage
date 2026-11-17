@@ -135,7 +135,7 @@
 
 来源修改／删除使旧 ID 或哈希失效，未完成研究及待保存任务不能继续使用旧报告；产物保留并标为 stale，对应引用的摘录清除。重新创建任务可使用新版本来源；在来源仍有效时，显式 resume 能在新进程／当前会话继续旧任务，重新确认保存，不会把旧任务结果追加到新会话。
 
-研究框架中的主规划器与两个子图显式设为 `checkpointer=False, store=None`，避免嵌套图继承外层 SQLite 后把来源及完整 messages 放进不受业务删除控制的检查点。外层 `ControlState` 仍只存任务 ID／路由，真实步骤内容在业务表；未完成 research 恢复时整个阶段重跑，不能独立恢复某个子角色。`TaskManager._step()` 保留此前 `calls/budget`，累计预算在出站前预留，防止重试抹掉既有调用证据或重置请求限额。容量及计时口径见 [研究架构](architecture.md#v07-研究选定来源--固定角色核对--审批保存)。
+`ResearchWorkflow.research()` 在空 `contextvars.Context()` 的新 asyncio task 中运行并直接 await `run_delegation`，隔离外层 Pregel 上下文且保留取消传播；研究框架中的主规划器与两个子图仍显式设为 `checkpointer=False, store=None`，避免嵌套图继承外层 SQLite 后把来源及完整 messages 放进不受业务删除控制的检查点。外层 `ControlState` 仍只存任务 ID／路由，真实步骤内容在业务表；未完成 research 恢复时整个阶段重跑，不能独立恢复某个子角色。`TaskManager._step()` 保留此前 `calls/budget`，累计预算在出站前预留，防止重试抹掉既有调用证据或重置请求限额。容量及计时口径见 [研究架构](architecture.md#v07-研究选定来源--固定角色核对--审批保存)。
 
 **删除记忆不等于删除事实的所有来源。** 如果原文仍在，模型仍可能从历史得知相同内容。要移除该内容，需要同时删除相关原文；配置或外部 Skill 中独立存在的相同文字也不属于记忆删除的范围。
 
@@ -151,6 +151,8 @@ v0.6 在删除／拒绝／修正旧记忆时记录叶子原文的 ID 和内容�
 
 研究的每次实际模型请求同样复用 `snapshot_request` 与用量事件，记录角色、来源、计时和结局；内层模型消息为临时状态，只有显式开启的本地请求归档可以保留正文，并继续受来源删除清理约束。`supported` 是模型核对分类，逐字引文验证只证明摘录存在，二者都不能升级为事实认证。来源版本／合法引文检查与产物审批版本检查分别保护输入和输出，不能相互替代。
 
+研究每个角色在一次尝试中至多进行一次 JSON／schema 格式修正；原失败与修正请求均占用既有预算并记录用量，来源不匹配、权限边界、取消和过期身份错误不重试。`calls[].validation` 与 `research_validation` 事件只保存本地 schema 路径、校验类别、工具／角色、调用序号和修正状态等安全元数据，不保存被拒绝的参数值或异常正文。这些诊断随调用证据保留，不能把一次修正误记成一次没有额外成本的成功请求。
+
 配置日志默认记录哈希，Skill 记录实际版本；启用完整请求快照后，语言模型的 messages 和配置保留在本地，包含当时实际注入的 Skill 文本。源文删除使相关快照正文失效，导出需显式选择是否含正文。没有事先开启归档的请求无法补回旧正文，也不能保证外部模型输出完全复现。
 
 转写、对话、摘要与记忆保留到手动删除；详细事件默认 30 天，开启后的原始录音默认 7 天。没有录音时，只能审计转写之后的处理过程，不能仅凭转写证明当时听写无误。
@@ -159,7 +161,7 @@ v0.6 在删除／拒绝／修正旧记忆时记录叶子原文的 ID 和内容�
 
 既有回归覆盖跨会话恢复、中文检索、来源身份、删除与后台提交竞争、级联摘要／回答失效、修正回滚、上下文预算和显式记忆写入。v0.6 定向用例位于 [test_structured_memory.py](../tests/test_structured_memory.py)、[test_memory_extraction.py](../tests/test_memory_extraction.py)、[test_memory_runtime.py](../tests/test_memory_runtime.py)、[test_server.py](../tests/test_server.py) 和[桌面冒烟](../scripts/smoke_desktop.cjs)，涉及三档策略、伪造证据、冲突再检查、旧来源抑制、跨重启、异步失效及界面操作。测试存在不代表所有环境已经通过，实际结果见当前版本验证记录。
 
-v0.7 的 [test_research.py](../tests/test_research.py) 覆盖假委派下的真实图／存储／审批链，包括来源修改、取消迟到结果、审批旧版本、排队线程入口、跨重启和完成后素材重扫清理；[test_delegation.py](../tests/test_delegation.py) 使用真实框架与脚本化提供商检查协议、只读能力和内层不继承 checkpoint。执行结果与真实模型／构建边界统一见 [validation-v0.7.md](validation-v0.7.md)。
+v0.7 的 [test_research.py](../tests/test_research.py) 同时包含假委派下的边界回归和真实 Runtime＋外层图＋真实研究框架的集成用例。前者覆盖来源修改、取消迟到结果、审批旧版本、排队线程入口、跨重启和完成后素材重扫清理；后者 `test_outer_graph_runs_real_framework_and_records_resource_audit` 用脚本化提供商检查空 Context 隔离、Skill 资源审计以及正常／一次格式修正路径的请求与诊断记录。[test_delegation.py](../tests/test_delegation.py) 另检查真实框架协议、只读能力和内层不继承 checkpoint。两类测试都不能代替真实模型质量评测；执行结果与模型／构建边界统一见 [validation-v0.7.md](validation-v0.7.md)。
 
 后续优先评估更大规模的混合检索、自然会话提取／冲突漏检、同名实体归属、复杂关系保持与长时间资源使用。当前小型固定集成绩、API 连通、逐字引文和来源图正确性不能替代这些质量测量。
 

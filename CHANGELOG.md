@@ -1,15 +1,17 @@
 # Changelog
 
-## Unreleased — 0.7.0-alpha.1 candidate
+## 0.7.0-alpha.1 — 2026-11-18
 
-功能已实现，待最终 CI、构建、真实模型验证及 main 交付／发布；本节不表示标签或发布资产已经存在。范围与证据入口见 [v0.7 方案](docs/v0.7-plan.md)、[v0.7 验证](docs/validation-v0.7.md)。
+以 main 交付研究闭环和 [Windows x64 ZIP／实验性 NSIS 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.7.0-alpha.1)。范围与准确的代码、CI、构建及未测项见 [v0.7 方案](docs/v0.7-plan.md)、[v0.7 验证](docs/validation-v0.7.md)。
 
 - 接入 Deep Agents 的固定双只读子角色：主规划器先发布计划，再顺序委派资料整理和证据核对；只读选定会话／Markdown 及虚拟 Skill 快照，不启用网络搜索、主机文件访问、记忆写入、命令或递归委派。
 - 新增 `collect → research → compose → save` 研究任务、逐项核对与严格来源／逐字引文校验；程序渲染带引用、分歧与待确认项的版本化文档，模型判断不作为事实认证。
 - 文档保存始终逐次点击确认，绑定产物版本／内容哈希与运行身份；拒绝保留产物，重启重新审批，线程实际执行前再核对，防止排队期间的旧授权写入。
 - 外层 LangGraph 保留控制 checkpoint，内层主／子图显式关闭持久化；未完成 research 整体重跑，恢复保留调用审计和累计预算；新增 `research_sources` 让来源删除／素材重扫清理中间结果及完成后仍保留的计划等详情。
 - 任务界面显示研究计划、角色进度、待确认项、用量与保存状态；新增离线 `--check-research-runtime` 和默认 dry-run、显式 `--cloud` 的有界纪要／研究对照探针。
-- 更新架构图、代码导航、迁移说明与开发经验。真实模型整理／核对质量仍待验证；通用并发／递归自主多 Agent、真实语音和安装链验收不因本轮功能完成而自动成立。
+- 最终运行代码 `53df4b9` 的 [Windows CI](https://github.com/MuzeAnisichael/GreatSage/actions/runs/44144530655) 为 **413 passed、3 skipped**；冻结研究／记忆／语音诊断、后端 **14/14**、最终包内桌面 **64/64** 通过。构建对象、报告和发布资产哈希见验证记录。
+- OpenRouter GPT-4.1 在一个虚构资料样本完成研究闭环：9 次请求、任务创建至终态 22.261 秒、$0.027758，3 个引用有效，一次程序 `once/click` 保存。mini 的结构／引文失败保留，Ollama 研究本轮未测；该结果不证明普遍质量或多 Agent 优于普通纪要，也不等于用户人工审阅／点击验收。
+- 更新架构图、代码导航、迁移说明与开发经验。通用并发／递归自主多 Agent 尚未实现；真实语音、人工安装／升级／卸载及长运行仍待验收。
 
 ## 0.6.0-alpha.1 — 2026-10-24
 

@@ -29,7 +29,7 @@
 > [!NOTE]
 > 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。提供 Windows x64 目录 ZIP、实验性 NSIS 安装器和源码运行方式。
 >
-> - **当前开发版本**：`0.7.0-alpha.1` 研究闭环功能已完成，待最终 CI、构建和真实模型验证，尚未宣称合入 `main` 或发布；进展见[v0.7 验证](docs/validation-v0.7.md)。已发布下载仍为 [0.6.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1)。
+> - **版本**：[0.7.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.7.0-alpha.1) 从 `main` 交付，新增资料整理、证据核对、文档与逐次点击保存的研究闭环；准确的源码、构建、CI 和真实模型覆盖见[v0.7 验证](docs/validation-v0.7.md)。
 > - **框架与边界**：LangChain、LangGraph、MCP HTTP、Pipecat、LangMem 和本地监控继续保留；v0.7 用 Deep Agents 实现两个固定只读研究角色，不是通用自主多 Agent。逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
@@ -38,7 +38,7 @@
 
 **v0.6 的可审阅记忆**：在设置中启用自动提取后，选择自动生效、仅必要时确认或大部分确认（默认）。记忆页可核对原文、接受／拒绝候选、查看实体与关系；拒绝／删除后阻止旧来源重新提取。默认不启用后台模型调用，详见[使用说明](docs/usage.md)和[v0.6 验证](docs/validation-v0.6.md)。
 
-**v0.7 的研究文档（待发布验证）**：选择已导入的 Markdown 资料或当前会话，由主规划器顺序委派“资料整理”和“证据核对”两个只读子 Agent，生成带来源与待确认项的文档。审阅后逐次点击批准才写入工作目录；拒绝保存仍保留产物。角色状态、调用用量与保存进度可查看，取消、来源变更和恢复继续受原权限与审计边界约束。真实模型的整理／核对质量仍待验证，见[v0.7 方案](docs/v0.7-plan.md)和[验证记录](docs/validation-v0.7.md)。
+**v0.7 的研究文档**：选择已导入的 Markdown 资料或当前会话，由主规划器顺序委派“资料整理”和“证据核对”两个只读子 Agent，生成带来源与待确认项的文档。审阅后逐次点击批准才写入工作目录；拒绝保存仍保留产物。角色状态、调用用量与保存进度可查看，取消、来源变更和恢复继续受原权限与审计边界约束。OpenRouter GPT-4.1 完成一次虚构资料闭环，mini 的结构／引文失败也保留在记录中；这不是普遍质量或多 Agent 优于纪要的证明。见[v0.7 方案](docs/v0.7-plan.md)和[验证记录](docs/validation-v0.7.md)。
 
 ## 它能做什么
 
@@ -51,7 +51,7 @@
 - **带出处的纪要（v0.3）**
   - 可以导入 `.md` 资料，把会议原文和资料整理成纪要、可编辑的待办和文档草稿。
   - 每条内容都标出 `[S1]` 这样的来源；找不到来源的条目会明确标出来。
-- **研究文档（v0.7 源码）**
+- **研究文档（v0.7）**
   - 在选定来源内规划、整理、核对证据，把有支持的结论与分歧／待确认项分开呈现。
   - 保存绑定文档版本与内容，始终逐次点击确认；不支持子 Agent 自行联网、执行命令或写入记忆。
 - **操作先确认（v0.3）**
@@ -96,16 +96,16 @@
 
 ### 下载 Windows 目录包
 
-以下下载是已发布的 v0.6，不包含当前 v0.7 研究功能；v0.7 包与标签以最终发布记录为准。从 [v0.6.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+从 [v0.7.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.7.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.6.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.7.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
 
-同页提供实验性 `GreatSage-0.6.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
+同页提供实验性 `GreatSage-0.7.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
 
 ### 从源码运行
 
@@ -196,7 +196,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 - **模型判断**：语义判断、冲突建议、摘要和纪要都可能出错。原文始终保留，请核对姓名、数字和期限。
 - **v0.3 验证范围**：纪要只用虚构会议评测过；打开文件和执行命令只做过单元测试；语音确认的误识别率还没有测。
 - **框架验证范围**：真实模型、MCP 服务及打包对象的历史覆盖见[v0.4 验证](docs/validation-v0.4.md)，不代表兼容所有模型与服务器；stdio／OAuth 仍未接入；v0.6 记忆范围见[记忆验证](docs/validation-v0.6.md)。
-- **v0.7 研究边界**：仅固定两个顺序执行的只读子角色，没有通用并发／递归自治或网络搜索。逐字引文合法不等于事实正确；真实模型质量仍待验证，模拟回归不能代替它。研究失败后恢复整个未完成阶段，不独立恢复子角色。
+- **v0.7 研究边界**：仅固定两个顺序执行的只读子角色，没有通用并发／递归自治或网络搜索。逐字引文合法不等于事实正确；GPT-4.1 只有一个虚构样本闭环，mini 仍有结构／引文失败，Ollama 研究本轮未测。研究失败后恢复整个未完成阶段，不独立恢复子角色。
 - **分发**：提供 Windows x64 目录 ZIP 和实验性 NSIS 安装器，没有受信任发行签名；干净电脑安装／升级／卸载与跨电脑兼容仍待验收。
 
 测量方法和样本见 [v0.2 验证](docs/validation-v0.2.md)、[v0.3 验证](docs/validation-v0.3.md)和 [v0.4 验证](docs/validation-v0.4.md)。
@@ -211,7 +211,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.4 alpha | 已从 main 交付 | LangChain、LangGraph、MCP HTTP、本地监控与 Windows x64 目录 ZIP |
 | v0.5 alpha | 功能从 main 交付，真实验收继续保留 | Pipecat、连续话轮、单源恢复、转写进度、语音监控、ZIP／实验性 NSIS |
 | v0.6 alpha | 功能从 main 交付 | LangMem 提取、三档确认、实体关系、来源与删除保护 |
-| v0.7 alpha | 功能完成，待发布验证 | 固定双只读子 Agent：资料整理、证据核对、文档产出与逐次点击保存；保留来源／预算／恢复边界 |
+| v0.7 alpha | 功能从 main 交付 | 固定双只读子 Agent：资料整理、证据核对、文档产出与逐次点击保存；保留来源／预算／恢复边界 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 
@@ -222,7 +222,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | [项目现状](docs/project-status.md) | 已实现、已验证、仍待验收和未来目标的快速索引 |
 | [开发方法指导](agent.md) · [代码导航](docs/code-map.md) · [经验记录](docs/lessons-learned.md) | 开发约定、按功能找文件／函数、结构树与调用链、已知问题的原因和处理 |
 | [迁移方案](docs/v0.4-plan.md) · [开发日志](docs/development-log.md) · [迁移验证](docs/validation-v0.4.md) | 本轮范围、每个切片的改动和实际证据 |
-| [v0.7 方案](docs/v0.7-plan.md) · [v0.7 验证](docs/validation-v0.7.md) | 研究闭环范围、候选版本证据与待验收事项 |
+| [v0.7 方案](docs/v0.7-plan.md) · [v0.7 验证](docs/validation-v0.7.md) | 研究闭环范围、交付证据与待验收事项 |
 | [使用说明](docs/usage.md) | 音源、预设、记忆、资料、任务和工具授权的操作方法 |
 | [需求与验收](docs/requirements.md) | 已确认的范围、实现状态和尚待完成的验收 |
 | [实现架构](docs/architecture.md) | 模块、实时管线、事件、接口与数据边界 |
