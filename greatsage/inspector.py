@@ -92,4 +92,4 @@ async def inspect_runtime(runtime):
             "mcp_tools": len(runtime.tasks.mcp.specs), "voice": voice_snapshot(runtime),
             "entity_memory": {"enabled": True, "entities": len(memory.memory_entities()),
                               "extraction": runtime.memory_extraction_status()},
-            "multi_agent": "planned"}
+            "multi_agent": "bounded_research"}

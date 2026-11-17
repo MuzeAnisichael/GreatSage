@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-10-24。本文记录包含 v0.6 的当前源码架构：在 LangChain、LangGraph、MCP 与 Pipecat 基础上接入 LangMem 提取，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。源码、构建、真实服务和已发布版本的边界见[项目现状](project-status.md)及其验证入口；记忆范围见[v0.6 方案](v0.6-plan.md)。按功能定位文件和函数见[代码导航](code-map.md)。
+更新日期：2026-11-18。本文记录包含 v0.7 研究闭环的当前源码架构：在 LangChain、LangGraph、MCP、Pipecat 与 LangMem 基础上接入 Deep Agents 的固定角色委派，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。功能实现不等于已发布；源码、构建及真实服务边界见[项目现状](project-status.md)和[v0.7 验证记录](validation-v0.7.md)。记忆范围见[v0.6 方案](v0.6-plan.md)，研究范围见[v0.7 方案](v0.7-plan.md)，按功能定位文件和函数见[代码导航](code-map.md)。
 
 ## 1. 组成与调用关系
 
@@ -32,6 +32,8 @@ flowchart LR
     Materials[Markdown 资料] --> Memory
     Runtime --> Tasks[LangGraph 后台任务]
     Tasks --> LLM
+    Tasks --> Research[Deep Agents 固定双角色研究]
+    Research --> LLM
     Tasks --> Artifacts[纪要／待办／文档产物]
     Tasks --> Policy[权限层与审批]
     Policy --> Tools[工作目录内的本地工具]
@@ -57,7 +59,9 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/streaming_asr.py | 官方 Deepgram SDK 薄适配、单连接、显式语言与凭据、安全失败 |
 | greatsage/providers.py | 流式 LLM、ASR、TTS、本地模型准备与受控错误 |
 | greatsage/chat_models.py | LangChain OpenAI／Ollama 聊天适配，复用应用连接池与凭据 |
-| greatsage/agent_graph.py | LangGraph 纪要／操作图、SQLite 控制 checkpoint 和审批恢复 |
+| greatsage/agent_graph.py | LangGraph 纪要／操作／研究图、SQLite 控制 checkpoint 和审批恢复 |
+| greatsage/research.py | 研究来源快照、累计预算、证据复核、文档渲染及审批保存协调 |
+| greatsage/delegation.py | Deep Agents 委派／Skills 薄适配；固定两个只读子角色与现有模型传输 |
 | greatsage/mcp_tools.py | 官方 SDK 的显式发现、定义版本、参数校验与受控 HTTP 调用 |
 | greatsage/inspector.py、ui/inspector.js | 本地状态、消息／上下文和记忆元数据检查 |
 | greatsage/settings.py | 配置校验、环境变量、DPAPI 密钥与原子提交 |
@@ -160,6 +164,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 | tool_call（v0.3） | 工具名、效果、操作对象、状态、授权决策和错误；完整参数保存在任务的工具调用记录中 |
 | materials_updated、artifact_updated、artifact_export（v0.3） | 资料、产物变化与导出 |
 | agent_node、mcp_updated（v0.4） | 图节点控制状态、外部工具目录变化与监控刷新 |
+| research_validation（v0.7） | 角色、工具、schema 路径、校验类别、调用序号和是否进行有限格式修正；不含被拒绝的参数值 |
 
 慢订阅者优先丢弃普通日志事件，不能维持完整文字流时发送显式重载标记，避免界面误认为缺段内容完整。审计记录系统实际输入和结果，不声称能读取模型内部思维链。
 
@@ -177,7 +182,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 
 ## 8. 扩展点与尚未完成的能力
 
-提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP、Pipecat、可选 Deepgram 原生流式 ASR 与 LangMem／实体列表已接入；完整 AEC、MCP stdio／OAuth、多 Agent 和跨平台桌面采集尚未实现。PyInstaller 冻结后端，electron-builder 提供目录、ZIP 与 NSIS 构建。安装与发行签名的当前边界见[项目现状](project-status.md)；构建成功不能代替干净电脑验收。
+提供商适配、音源、回应调度、记忆和桌宠分别分层。MCP HTTP、Pipecat、可选 Deepgram 原生流式 ASR、LangMem／实体列表与固定双角色研究已接入；通用并发／递归多 Agent、完整 AEC、MCP stdio／OAuth 和跨平台桌面采集尚未实现。PyInstaller 冻结后端，electron-builder 提供目录、ZIP 与 NSIS 构建。安装与发行签名的当前边界见[项目现状](project-status.md)；构建成功不能代替干净电脑验收。
 
 ## 9. v0.3 资料、任务与工具
 
@@ -218,7 +223,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 
 `chat_models.py` 使用 LangChain 的 OpenAI 兼容与 Ollama 适配器，`Providers` 继续作为语音／嵌入和聊天事件的应用接口。框架不隐式上传追踪、不隐式重试，也不接管凭据配置。
 
-`agent_graph.py` 用 LangGraph 编排两张图：纪要 `collect → extract → compose → document（可选）`；操作 `单个工具 → 下个工具或模型 → 后续工具或回复`。每个工具单独成为节点，循环仍限制为 4 轮。简单对话继续走流式短路径。
+v0.4 的 `agent_graph.py` 引入两张 LangGraph 图：纪要 `collect → extract → compose → document（可选）`；操作 `单个工具 → 下个工具或模型 → 后续工具或回复`。每个工具单独成为节点，循环仍限制为 4 轮。v0.7 新增下节的研究图，按需加载研究框架；简单对话继续走流式短路径。
 
 图使用 `AsyncSqliteSaver` 同步落盘控制状态，位于运行目录的 `agent-checkpoints.sqlite3`。只存任务 ID、路由、节点和 checkpoint 元数据；异常只存类型，不存消息正文。任务数据库继续保存需要遵循来源删除规则的业务内容，以及操作是否执行过的权威账本。恢复时优先使用图的未完成节点，旧版本无 checkpoint 的任务可以从原步骤记录进入新图。删除任务同时删除它的 checkpoint。
 
@@ -232,8 +237,53 @@ MCP 工具统一归为 `external`，不信任服务端的只读提示来降低�
 
 本地认证接口 `/api/mcp/servers`、`/api/mcp/servers/{id}/discover`、`/api/mcp/disconnect` 对应配置状态、显式发现和停用；不启用服务端 sampling、roots 或 elicitation。未来传输／认证扩展仍须保留相同权限边界。
 
-`/api/inspector` 聚合最近任务图状态、请求快照元数据、记忆计数与变更事件。每个新快照记录消息顺序／角色／序列化字节数／指纹、来源类型与版本、输入／工具／schema 估算及输出预留；最多显示 256 条消息目录。正文始终由既有审计入口显式查看，不能因监控页面打开而开启归档。事件到达即递增界面请求代际，丢弃迟到刷新。v0.6 的 `entity_memory` 返回实体数量与提取状态／计数，原文与证据留在记忆详情；多 Agent 仍返回 `planned`。
+`/api/inspector` 聚合最近任务图状态、请求快照元数据、记忆计数与变更事件。每个新快照记录消息顺序／角色／序列化字节数／指纹、来源类型与版本、输入／工具／schema 估算及输出预留；最多显示 256 条消息目录。正文始终由既有审计入口显式查看，不能因监控页面打开而开启归档。事件到达即递增界面请求代际，丢弃迟到刷新。v0.6 的 `entity_memory` 返回实体数量与提取状态／计数，原文与证据留在记忆详情；v0.7 的 `multi_agent` 返回 `bounded_research`，研究计划、角色进度和待确认项由任务详情展示。
 
-选择这些框架是为了复用供应商协议、持久化编排与标准工具生态；选择薄适配而保留应用边界，是为了让现有 Windows 音频、历史数据、来源失效、权限和桌宠行为继续兼容。复杂规划和多 Agent 继续按路线图推进，不能把使用了 LangGraph 或 LangMem 等同于已经具备多 Agent。
+选择这些框架是为了复用供应商协议、持久化编排与标准工具生态；选择薄适配而保留应用边界，是为了让现有 Windows 音频、历史数据、来源失效、权限和桌宠行为继续兼容。固定双角色研究的范围见下节；复杂规划与通用多 Agent 继续按路线图推进，不能把框架接入等同于任意任务自治。
 
 确定性提取错误立即进入 `needs_attention`；暂时性错误最多尝试三次（含首次）后暂停。安全错误码与设置版本保存到运行目录 `memory-extraction-state.json`，同配置下重启保持暂停；手动提取、后台重试或配置更新可恢复。
+
+## v0.7 研究：选定来源 → 固定角色核对 → 审批保存
+
+此闭环已实现，最终 CI、构建与真实模型结果统一记录在 [validation-v0.7.md](validation-v0.7.md)，不能据此节推定版本已发布。用户通过控制台 `POST /api/tasks`（`kind=research`），或显式用户请求中的 `create_research_task` 工具创建任务。来源只包括所选会话与已导入 Markdown 片段；没有联网搜索、任意主机文件读取或子 Agent 写记忆／执行命令能力。文档中的引文会折叠空白并转义伪来源标记，属于规范化展示；逐字连续校验针对生成前的结构化 quote，不意味着渲染后的排版逐字不变。
+
+```mermaid
+flowchart TD
+    Start["TaskManager.start_research → ResearchWorkflow.start"] -. "_schedule" .-> Run["TaskManager._run → AgentGraphs.run"]
+    Run --> Collect["collect：ResearchWorkflow.collect"]
+    Collect --> Bind["来源 ID／哈希 + research_sources 关联"]
+    Collect --> Research["research：ResearchWorkflow.research"]
+    subgraph Inner["临时框架状态：无内层 checkpoint／store"]
+        Planner["planner：write_todos 发布计划"] --> First["task → source_researcher"]
+        First --> Findings["read_source → submit_findings"]
+        Findings --> Second["task → evidence_reviewer"]
+        Second --> Review["独立 read_source → submit_review"]
+        Review --> Confirm["planner：submit_report 仅确认子报告"]
+    end
+    Research -. "空 Context 新 task；直接 await" .-> Delegate["run_delegation"]
+    Delegate --> Planner
+    Confirm --> Validate["validate_report：来源、引文、逐项覆盖校验"]
+    Validate --> Compose["compose：render_report → create_artifact"]
+    Compose --> Save["save：TaskManager._call export_artifact"]
+    Save -. "interrupt 等待逐次点击" .-> UI["产物审阅／批准或拒绝"]
+    UI -. "resolve → Command resume" .-> Save
+    Save --> Guard["线程入口 guard + 版本／内容哈希复核"]
+    Guard --> Write["ToolRunner._export_artifact → _write"]
+```
+
+外层 `collect → research → compose → save` 使用原 LangGraph 检查点与任务账本。内层复用 LangChain `create_agent`、`TodoListMiddleware`，以及 Deep Agents 的 `SubAgentMiddleware`、`SkillsMiddleware` 和受限 `FilesystemMiddleware`；并非启用框架默认的全能力代理。`source_researcher` 与 `evidence_reviewer` 按顺序各运行一次，都必须读完选定原文后提交结构化报告；核对者直接收到实际整理结果，主规划器不能改写核对结论。Skills 仅作为虚拟只读快照渐进加载，不是事实来源或工具授权。两个角色使用同一当前模型，不构成独立模型的事实认证。
+
+`ProviderDelegationModel` 复用 `Providers.stream_chat`，在每次实际请求前核对上下文及累计预算，保存角色级快照／用量／结局。自有结构工具的 canonical Pydantic schema 在 `bind_tools` 中恢复，避免 `StructuredTool` 转换丢失顶层 `additionalProperties` 等约束；返回参数先经过 JSON Schema 与严格 Pydantic 校验，再进入框架派发。来源 ID、完整原文哈希和逐字连续引文由应用再次核对；非法证据使任务失败。核对状态 `supported/uncertain/conflict/unsupported` 是模型判断，不能证明语义蕴含或事实为真。程序以 review 渲染文档，不再让模型自由改写；自由文本中的 `[S#]` 被转义，仅合法 evidence 映射能生成引用。
+
+格式错误允许有限修正：在一次 research 尝试中，每个角色累计至多一次 JSON／schema 修正，失败请求与修正请求都计入原有请求数、token 预算、用量和时间限制。`_agenerate()` 只捕获 `_SchemaFailure`，保留原授权上下文并附本地 schema 反馈，不重放被拒绝的模型正文或参数；来源不匹配、权限／调用边界错误、取消与过期身份不走修正重试。安全诊断写入步骤 `calls[].validation` 和 `research_validation` 事件，仅含本地 schema 字段路径、校验类别等白名单元数据；失败调用的用量与结局仍保留。
+
+| 边界 | 当前实现 |
+| --- | --- |
+| 来源容量 | 至多 8 段来源，共 64,000 字符，单段至多 32,000 字符；是会话消息／资料片段数，不是文件数 |
+| 单次研究 | 总模型请求至多 16 次，每个角色至多 6 次；框架工具调用至多 40 次，单次超时 180 秒 |
+| 同一任务跨 resume | 累计至多 24 次模型请求、160,000 个预算预留 tokens、600 秒研究 active time；预算 tokens 是输入估算加输出预留，不是实际费用或实际用量 |
+| 恢复粒度 | 未完成的整个 research 阶段重新运行；两个子角色无独立 checkpoint。已完成 compose 可复用原产物，保存重新审批 |
+
+`ResearchWorkflow.research()` 用 `asyncio.create_task(..., context=contextvars.Context())` 启动并直接 await `run_delegation`，在外层与临时研究图之间清除继承的 Pregel 上下文，避免内层被误认为外层的持久化子图；直接等待保留取消传播，研究图内部自己的角色上下文不被拆散。内层主规划器和两个子图仍均显式 `checkpointer=False, store=None`，避免默认 `None` 继承外层 SQLite 并落盘完整消息。只有外层控制信息进检查点，来源正文与研究报告归业务库的删除规则管理。`research_sources` 保留任务到来源 ID 的关联，完成后也保留到删除任务；来源修改／移除时事务清除相关中间正文与计划等可能含原文的详情。细节见 [记忆设计](memory-design.md)。研究重试保留步骤 `calls/budget`，累计请求与预留预算在出站前落盘；active time 在该轮收尾累计，不是强制杀进程前每毫秒都落盘的计时器。
+
+保存始终要求控制台逐次点击，不能用语音、任务级授权或普通 allow 规则跳过。审批绑定 `artifact_id/version/content_hash` 与会话／设置版本／数据代际；拒绝保存仍保留可审阅产物。模型返回和写入边界还核对运行 token、当前身份及来源；`TaskManager._call` 在线程池真正开始执行后持存储锁再调用 guard，`ToolRunner` 同锁复核产物再写入，覆盖批准后排队期间发生的来源／版本变化。取消先使运行 token 失效，即使服务吞掉取消也不能提交迟到报告。显式 resume 可以在当前会话继续旧任务，但不会把研究结果自动写进当前对话。

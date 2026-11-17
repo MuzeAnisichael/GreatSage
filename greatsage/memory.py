@@ -312,6 +312,7 @@ class MemoryStore(StructuredMemoryMixin, VectorIndexMixin, AuditMixin, Materials
 
     def _redact_events(self, ids: set[str], texts: set[str], traces: set[str]) -> None:
         self._redact_snapshots(ids, texts, traces)
+        self._invalidate_research_sources(ids)
         # Audit data is normally references, but callers may have logged bodies.
         # Redact the whole event if any deleted source is present anywhere in it.
         needles = [_json(text)[1:-1] for text in texts if text]

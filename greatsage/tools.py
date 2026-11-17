@@ -61,6 +61,11 @@ def _object(properties: dict, required=()) -> dict:
 
 _STR, _BOOL = {"type": "string"}, {"type": "boolean"}
 SPECS = {spec.name: spec for spec in (
+    ToolSpec("create_research_task", "资料核对与文档", "internal",
+             "Start a bounded research task: organize selected sources, review evidence, create a cited document, "
+             "then wait for a click to save it to the workspace. Only use on the user's direct request.",
+             _object({"title": _STR, "use_session": _BOOL, "material_ids": {"type": "array", "items": _STR},
+                      "instructions": _STR, "save_path": _STR, "overwrite": _BOOL})),
     ToolSpec("create_minutes_task", "整理纪要", "internal",
              "Start a background task that writes cited meeting minutes, editable todos and optionally a document "
              "draft from the current conversation and imported Markdown materials.",
@@ -74,7 +79,8 @@ SPECS = {spec.name: spec for spec in (
     ToolSpec("write_file", "写入文件", "write", "Create, or with overwrite=true replace, a .md or .txt file inside the workspace.",
              _object({"path": _STR, "content": _STR, "overwrite": _BOOL}, ["path", "content"])),
     ToolSpec("export_artifact", "导出产物", "write", "Save a GreatSage artifact as a Markdown file inside the workspace.",
-             _object({"artifact_id": _STR, "path": _STR, "overwrite": _BOOL}, ["artifact_id", "path"])),
+             _object({"artifact_id": _STR, "path": _STR, "overwrite": _BOOL,
+                      "version": {"type": "integer"}, "content_hash": _STR}, ["artifact_id", "path"])),
     ToolSpec("open_path", "打开文件或文件夹", "launch", "Open a workspace file or folder with its default application.",
              _object({"path": _STR}, ["path"])),
     ToolSpec("open_url", "打开网址", "launch", "Open an http(s) URL in the default browser.", _object({"url": _STR}, ["url"])),
@@ -323,11 +329,24 @@ class ToolRunner:
         return self._write(call_id, arguments["path"], arguments["content"], arguments.get("overwrite", False))
 
     def _export_artifact(self, call_id, arguments):
+        with self.memory._lock:
+            content = self.validate_artifact_export(arguments)
+            return self._write(call_id, arguments["path"], content, arguments.get("overwrite", False))
+
+    def validate_artifact_export(self, arguments):
+        """Bind approval to the exact document and citation state being saved."""
         try:
+            artifact = self.memory.artifact(arguments["artifact_id"])
             content = self.memory.export_markdown(arguments["artifact_id"])
         except KeyError:
             raise ToolError("产物不存在或已删除。") from None
-        return self._write(call_id, arguments["path"], content, arguments.get("overwrite", False))
+        if "version" in arguments or "content_hash" in arguments:
+            if (artifact["version"] != arguments.get("version")
+                    or hashlib.sha256(content.encode("utf-8")).hexdigest() != arguments.get("content_hash")
+                    or artifact["status"] != "active" or artifact["unknown_markers"]
+                    or any(not cite["valid"] for cite in artifact["citations"])):
+                raise ToolError("产物版本或来源已改变，请重新审阅并确认保存。")
+        return content
 
     def _open_path(self, call_id, arguments):
         workspace = self.workspace()

@@ -36,6 +36,9 @@ class TaskStoreMixin:
                 arguments TEXT NOT NULL, effect TEXT NOT NULL, target TEXT NOT NULL, decision TEXT NOT NULL,
                 reason TEXT NOT NULL, status TEXT NOT NULL, approval TEXT, result TEXT, undo TEXT, error TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, call_key));
+            CREATE TABLE IF NOT EXISTS research_sources (
+                task_id TEXT NOT NULL, source_id TEXT NOT NULL,
+                PRIMARY KEY(task_id,source_id));
         """)
 
     @staticmethod
@@ -117,7 +120,7 @@ class TaskStoreMixin:
 
     def reset_unfinished_steps(self, id: str) -> None:
         with self._lock, self._db:
-            self._db.execute("UPDATE task_steps SET status='pending',detail='{}',started_at=NULL,finished_at=NULL WHERE task_id=? AND status!='succeeded'", (id,))
+            self._db.execute("UPDATE task_steps SET status='pending',started_at=NULL,finished_at=NULL WHERE task_id=? AND status!='succeeded'", (id,))
             self._db.execute("UPDATE tasks SET status='queued',error=NULL,updated_at=? WHERE id=?", (_now(), id))
 
     def recover_tasks(self) -> list[str]:
@@ -134,17 +137,39 @@ class TaskStoreMixin:
         """Drop intermediate copies of source text; artifacts and call metadata remain."""
         where, args = ("WHERE task_id=?", [id]) if id else ("", [])
         with self._lock, self._db:
-            self._db.execute(f"UPDATE task_steps SET result=NULL {where} {'AND' if id else 'WHERE'} name IN ('collect','extract','act')", args)
+            self._db.execute(f"UPDATE task_steps SET result=NULL {where} {'AND' if id else 'WHERE'} name IN ('collect','extract','act','research')", args)
+            if not id:
+                # Research plans/review summaries may quote deleted source text.
+                for row in self._db.execute("SELECT task_id,detail FROM task_steps WHERE name='research'").fetchall():
+                    detail = json.loads(row["detail"])
+                    safe = {key: detail[key] for key in ("calls", "budget") if key in detail}
+                    self._db.execute("UPDATE task_steps SET detail=? WHERE task_id=? AND name='research'", (_json(safe), row["task_id"]))
             if id:
                 self._db.execute("UPDATE tasks SET state='{}' WHERE id=?", (id,))
             else:
                 self._db.execute(f"UPDATE tasks SET state='{{}}' WHERE status NOT IN {ACTIVE}")
 
+    def bind_research_sources(self, task_id: str, ids: list[str]) -> None:
+        with self._lock, self._db:
+            self._db.executemany("INSERT OR IGNORE INTO research_sources VALUES (?,?)", [(task_id, id) for id in ids])
+
+    def _invalidate_research_sources(self, ids: set[str]) -> None:
+        """Called in the source deletion transaction, including material rescans."""
+        affected = {row["task_id"] for row in self._db.execute("SELECT * FROM research_sources") if row["source_id"] in ids}
+        for task_id in affected:
+            row = self._db.execute("SELECT detail FROM task_steps WHERE task_id=? AND name='research'", (task_id,)).fetchone()
+            if row:
+                detail = json.loads(row["detail"])
+                safe = {key: detail[key] for key in ("calls", "budget") if key in detail}
+                self._db.execute("UPDATE task_steps SET result=NULL,detail=? WHERE task_id=? AND name='research'", (_json(safe), task_id))
+            self._db.execute("UPDATE task_steps SET result=NULL WHERE task_id=? AND name='collect'", (task_id,))
+
     def _clear_task_history(self) -> None:
-        self._db.execute("UPDATE task_steps SET result=NULL WHERE name IN ('collect','extract','act')")
+        self._db.execute("UPDATE task_steps SET result=NULL WHERE name IN ('collect','extract','act','research')")
+        self._db.execute("UPDATE task_steps SET detail='{}' WHERE name='research'")
         self._db.execute("UPDATE tasks SET state='{}'")
         self._db.execute("""UPDATE tool_calls SET arguments='{"redacted":true}',result=NULL
-                            WHERE tool IN ('write_file','create_minutes_task','search_materials','run_command') OR tool LIKE 'mcp_%'""")
+                            WHERE tool IN ('write_file','create_minutes_task','create_research_task','search_materials','run_command') OR tool LIKE 'mcp_%'""")
 
     def delete_task(self, id: str) -> None:
         with self._lock, self._db:
@@ -153,7 +178,7 @@ class TaskStoreMixin:
                 raise KeyError(id)
             if row[0] in ACTIVE:
                 raise ValueError("请先取消正在进行的任务。")
-            for table in ("task_steps", "tool_calls"):
+            for table in ("task_steps", "tool_calls", "research_sources"):
                 self._db.execute(f"DELETE FROM {table} WHERE task_id=?", (id,))
             self._db.execute("DELETE FROM tasks WHERE id=?", (id,))
 

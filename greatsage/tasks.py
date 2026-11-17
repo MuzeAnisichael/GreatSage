@@ -54,6 +54,7 @@ class TaskManager:
         from .mcp_tools import MCPTools
         self.runtime = runtime
         self.jobs: dict[str, asyncio.Task] = {}
+        self.run_tokens: dict[str, object] = {}
         self.approvals: set[str] = set()
         self.approval_lock = asyncio.Lock()
         self.grants: dict[str, set[str]] = {}
@@ -79,6 +80,7 @@ class TaskManager:
 
     async def close(self) -> None:
         self.closing = True
+        self.run_tokens.clear()
         jobs = list(self.jobs.values())
         for job in jobs:
             job.cancel()
@@ -120,6 +122,10 @@ class TaskManager:
         if task["status"] not in ACTIVE:
             raise ValueError("任务不在进行中。")
         job = self.jobs.get(id)
+        self.run_tokens.pop(id, None)
+        if task["kind"] == "research":
+            # A provider may swallow cancellation. Invalidate before awaiting it.
+            self.memory.finish_task(id, "cancelled", None)
         if job:
             job.cancel()
             await asyncio.gather(job, return_exceptions=True)
@@ -127,6 +133,7 @@ class TaskManager:
             self.memory.finish_task(id, "cancelled", None)
             await self.changed(id)
         self._expire_approvals(id)
+        await self.changed(id)
         return self.memory.task_summary(id)
 
     async def resume(self, id: str) -> dict:
@@ -152,6 +159,7 @@ class TaskManager:
                 if task["status"] != "queued":
                     return
                 self.memory.update_task(id, status="running", error=None)
+                self.run_tokens[id] = object()
                 await self.changed(id)
                 waiting = await self.graphs.run(task, approval)
         except asyncio.CancelledError:
@@ -164,6 +172,7 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001 - reported as a task failure, never swallowed silently
             status, error = "failed", f"任务失败：{type(exc).__name__}"
         finally:
+            self.run_tokens.pop(id, None)
             if not waiting:
                 self._expire_approvals(id)
             if not waiting and self.memory.task(id)["status"] in ACTIVE:
@@ -178,7 +187,8 @@ class TaskManager:
         step = self.memory.step(task_id, name)
         if step["status"] == "succeeded":
             return step["result"]
-        self.memory.update_step(task_id, name, status="running", started_at=_now(), finished_at=None, detail={})
+        detail = {key: step["detail"][key] for key in ("calls", "budget") if key in step["detail"]} if name == "research" else {}
+        self.memory.update_step(task_id, name, status="running", started_at=_now(), finished_at=None, detail=detail)
         await self.changed(task_id)
         result = await work()
         detail = self.memory.step(task_id, name)["detail"]
@@ -257,6 +267,10 @@ class TaskManager:
             raise TaskError("模型没有返回有效的结构化结果。") from None
 
     # ---- minutes ---------------------------------------------------------
+    async def start_research(self, params: dict, origin: str, session_id: str, trace_id: str = "") -> dict:
+        from .research import ResearchWorkflow
+        return await ResearchWorkflow(self).start(params, origin, session_id, trace_id)
+
     async def start_minutes(self, params: dict, origin: str, session_id: str, trace_id: str = "") -> dict:
         params = dict(params)
         material_ids = [str(item) for item in params.get("material_ids", [])][:50]
@@ -289,6 +303,8 @@ class TaskManager:
         note = str(instructions or "").strip()[:4000]
         if note:
             params["instructions"] = (params.get("instructions", "") + "\n用户纠正：" + note).strip()
+        if original["kind"] == "research":
+            return await self.start_research({**params, "title": original["title"]}, "console", self.runtime.session_id)
         params["revise"] = {item["kind"]: item["id"] for item in original["artifacts"]}
         params["document"] = params.get("document") or "document" in params["revise"]
         return await self.start_minutes({**params, "title": original["title"]}, "console", original["session_id"])
@@ -442,7 +458,7 @@ class TaskManager:
             return {"status": "succeeded", "result": call["result"]}
         return {"status": call["status"], "error": call["error"] or call["reason"]}
 
-    async def _call(self, task: dict, key: str, call: dict) -> dict:
+    async def _call(self, task: dict, key: str, call: dict, *, force_click=False, pre_execute=None) -> dict:
         row = self.memory.tool_call_by_key(task["id"], key)
         if row and row["status"] in FINISHED_CALLS:
             return self._outcome(row)
@@ -467,6 +483,8 @@ class TaskManager:
             decision, reason = "deny", "上一项操作结果未知，已停止后续工具；请先检查结果。"
         else:
             decision, reason = decide(spec, target, task["origin"], settings, self.grants.get(task["id"], set()))
+        if force_click and decision != "deny":
+            decision, reason = "ask", "请审阅当前文档版本，并点击确认保存。"
         if row is None:
             row = self.memory.add_tool_call(task["id"], key, spec.name, arguments, spec.effect, target, decision, reason, "proposed")
         else:
@@ -483,15 +501,26 @@ class TaskManager:
                 return self._outcome(row)
             if answer["scope"] == "task":
                 self.grants.setdefault(task["id"], set()).add(spec.name)
+        if pre_execute:
+            pre_execute()
         row = self.memory.update_tool_call(row["id"], status="running")
         await self._call_changed(row)
         try:
+            if pre_execute:
+                pre_execute()
             if spec.effect == "internal":
                 result, undo = await self._internal(task, spec, arguments), None
             elif spec.effect == "external":
                 result, undo = await self.mcp.call(spec.name, arguments), None
             else:
-                result, undo = await asyncio.to_thread(self.runner.run, row["id"], spec, arguments)
+                def execute_local():
+                    if pre_execute:
+                        # Recheck after thread-pool queuing, at the write boundary.
+                        with self.memory._lock:
+                            pre_execute()
+                            return self.runner.run(row["id"], spec, arguments)
+                    return self.runner.run(row["id"], spec, arguments)
+                result, undo = await asyncio.to_thread(execute_local)
             row = self.memory.update_tool_call(row["id"], status="succeeded", result=result, undo=undo)
         except asyncio.CancelledError:
             self.memory.update_tool_call(row["id"], status="unknown", error="任务在执行期间被取消，结果未知。")
@@ -506,7 +535,8 @@ class TaskManager:
         return self._outcome(row)
 
     async def _internal(self, task: dict, spec, arguments: dict) -> dict:
-        child = await self.start_minutes(arguments, task["origin"], task["session_id"])
+        start = self.start_research if spec.name == "create_research_task" else self.start_minutes
+        child = await start(arguments, task["origin"], task["session_id"])
         return {"task_id": child["id"], "title": child["title"], "status": "started"}
 
     def approval_view(self, call: dict) -> dict:
@@ -519,8 +549,8 @@ class TaskManager:
                 "title": self.specs()[call["tool"]].title if call["tool"] in self.specs() else call["tool"], "effect": call["effect"],
                 "effect_label": EFFECT_LABELS.get(call["effect"], call["effect"]), "target": call["target"],
                 "arguments": arguments, "reason": call["reason"], "origin": task["origin"], "created_at": call["created_at"],
-                "task_scope": call["effect"] not in NO_STANDING_ALLOW,
-                "voice": bool(settings.get("voice_approval")) and call["effect"] in VOICE_APPROVABLE}
+                "task_scope": task["kind"] != "research" and call["effect"] not in NO_STANDING_ALLOW,
+                "voice": task["kind"] != "research" and bool(settings.get("voice_approval")) and call["effect"] in VOICE_APPROVABLE}
 
     def approvals_pending(self) -> list[dict]:
         return [self.approval_view(call) for call in self.memory.pending_tool_calls() if call["id"] in self.approvals]
@@ -556,6 +586,20 @@ class TaskManager:
         if not call or call["status"] != "awaiting_approval" or call_id not in self.approvals:
             raise ValueError("这项操作已经处理过，或者任务已中断。")
         task = self.memory.task(call["task_id"])
+        if task["kind"] == "research":
+            if scope != "once" or via != "click":
+                raise ValueError("文档保存需要在控制台逐次点击确认。")
+            try:
+                identity = {"session_id": self.runtime.session_id, "settings": self.runtime.settings.version(),
+                            "data_epoch": self.runtime.data_epoch}
+                if task["state"].get("save_identity") != identity:
+                    raise ToolError("保存审批的运行状态已改变。")
+                self.runner.validate_artifact_export(call["arguments"])
+            except (ToolError, KeyError, ValueError):
+                self._expire_approvals(task["id"])
+                self.memory.finish_task(task["id"], "failed", "文档或来源已改变；请继续任务并重新审阅确认。")
+                await self.changed(task["id"])
+                raise ValueError("文档或来源已改变；请继续任务并重新审阅确认。") from None
         saved = await self.graphs.inspect(task)
         if task["status"] != "waiting_approval" or call_id not in saved["pending_calls"]:
             raise ValueError("审批状态已改变，请刷新后重试。")
@@ -586,6 +630,8 @@ class TaskManager:
             hint = "语音确认没有开启，请在控制台点击确认。"
         elif pending[0]["effect"] not in VOICE_APPROVABLE:
             hint = "删除和命令类操作需要在控制台点击确认。"
+        elif self.memory.task(pending[0]["task_id"])["kind"] == "research":
+            hint = "文档保存需要在控制台审阅并点击确认。"
         elif self.runtime.playing:
             hint = "正在播报时不接受语音确认，请稍后再说。"
         if hint:

@@ -496,8 +496,9 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
 
     @app.post("/api/tasks", dependencies=api)
     async def create_task(body: dict):
-        if body.get("kind", "minutes") != "minutes":
-            raise ValueError("目前只能新建纪要任务。")
+        kind = body.get("kind", "minutes")
+        if kind not in ("minutes", "research"):
+            raise ValueError("请选择纪要或资料文档任务。")
         for flag in ("use_session", "document"):
             if not isinstance(body.get(flag, flag == "use_session"), bool):
                 raise ValueError(f"{flag} 必须是布尔值。")
@@ -506,6 +507,9 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                   "use_session": body.get("use_session", True)}
         if "session_ids" in body:
             params["session_ids"] = id_list(body, "session_ids")
+        if kind == "research":
+            params.update(save_path=text_field(body, "save_path", 240), overwrite=body.get("overwrite", False))
+            return await runtime.tasks.start_research(params, "console", runtime.session_id)
         return await runtime.tasks.start_minutes(params, "console", runtime.session_id)
 
     @app.get("/api/tasks/{task_id}", dependencies=api)

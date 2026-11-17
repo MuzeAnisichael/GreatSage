@@ -12,6 +12,7 @@ On 2026-10-22 the user prioritized completing features over forcing preset numer
 Later on 2026-10-22 the user authorized completing v0.5, prioritizing natural voice interaction and daily usability, with small commits, current logs/documentation and main delivery. Finish bounded consecutive-turn handling, reply timing and visible transcription progress; deliver the alpha with exact build evidence and explicit live-service/device/installation limits. Future memory and multi-agent milestones remain separate.
 
 - Keep this repository independent of its parent workspace and other projects.
+- On 2026-11-18 the user approved v0.7: bounded read-only material organization and evidence review, document generation and approved workspace saving, using Deep Agents within the existing permission/source/recovery boundaries. See docs/v0.7-plan.md. Deliver small commits and updated logs/docs to main; no need to reconfirm this scope.
 - On 2026-10-23 the user authorized completing v0.6 and delivering main, with configurable automatic, necessary-confirmation and mostly-confirmation memory policies. docs/v0.6-plan.md records the approved scope and implementation defaults. Reuse LangMem extraction; preserve provenance, conflict handling, deletion propagation and async isolation. No need to reconfirm this scope.
 - Runtime recordings, transcripts, memories, logs, user Skills and credentials must stay outside version control. Development uses .runtime/.
 - Never print API keys. Read existing Windows user environment variables when process environment lacks them.

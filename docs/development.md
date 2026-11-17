@@ -1,6 +1,6 @@
 # GreatSage 贡献与开发说明
 
-更新日期：2026-10-24。当前交付版本为从 `main` 发布的 **0.6.0-alpha.1**，新增 LangMem 提取、三档确认、候选／实体关系与来源保护，保留连续语音、单源恢复和此前的资料／工具／框架迁移，提供 Windows x64 ZIP 与实验性 NSIS。[项目现状](project-status.md)区分已实现、已验证和仍待真实验收；[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+更新日期：2026-11-18。当前交付版本 **0.7.0-alpha.1** 以 `main` 为主干，提供 Windows x64 ZIP 与实验性 NSIS。本轮用 Deep Agents 接入固定两个只读子 Agent，完成资料整理、证据核对、文档生成与逐次点击保存，继续保留语音、LangMem 记忆和既有受控工具。最终运行代码 `53df4b9` 的冻结诊断、后端和包内界面检查，以及真实模型单例与失败记录见[v0.7 验证](validation-v0.7.md)；CI 状态以该记录为准。[开发日志](development-log.md)随每个模块提交维护。简要贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 1. 开发环境
 
@@ -81,6 +81,15 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 第一条已加入 Windows CI；第二条在冻结构建后检查动态依赖。脚本用独立目录和合成服务，验证请求、逐次审批、进程中断后重新授权、工具不重复执行、纪要／待办／文档和监控元数据。原始报告在 `.runtime/backend-smoke/`。它主动终止自己启动的测试后端来模拟中断，不代替桌面正常退出或安装器验收。
 
+研究框架／冻结依赖的离线诊断：
+
+```powershell
+.\.venv\Scripts\python.exe -m greatsage --check-research-runtime
+.\dist\greatsage-backend\greatsage-backend.exe --check-research-runtime
+```
+
+`research_diagnostics.check_research_runtime` 用合成来源和脚本化提供商运行真实 planner／子角色图，检查结构化提交、角色请求计数及流关闭。它不读取应用配置、密钥或个人资料，不建用户数据库、不联网。第二条只在当前冻结后端已构建时运行；源码通过不等于冻结包通过，两者也不证明真实模型质量。相应定向回归在 `tests/test_delegation.py`、`tests/test_research.py`，不要求每次文档改动都运行。
+
 ## 4. 真实模型与音频测试
 
 `scripts/probe_providers.py` 提供受控的本地／云端探测参数。先查看帮助，再明确选择要测试的服务和组件：
@@ -99,6 +108,15 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 ```
 
 云端示例要求现有 LLM 配置为 OpenRouter，只查询 Microsoft Learn 的公共文档；本地示例只读取临时生成的虚构文件。可用 `--settings-dir` 选择配置目录、`--cloud-model` 指定云端模型，更多参数见 `--help`。默认配置目录为 `.runtime`，Ollama 使用本机 `127.0.0.1:11434`。报告保存在 `.runtime/probe-agent-tools/`；一次通过不代表该模型的普遍能力，实际结果见[v0.4 验证](validation-v0.4.md)。不要把这个按需检查加入每次提交的默认测试。
+
+v0.7 的纪要／研究有界对照入口是 [scripts/probe_research.py](../scripts/probe_research.py)。默认只输出计划，不读取凭据、不创建运行目录、不联网；显式 `--cloud` 才使用已有 OpenRouter 配置执行一次：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/probe_research.py --dry-run
+.\.venv\Scripts\python.exe scripts/probe_research.py --cloud --settings-dir .runtime
+```
+
+探针创建两份虚构 Markdown，分别启动一次纪要和研究任务，输入相同的冲突日期／负责人资料。纪要至多 3 次请求（含原有有限重试），研究至多 16 次，与产品单轮上限一致，允许三份来源合法逐条读取。脚本不重复付费任务，模型可用 `--model` 指定。研究保存通过应用 `once/click` 审批入口程序化确认，不是物理鼠标或人工审阅验收。报告、原始产物和行号提示保存在独立的 `.runtime/research-probe/<UTC 时间>-<随机后缀>/`；结构检查通过后仍要人工核对来源、分歧、负责人归属和引用。GPT-4.1 单例闭环与 mini 的结构／引文失败均记录于 [v0.7 验证](validation-v0.7.md)，Ollama 研究本轮未测；不能从 dry-run、离线诊断或单次成功推断普遍质量。
 
 验证结果至少区分：
 
@@ -135,13 +153,15 @@ mock 提供商测试不能接收真实用户密钥，也不应联网。测试临
 
 ## 7. 版本、发布与文档
 
-Python 与桌面包分别使用对应的 alpha 表示：当前为 `0.6.0a1` 与 `0.6.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向交付提交。
+Python 与桌面包分别使用对应的 alpha 表示：当前交付为 `0.7.0a1` 与 `0.7.0-alpha.1`。发布时同步 `greatsage/__init__.py`、`pyproject.toml`、`package.json` 和 `package-lock.json`，记录标签、提交、配置变化、迁移说明、已知问题和验证结果。`main` 是交付主干；模块切片经检查后合入，版本标签指向实际交付提交。
 
-PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。`scripts/build.ps1` 默认 `-Target dir`，单一产物可用 `-Target zip/nsis`；若同时交付两种格式，后端构建一次后执行 `electron-builder --win zip nsis --x64 --publish never`，避免重复冻结。将整个目录分发，不能只复制 `GreatSage.exe`。[v0.6.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1)提供 Windows x64 ZIP、实验性安装器和 `SHA256SUMS.txt`。发布前记录构建代码提交、两个产物的大小／SHA256，上传后核对远端资产；无受信任发行签名，人工安装／升级／卸载仍待验收。
+PyInstaller 冻结后端，electron-builder 生成桌面目录、ZIP 和 NSIS。`scripts/build.ps1` 默认 `-Target dir`，单一产物可用 `-Target zip/nsis`；若同时交付两种格式，后端构建一次后执行 `electron-builder --win zip nsis --x64 --publish never`，避免重复冻结。将整个目录分发，不能只复制 `GreatSage.exe`。[v0.7.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.7.0-alpha.1)提供 `GreatSage-0.7.0-alpha.1-win-x64.zip`、实验性 `GreatSage-0.7.0-alpha.1-win-x64-Setup.exe` 和 `SHA256SUMS.txt`。发布前记录构建代码提交、两个产物的大小／SHA256，上传后核对远端资产；无受信任发行签名，人工安装／升级／卸载仍待验收。
 
 此前构建遇到 Electron 下载缓存重命名权限错误，后端已成功，因此只重试桌面阶段并复用已安装且版本一致的 Electron：`.\node_modules\.bin\electron-builder.cmd --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`。这不是默认必需参数；先确认失败阶段和本地 Electron 版本，再决定是否使用，避免重复构建整个后端。
 
-本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`；v0.6 以新增表保存结构记忆、来源处理进度、超预算延后与抑制记录，已有文本记录保留。运行目录的 `memory-extraction-state.json` 仅保存安全错误码和设置版本，用于跨重启保持提取的 `needs_attention` 暂停，不包含候选或原文正文。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，验证边界见[v0.6 验证](validation-v0.6.md)。
+本版继续使用原 `settings.json` 格式、`memory.sqlite3` 和 v0.4 加入的 `agent-checkpoints.sqlite3`；v0.6 以新增表保存结构记忆、来源处理进度、超预算延后与抑制记录，已有文本记录保留。v0.7 在 `TaskStoreMixin._init_tasks()` 中通过 `CREATE TABLE IF NOT EXISTS` 增加 `research_sources(task_id, source_id)`，不重写旧文本；新研究 collect 时建立关联，完成后继续用于来源删除传播，删除任务时清理。内层主／子 Agent 不持久化 checkpoint，外层仍只保存控制状态；旧程序不应被当成理解新研究任务的降级恢复器。
+
+运行目录的 `memory-extraction-state.json` 仅保存安全错误码和设置版本，用于跨重启保持提取的 `needs_attention` 暂停，不包含候选或原文正文。升级前退出应用并备份完整数据目录，包括配置引用的密文文件；不要只复制主 SQLite 文件而遗漏仍存在的 WAL。DPAPI 凭据绑定当前 Windows 用户，复制到另一台电脑不等同于凭据可用。替换程序目录时保留原数据，历史与本版验证分别见[v0.6 验证](validation-v0.6.md)和[v0.7 验证](validation-v0.7.md)。
 
 可重复的桌面 smoke test 使用独立运行目录：
 
@@ -182,7 +202,7 @@ README 截图和社交预览图用下面的脚本重新生成：
 
 ## 8. 开源参考与复用
 
-v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒加载入口和元数据，不收集所有服务 extras 或模型。许可与来源见 [third-party.md](third-party.md)。NSIS 使用 `scripts/build.ps1 -Target nsis`，当前源码版本为 `0.6.0a1`／`0.6.0-alpha.1`，发布状态以[项目现状](project-status.md)为准。
+v0.5 采用 Pipecat 1.13.0 与 Deepgram SDK 7.14.0；冻结时只补必经的懒加载入口和元数据，不收集所有服务 extras 或模型。v0.7 复用 Deep Agents 的子角色与 Skills middleware，保留现有 Providers 传输、存储、权限与审计，而非启用默认全能力代理。许可与来源见 [third-party.md](third-party.md)。NSIS 使用 `scripts/build.ps1 -Target nsis`，当前交付源码版本为 `0.7.0a1`／`0.7.0-alpha.1`，发布对象与验证范围以[项目现状](project-status.md)为准。
 
 升级前从托盘菜单退出 GreatSage，再备份完整数据目录。NSIS 的运行中升级处理可能强制结束进程，不保证执行应用关闭流程。默认当前用户安装、手动升级、卸载保留数据、不自动启动；DPAPI 仍绑定 Windows 用户。`GREATSAGE_DATA_DIR` 显式设置时也隔离 Electron profile，正常启动沿用既有路径。
 
