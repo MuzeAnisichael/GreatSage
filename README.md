@@ -29,7 +29,7 @@
 > [!NOTE]
 > 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。提供 Windows x64 目录 ZIP、实验性 NSIS 安装器和源码运行方式。
 >
-> - **版本**：v0.8 日常资料工作台功能完成，交付检查中；新增旧会话继续、有范围的自动选材、证据／版本审阅与修订保存。准确的源码、构建、CI 和未测边界见 [v0.8 验证](docs/validation-v0.8.md)。
+> - **版本**：[0.8.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 从 main 交付；新增旧会话继续、有范围的自动选材、证据／版本审阅与修订保存。准确的源码、构建、CI 和未测边界见 [v0.8 验证](docs/validation-v0.8.md)。
 > - **框架与边界**：LangChain、LangGraph、MCP HTTP、Pipecat、LangMem 和本地监控继续保留；v0.7 用 Deep Agents 实现两个固定只读研究角色，不是通用自主多 Agent。逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
@@ -101,16 +101,16 @@
 
 ### 下载 Windows 目录包
 
-从 [v0.7.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.7.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+从 [v0.8.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.7.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.8.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
 
-同页提供实验性 `GreatSage-0.7.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
+同页提供实验性 `GreatSage-0.8.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
 
 ### 从源码运行
 
@@ -218,7 +218,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.5 alpha | 功能从 main 交付，真实验收继续保留 | Pipecat、连续话轮、单源恢复、转写进度、语音监控、ZIP／实验性 NSIS |
 | v0.6 alpha | 功能从 main 交付 | LangMem 提取、三档确认、实体关系、来源与删除保护 |
 | v0.7 alpha | 功能从 main 交付 | 固定双只读子 Agent：资料整理、证据核对、文档产出与逐次点击保存；保留来源／预算／恢复边界 |
-| v0.8 alpha | 功能完成，交付检查中 | 旧会话继续、范围内选材、证据审阅、文档修订与重新审批保存 |
+| v0.8 alpha | 功能从 main 交付 | 旧会话继续、范围内选材、证据审阅、文档修订与重新审批保存 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 

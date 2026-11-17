@@ -30,8 +30,20 @@ Python 运行逻辑基准 `b165974`；后续 UI 可读性修正为 `92d53d5`。�
 1. `.runtime/desktop-smoke/2026-11-17T20-04-49-851Z/result.json`：新增 session fixture 的正则在 template literal 中丢失转义；修为前后缀路径解析，全部 43 段生成 renderer 源码通过 `vm.Script`。
 2. `.runtime/desktop-smoke/2026-11-17T20-07-32-996Z/result.json`：旧会话／任务关联通过，来源预算的紧凑数字与精确数字断言不一致。截图发现单选控件被全宽样式挤压，改为固定控件宽度和精确预算。
 3. `.runtime/desktop-smoke/2026-11-17T20-11-04-690Z/result.json`：仅重建桌面后仍显示旧 UI。核对发现 HTTP 页面来自 PyInstaller `_internal/ui`，必须刷新冻结静态资源；该轮不代表 UI 修复无效或最终包通过。
+4. `.runtime/desktop-smoke/2026-11-17T20-15-09-170Z/result.json`：正确新 UI 已通过来源面板检查，夹具在原文请求已发出、DOM 尚未创建时提前解引用空节点。只给异步等待表达式补空状态处理，并保留最终内容断言，未修改产品包。
 
-最终静态资源、包内桌面和资产仍在收尾，完成后补齐报告与哈希。Python 3.11.7、Electron 40.10.6；框架版本未变。安装器未签名，也未进行人工安装／升级／卸载验收。
+最终静态资源已刷新，`work.js`、`styles.css`、`app.js`、`session-workspace.js` 与冻结目录哈希一致，并再次确认包内实际 HTTP 服务的 `work.js` 与源码一致。Python 3.11.7、Electron 40.10.6；框架版本未变。UI 运行代码为 `92d53d5`，之后仅文档与测试夹具变化。
+
+最终包内桌面 **75/75** 通过：packaged=true、parallelSources=true、live=false、退出码0；报告 `.runtime/desktop-smoke/2026-11-17T20-17-23-082Z/result.json`，驱动日志 `.runtime/desktop-smoke-driver/20261118-041722/`，stderr 为空。来源面板与任务审批截图经开发 Agent 目视核对；这不是用户人工验收。检查覆盖旧会话继续／关联任务、来源预算和原文、固定排除／显式更新、证据定位、版本差异、乐观编辑／纠正修订、逐次保存审批及关闭后迟到响应。
+
+Windows 资产与 [v0.8.0-alpha.1 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 对应；安装器未签名，也未进行人工安装／升级／卸载验收：
+
+| 资产 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `GreatSage-0.8.0-alpha.1-win-x64.zip` | 292265032 | `1301f7a685d835aa688600dfbaa62006417cee58b8fe7e476f56ac0e5a7c9587` |
+| `GreatSage-0.8.0-alpha.1-win-x64-Setup.exe` | 218557441 | `74399de80ce78ce74d9aa102cefafc098f84201ecc021f80163d7082da7e46e3` |
+
+本机构建日志为 `.runtime/v08-final-pyinstaller.log` 与 `.runtime/v08-release-build.log`；发布时同时提供 UTF-8 无 BOM 的 `SHA256SUMS.txt`。`release/`、`.runtime/` 与测试资料均不进入 Git。构建命令为项目虚拟环境下的 `python -m PyInstaller --noconfirm greatsage-backend.spec`，然后 `electron-builder --win zip nsis --x64 --publish never --config.electronDist=node_modules/electron/dist`；必须按这个先后顺序刷新 HTTP UI。
 
 ## 已知边界和未测项
 

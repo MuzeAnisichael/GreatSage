@@ -88,7 +88,13 @@ require(packaged ? path.join(packageResources, 'app.asar', 'desktop', 'main.cjs'
       main = BrowserWindow.getAllWindows().find(window => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(window.webContents.getURL()));
       return Boolean(main);
     }, 'desktop startup', 45000);
-    const evaluate = code => main.webContents.executeJavaScript(code, true);
+    const evaluate = async code => {
+      try { return await main.webContents.executeJavaScript(code, true); }
+      catch (error) {
+        const location = String(code).replace(/\s+/g, ' ').slice(0, 220);
+        throw new Error(`Renderer evaluate failed near: ${location}\n${error.message}`);
+      }
+    };
     await until(() => evaluate("document.querySelector('#connection-label')?.textContent === '本地服务已连接' && document.querySelector('#model-stat')?.textContent !== '—'"), 'settings and WebSocket');
     const connection = await evaluate('window.greatsage.getConnection()');
     token = connection.token;
@@ -269,21 +275,21 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       };
     })()`);
     await evaluate("document.querySelector('#session-label').click()");
-    await until(() => evaluate("document.querySelector('.session-dialog').open && document.querySelectorAll('.session-card').length === 2"), 'session workspace');
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true && document.querySelectorAll('.session-card').length === 2"), 'session workspace');
     await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 历史会话')).querySelector('button:last-child').click()");
-    await until(() => evaluate("window.__sessionSmoke.taskQueries.at(-1) === window.__sessionSmoke.historical && document.querySelector('#task-session-filter').value.endsWith(window.__sessionSmoke.historical)"), 'session-scoped task navigation');
+    await until(() => evaluate("window.__sessionSmoke?.taskQueries?.at(-1) === window.__sessionSmoke?.historical && document.querySelector('#task-session-filter')?.value.endsWith(window.__sessionSmoke.historical) === true"), 'session-scoped task navigation');
     check(await evaluate("document.querySelector('#view-tasks').hidden === false && document.querySelector('#task-list').textContent.includes('此会话还没有关联任务')"), 'Related tasks use the selected session server filter');
     await evaluate("document.querySelector('#session-label').click()");
-    await until(() => evaluate("document.querySelector('.session-dialog').open && document.querySelectorAll('.session-card').length === 2"), 'reopen session workspace');
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true && document.querySelectorAll('.session-card').length === 2"), 'reopen session workspace');
     await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 历史会话')).querySelector('.primary').click()");
-    await until(() => evaluate("window.__sessionSmoke.activations.at(-1) === window.__sessionSmoke.historical && document.querySelector('#chat-messages').textContent.includes('SYNTHETIC 已继续历史会话')"), 'activate historical session');
+    await until(() => evaluate("window.__sessionSmoke?.activations?.at(-1) === window.__sessionSmoke?.historical && document.querySelector('#chat-messages')?.textContent.includes('SYNTHETIC 已继续历史会话') === true"), 'activate historical session');
     check(await evaluate("document.querySelector('#session-label').textContent.includes('syntheti') && document.querySelectorAll('#chat-messages .chat-message').length === 1"), 'Old session activation replaces the visible history atomically');
     await evaluate("document.querySelector('#session-label').click()");
-    await until(() => evaluate("document.querySelector('.session-dialog').open"), 'restore current session dialog');
+    await until(() => evaluate("document.querySelector('.session-dialog')?.open === true"), 'restore current session dialog');
     await evaluate("[...document.querySelectorAll('.session-card')].find(node=>node.textContent.includes('SYNTHETIC 当前会话')).querySelector('.primary').click()");
-    await until(() => evaluate(`window.__sessionSmoke.activations.at(-1) === ${JSON.stringify(sessionId)} && document.querySelector('#chat-messages').textContent.includes('SYNTHETIC 已恢复当前会话')`), 'restore current session');
+    await until(() => evaluate(`window.__sessionSmoke?.activations?.at(-1) === ${JSON.stringify(sessionId)} && document.querySelector('#chat-messages')?.textContent.includes('SYNTHETIC 已恢复当前会话') === true`), 'restore current session');
     await evaluate("document.querySelector('#task-session-filter').value='all';document.querySelector('#task-session-filter').dispatchEvent(new Event('change',{bubbles:true}))");
-    await until(() => evaluate("!document.querySelector('#task-session-filter').disabled"), 'clear session task filter');
+    await until(() => evaluate("document.querySelector('#task-session-filter')?.disabled === false"), 'clear session task filter');
     await evaluate("window.fetch=window.__sessionSmoke.originalFetch;delete window.__sessionSmoke");
     check(true, 'Session workspace continues history and can jump to server-filtered related tasks');
 
@@ -443,9 +449,9 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       };
     })()`);
     await evaluate("document.querySelector('[data-view=tasks]').click()");
-    await until(() => evaluate("!document.querySelector('#view-tasks').hidden && document.querySelector('#task-list').textContent.includes('SYNTHETIC 研究文档')"), 'visible research task surface');
+    await until(() => evaluate("document.querySelector('#view-tasks')?.hidden === false && document.querySelector('#task-list')?.textContent.includes('SYNTHETIC 研究文档') === true"), 'visible research task surface');
     await evaluate("document.querySelector('#new-research-task').click()");
-    await until(() => evaluate("document.querySelector('.research-task-dialog').open && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
+    await until(() => evaluate("document.querySelector('.research-task-dialog')?.open === true && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
     await evaluate(`(() => {
       const form = document.querySelector('.research-task-dialog form');
       form.elements.task_title.value = 'SYNTHETIC 研究文档';
@@ -455,7 +461,7 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       form.elements.save_path.value = 'documents/smoke-research.md';
       form.requestSubmit(form.querySelector('button[value=start]'));
     })()`);
-    await until(() => evaluate("window.__researchSmoke.posts.length === 1 && document.querySelector('#task-detail')?.textContent.includes('SYNTHETIC 截止时间仍待确认')"), 'synthetic research detail');
+    await until(() => evaluate("window.__researchSmoke?.posts?.length === 1 && document.querySelector('#task-detail')?.textContent.includes('SYNTHETIC 截止时间仍待确认') === true"), 'synthetic research detail');
     check(await evaluate(`(() => {
       const body = window.__researchSmoke.posts[0];
       return body.kind === 'research' && body.title === 'SYNTHETIC 研究文档'
@@ -482,7 +488,7 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       return metric?.querySelector('strong').textContent === '未返回' && !metric.textContent.includes('US$0');
     })()`), 'Research usage never turns unknown cost into zero');
     await evaluate("[...document.querySelectorAll('#task-detail button')].find(node=>node.textContent.includes('查看 / 调整来源')).click()");
-    await until(() => evaluate("document.querySelector('.research-sources-dialog').open && document.querySelectorAll('.source-candidate').length === 2"), 'research source selection');
+    await until(() => evaluate("document.querySelector('.research-sources-dialog')?.open === true && document.querySelectorAll('.source-candidate').length === 2"), 'research source selection');
     check(await evaluate(`(() => {
       const dialog = document.querySelector('.research-sources-dialog');
       const budget = [...dialog.querySelectorAll('.source-selection-stat')].find(node => node.firstElementChild.textContent === '字符预算');
@@ -493,7 +499,7 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
         && dialog.textContent.includes('本轮选中') && !dialog.querySelector('.source-update-scope').hidden;
     })()`), 'Research source view shows actual selection, reasons, bounded budget and stale scope');
     await evaluate("document.querySelector('.source-original-details summary').click()");
-    await until(() => evaluate("window.__researchSmoke.sourceTextRequests.length === 1 && document.querySelector('.source-original').textContent.includes('发布时间需要在周五前确认')"), 'research raw source');
+    await until(() => evaluate("window.__researchSmoke?.sourceTextRequests?.length === 1 && document.querySelector('.source-original')?.textContent.includes('发布时间需要在周五前确认') === true"), 'research raw source');
     check(true, 'Selected research source opens exact task-scoped original text');
     check(await evaluate(`(() => {
       const card = document.querySelector('.source-candidate');
@@ -503,14 +509,14 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
       return pin.checked && !exclude.checked;
     })()`), 'Research source pin and exclude are mutually exclusive');
     await evaluate("document.querySelector('.source-update-scope input').checked=true;document.querySelector('.source-rerun').click()");
-    await until(() => evaluate("window.__researchSmoke.reselectPosts.length === 1 && document.querySelector('#task-detail').textContent.includes('重选来源')"), 'research reselect task');
+    await until(() => evaluate("window.__researchSmoke?.reselectPosts?.length === 1 && document.querySelector('#task-detail')?.textContent.includes('重选来源') === true"), 'research reselect task');
     check(await evaluate(`(() => {
       const body = window.__researchSmoke.reselectPosts[0];
       return body.selection_mode === 'relevant' && body.pinned_source_ids.join(',') === 'source-plan'
         && body.excluded_source_ids.length === 0 && body.update_sources === true;
     })()`), 'Research reselect creates a new task with explicit updated-source adoption');
     await evaluate("document.querySelector('#refresh-tasks').click()");
-    await until(() => evaluate("Boolean(document.querySelector('.approval-card')) && !document.querySelector('#refresh-tasks').disabled"), 'synthetic research save approval');
+    await until(() => evaluate("Boolean(document.querySelector('.approval-card')) && document.querySelector('#refresh-tasks')?.disabled === false"), 'synthetic research save approval');
     check(await evaluate(`(() => {
       const card = document.querySelector('.approval-card');
       const labels = [...card.querySelectorAll('button')].map(node => node.textContent.trim());
@@ -521,10 +527,10 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     })()`), 'Research save approval exposes click-only one-time controls');
     await screenshot(main, 'research-task.png');
     await evaluate("document.querySelector('.approval-card button').click()");
-    await until(() => evaluate("window.__researchSmoke.approveCalls.length === 1 && document.querySelector('#approvals-panel').hidden"), 'research save click approval');
+    await until(() => evaluate("window.__researchSmoke?.approveCalls?.length === 1 && document.querySelector('#approvals-panel')?.hidden === true"), 'research save click approval');
     check(await evaluate("window.__researchSmoke.approveCalls[0].method === 'POST' && window.__researchSmoke.approveCalls[0].body.scope === 'once'"), 'Research save sends one-time click approval');
     await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
-    await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelector('.artifact-editor').value.includes('有来源支持的结论') && document.querySelector('.artifact-passages')"), 'research artifact detail');
+    await until(() => evaluate("document.querySelector('.artifact-dialog')?.open === true && document.querySelector('.artifact-editor')?.value.includes('有来源支持的结论') === true && Boolean(document.querySelector('.artifact-passages'))"), 'research artifact detail');
     check(await evaluate(`(() => {
       const dialog = document.querySelector('.artifact-dialog');
       return dialog.textContent.includes('不会把模型结论标记为已经事实认证')
@@ -533,23 +539,23 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
         && dialog.querySelector('.citation[data-marker="S1"]').textContent.includes('第 3–3 行');
     })()`), 'Artifact review maps cited passages to valid original locators without semantic certification');
     await evaluate("document.querySelector('.artifact-compare-version').value='1';document.querySelector('.artifact-compare-version').dispatchEvent(new Event('change',{bubbles:true}))");
-    await until(() => evaluate("document.querySelector('.artifact-diff')?.textContent.includes('旧结论') && window.__researchSmoke.reviewRequests.at(-1).compare === 1"), 'artifact version comparison');
+    await until(() => evaluate("document.querySelector('.artifact-diff')?.textContent.includes('旧结论') === true && window.__researchSmoke?.reviewRequests?.at(-1)?.compare === 1"), 'artifact version comparison');
     check(true, 'Artifact review compares the selected version against an explicit version');
     await evaluate("document.querySelector('.artifact-editor').value += '\\nSYNTHETIC 手动修正';document.querySelector('.artifact-save').click()");
-    await until(() => evaluate("window.__researchSmoke.editPosts.length === 1 && !document.querySelector('.artifact-save').disabled"), 'artifact versioned edit');
+    await until(() => evaluate("window.__researchSmoke?.editPosts?.length === 1 && document.querySelector('.artifact-save')?.disabled === false"), 'artifact versioned edit');
     check(await evaluate("window.__researchSmoke.editPosts[0].expected_version === 2 && window.__researchSmoke.editPosts[0].content.includes('SYNTHETIC 手动修正')"), 'Artifact edits send expected_version to prevent overwriting a newer version');
     await evaluate("document.querySelector('.artifact-regenerate').click();document.querySelector('.regenerate-form textarea').value='把负责人纠正为林同学，并保留原文引用。';document.querySelector('.regenerate-update-sources input').checked=true;document.querySelector('.regenerate-start').click()");
-    await until(() => evaluate("window.__researchSmoke.regeneratePosts.length === 1 && !document.querySelector('.artifact-dialog').open && document.querySelector('#task-detail').textContent.includes('纠正版本')"), 'artifact corrected regeneration');
+    await until(() => evaluate("window.__researchSmoke?.regeneratePosts?.length === 1 && document.querySelector('.artifact-dialog')?.open === false && document.querySelector('#task-detail')?.textContent.includes('纠正版本') === true"), 'artifact corrected regeneration');
     check(await evaluate(`(() => {
       const body = window.__researchSmoke.regeneratePosts[0];
       return body.expected_version === 2 && body.update_sources === true && body.instructions === '把负责人纠正为林同学，并保留原文引用。';
     })()`), 'Artifact correction becomes a versioned regeneration with explicit source refresh');
     await evaluate("[...document.querySelectorAll('.artifact-row button')].find(node=>node.textContent==='打开').click()");
-    await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelector('.artifact-review-content').children.length > 0"), 'reopen artifact after correction');
+    await until(() => evaluate("document.querySelector('.artifact-dialog')?.open === true && document.querySelector('.artifact-review-content')?.children.length > 0"), 'reopen artifact after correction');
     await evaluate("(()=>{window.__researchSmoke.holdArtifact=true;const select=document.querySelector('.artifact-version');select.value='1';select.dispatchEvent(new Event('change',{bubbles:true}))})()");
-    await until(() => evaluate("window.__researchSmoke.artifactReleases.length === 1"), 'held artifact version response');
+    await until(() => evaluate("window.__researchSmoke?.artifactReleases?.length === 1"), 'held artifact version response');
     await evaluate("document.querySelector('.artifact-close').click();window.__researchSmoke.releaseArtifacts()");
-    await until(() => evaluate("!document.querySelector('.artifact-version').disabled"), 'late artifact response settled');
+    await until(() => evaluate("document.querySelector('.artifact-version')?.disabled === false"), 'late artifact response settled');
     check(await evaluate("!document.querySelector('.artifact-dialog').open && !document.querySelector('.artifact-body').children.length && !document.querySelector('.citation-list').children.length && !document.querySelector('.artifact-review-content').children.length && !document.body.textContent.includes('SYNTHETIC LATE ARTIFACT VERSION')"), 'Closing artifact detail invalidates a late version response');
     await evaluate("window.fetch=window.__researchSmoke.originalFetch;delete window.__researchSmoke");
     check(!(await request('/api/tasks')).some(task => task.id === 'synthetic-research-task'), 'Research UI fixture never starts a backend model task');
