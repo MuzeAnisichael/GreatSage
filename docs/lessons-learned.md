@@ -1,6 +1,6 @@
 # 开发经验与已知陷阱
 
-更新日期：2026-10-22。这里只保留有复用价值的结论；过程见[开发日志](development-log.md)，设计见[架构](architecture.md)。改动相关模块前检索条目；新增证据补在原条目，失效经验注明替代结论。以下经验来自已记录的实现与验证，不是本轮重新测试的结果。
+更新日期：2026-11-18。这里只保留有复用价值的结论；过程见[开发日志](development-log.md)，设计见[架构](architecture.md)。改动相关模块前检索条目；新增证据补在原条目，失效经验注明替代结论。以下区分实测故障与代码审查发现的边界；具体执行与发布状态以相应版本验证记录为准，文档维护不代表重跑测试。
 
 ## L01 · 结果未知时，同批后续工具也要停止
 
@@ -115,3 +115,38 @@
 - **处理**：用户关闭时先同步清理选择与详情代际；列表和详情分别维护请求身份。只有用户入口打开弹窗，后台只能更新仍打开且身份一致的详情；迟到的成功和失败都丢弃。
 - **何时复查**：新增弹窗自动刷新、详情跳转或原生窗口事件时，用可控 Promise 在关闭与事件回调之间释放响应。
 - **证据**：[structured-memory.js](../ui/structured-memory.js)、[包内界面回归](../scripts/smoke_desktop.cjs)、[v0.6 验证](validation-v0.6.md)。
+
+## L17 · 内层 checkpoint 的 None 可能继承外层存储
+
+- **发现／原因**：研究图嵌入持久化 LangGraph 后，内层默认 `checkpointer=None` 可能继承父图 checkpointer，将消息及来源正文写进原本只应保存控制状态的数据库。
+- **处理**：planner 与两个只读子图显式 `checkpointer=False, store=None`；业务正文归原任务库管理。代价是恢复未完成研究要整体重跑，不能宣称子角色独立断点续跑。
+- **何时复查**：新增嵌套图或升级 LangGraph／Deep Agents 时，用带父级 SQLite saver 的真实框架回归确认落盘内容，不只检查构造参数。
+- **证据**：[delegation.py](../greatsage/delegation.py)、[test_delegation.py](../tests/test_delegation.py) 的 `test_nested_graph_never_inherits_parent_checkpointer`；执行入口见 [v0.7 验证](validation-v0.7.md)。
+
+## L18 · 框架工具 schema 转换会丢掉约束
+
+- **发现／原因**：本轮框架适配中，`StructuredTool → convert_to_openai_tool` 会丢失自有 Pydantic schema 的部分顶层约束，包括 `additionalProperties`；模型可能得到比业务契约更宽的参数定义。
+- **处理**：`ProviderDelegationModel.bind_tools()` 对自有结构工具恢复 canonical schema；`_agenerate()` 在框架派发前同时做 JSON Schema 与严格 Pydantic 校验。不要靠模型遵守提示或框架执行时自动修复来保证参数正确。
+- **何时复查**：更换 schema 工具、Pydantic 或 LangChain 版本时，检查实际出站定义及非法返回，而不是只看源模型的 `extra="forbid"`。
+- **证据**：[delegation.py](../greatsage/delegation.py) 的 `STRICT_SCHEMAS`／`ProviderDelegationModel`、[test_delegation.py](../tests/test_delegation.py)；不据此推定所有云端模型兼容，真实调用结果见 [v0.7 验证](validation-v0.7.md)。
+
+## L19 · 清理正文要覆盖素材重扫与已完成任务
+
+- **审查发现**：只在用户删除前取消任务、只清理活动任务的中间结果，会漏掉素材重新扫描的旧片段，以及完成后仍保留在计划／核对摘要中的原文副本。
+- **处理**：collect 绑定 `research_sources(task_id, source_id)`；完成后保留无正文的关联，来源失效事务经 `_redact_events → _invalidate_research_sources` 清 collect／research 结果及可能含原文的 detail，仅留 calls／budget。产物按既有规则保留、引用失效；删除任务再删关联。
+- **何时复查**：添加任务详情字段、缓存或新来源更新入口时，逐一确认哪份正文由谁清理；不能把“任务完成”当成“不再依赖来源”。
+- **证据**：[task_store.py](../greatsage/task_store.py)、[test_research.py](../tests/test_research.py) 的 `test_material_rescan_clears_research_copies_even_after_completion`，同时覆盖等待审批和已完成任务。
+
+## L20 · 批准后排队仍需要在真正写入入口复核
+
+- **审查发现**：主线程在调用 `to_thread` 前验证身份，不能覆盖线程池排队期间发生的会话／来源／产物变化；审批绑定当前文档也不能保护之后更换的版本。
+- **处理**：保存绑定 artifact ID、版本、导出内容哈希及运行身份，逐次点击确认；`TaskManager._call` 的 `execute_local` 在线程实际启动后持存储锁再执行 `pre_execute`，随后工具同锁复核产物并写入。已进入执行后取消仍可能是结果未知，不能将 checkpoint 宣称为 exactly-once。
+- **何时复查**：在线程／进程池前后增加 await、调整保存或扩大并发时，将检查点放到真实副作用边界，并使用可控排队夹具。
+- **证据**：[tasks.py](../greatsage/tasks.py)、[tools.py](../greatsage/tools.py)、[test_research.py](../tests/test_research.py) 的 `test_worker_entry_rechecks_identity_after_thread_pool_queuing` 和审批版本回归。
+
+## L21 · 重跑阶段不能重置累计预算或抹掉调用证据
+
+- **审查发现**：通用 `_step` 每轮将 detail 清空，研究 resume 会丢失上一轮调用记录，即使任务 state 中的累计预算仍存在。
+- **处理**：研究步骤仅保留 `calls/budget` 后重跑，重新生成计划／角色状态；每次模型请求先持久预留累计请求数与输入估算加输出预算，结束后追加用量／结局。累计 active time 在轮次收尾记录，不能声称硬退出前未提交的耗时也能精确恢复。
+- **何时复查**：修改 reset／resume、预算和清理策略时，用“已记账调用后失败，再恢复”的一次定向场景检查两轮证据与总额，而不重复性能基准。
+- **证据**：[research.py](../greatsage/research.py)、[tasks.py](../greatsage/tasks.py)、[test_research.py](../tests/test_research.py) 的 `test_resume_preserves_accounted_calls_and_cumulative_budget`。最终验证／构建边界见 [validation-v0.7.md](validation-v0.7.md)。

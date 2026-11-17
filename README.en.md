@@ -29,14 +29,16 @@ It hears what you say and can also listen in on meeting audio from your computer
 > [!NOTE]
 > GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Use the Windows x64 folder ZIP, experimental NSIS installer or source setup.
 >
-> - **Version:** [0.6.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1) ships from `main`, with LangMem extraction, three confirmation policies, candidate review, entities and evidence, alongside existing voice, materials and controlled tools.
-> - **Frameworks:** LangChain, LangGraph, MCP HTTP and local runtime inspection are included. See [v0.4 validation](docs/validation-v0.4.md) for the actual coverage and the [development log](docs/development-log.md) for individual changes (Chinese).
+> - **Current development version:** `0.7.0-alpha.1` has the research workflow implemented. Final CI, build and live-model validation are pending; this is not a claim that it has merged into `main` or been released. See [v0.7 validation](docs/validation-v0.7.md). The published download remains [0.6.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1).
+> - **Frameworks and scope:** LangChain, LangGraph, MCP HTTP, Pipecat, LangMem and local inspection remain in use. v0.7 adds two fixed read-only research roles with Deep Agents, not a general autonomous multi-agent system. See the [development log](docs/development-log.md) for individual changes (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
 
 **Everyday voice in v0.5:** start the next sentence while the previous one awaits recognition. Confirmed turns enter history in order, while older replies wait until you finish speaking. The UI distinguishes interim, confirmed and unfinished transcripts, displays source activity and offers an explicit retry of one failed recognizer. Pipecat, optional Deepgram streaming STT, playback/interruption receipts and voice monitoring are included. Live service quality, device behavior and manual installation remain unverified; performance targets are optimization references. See [v0.5 validation](docs/validation-v0.5.md).
 
 **Reviewable memory in v0.6:** opt in to background extraction using your selected chat model. Choose automatic, necessary-only or mostly-confirmation (default). Review candidates, original quotes and entity relationships; rejecting or deleting a memory suppresses further extraction from that old source version. Exact-name grouping is not identity resolution, and quote validation does not guarantee semantic correctness. See [v0.6 validation](docs/validation-v0.6.md).
+
+**Research documents in v0.7 (release validation pending):** select imported Markdown materials or the current session. A planner delegates source organization and evidence review to two read-only subagents in sequence, producing a cited document with unresolved items. Each workspace save requires a click after review; declining keeps the artifact. Task details expose the plan, role status, usage and save progress. Live-model organization and review quality remain unverified. See the [v0.7 scope](docs/v0.7-plan.md) and [validation record](docs/validation-v0.7.md).
 
 ## What it does
 
@@ -49,6 +51,9 @@ It hears what you say and can also listen in on meeting audio from your computer
 - **Writes minutes with sources (v0.3)**
   - Import `.md` notes, then turn a meeting and those notes into minutes, editable todos and a document draft.
   - Every item cites its sources as `[S1]`-style markers; items it cannot source are labeled.
+- **Research documents (v0.7 source)**
+  - Plan, organize and review within selected sources, separating supported findings from conflicts and unresolved items.
+  - Every save is bound to the document version and content and requires a click. Subagents cannot browse the network, execute commands or write memories.
 - **Asks before acting (v0.3)**
   - Writing, opening and deleting need a click in the console by default. Writes and deletes can be undone, and the command tool is off by default.
   - Overheard audio and imported notes can never start an action.
@@ -91,7 +96,7 @@ It hears what you say and can also listen in on meeting audio from your computer
 
 ### Download the Windows folder build
 
-Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.6.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
+This published v0.6 download does not include the current v0.7 research workflow; v0.7 packages and tags remain subject to release validation. Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.6.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.6.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
 
 ```powershell
 Get-FileHash -LiteralPath '.\GreatSage-0.6.0-alpha.1-win-x64.zip' -Algorithm SHA256
@@ -158,6 +163,8 @@ flowchart LR
     Runtime --> LLM[LangChain adapters<br/>cloud or local]
     LLM --> Output[Text, speech and pet]
     Runtime --> Tasks[LangGraph tasks<br/>minutes, todos, documents]
+    Tasks --> Research[Deep Agents<br/>two fixed read-only research roles]
+    Research --> LLM
     Tasks --> Policy{Permission layer}
     Policy -->|after you approve| Tools[Local tools and MCP HTTP]
     Runtime -.-> Audit[Events, audit and inspector]
@@ -179,13 +186,14 @@ When you run from source, runtime data lives in `.runtime/` and never enters ver
 
 ## Known limitations
 
-- **Speech recognition:** audio is segmented and recognized by repeated snapshots, not a native streaming API. In three runs of the full API voice pipeline:
+- **Speech recognition:** the original API/local path uses segment snapshots; optional Deepgram native streaming is implemented but its live quality remains unverified. These three runs are the historical v0.2 API voice baseline, not v0.7 measurements:
   - Median time to first text was about 3.14 s, and to audio ready about 4.90 s.
   - The targets of 1–2 s to first text and 2–3 s to playback are not met yet.
 - **Echo:** echo handling combines process exclusion, playback references and text de-duplication. It is not full acoustic echo cancellation; headphones help.
 - **Model output:** listening decisions, conflict suggestions, summaries and minutes can be wrong. Original transcripts are always kept, so check names, numbers and dates.
 - **v0.3 validation:** minutes were evaluated on fictional meetings only. Opening files and running commands have unit tests only. Voice-approval misrecognition has not been measured.
-- **v0.4 validation:** exact model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio, OAuth and multi-agent execution are not implemented yet. See [v0.6 validation](docs/validation-v0.6.md) for structured memory coverage.
+- **Framework validation:** historical model, MCP server and build coverage is recorded in [v0.4 validation](docs/validation-v0.4.md); it does not establish compatibility with every model or server. stdio and OAuth remain unimplemented. See [v0.6 validation](docs/validation-v0.6.md) for structured memory coverage.
+- **v0.7 research:** only two fixed read-only roles run in sequence; there is no general concurrent/recursive autonomy or web search. Exact quotes do not prove factual correctness. Live-model quality remains unverified, and deterministic regressions cannot substitute for it. Recovery reruns an unfinished research stage, not an individual child checkpoint.
 - **Distribution:** Windows x64 folder ZIP and experimental NSIS installer, without trusted signing. Clean-machine installation, upgrades, uninstallation and cross-machine compatibility remain unverified. Prefer the ZIP for initial trials; packaged component checks do not validate the installation cycle.
 
 Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.3 validation](docs/validation-v0.3.md) and [v0.4 validation](docs/validation-v0.4.md) (Chinese).
@@ -200,7 +208,7 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.
 | v0.4 alpha | Released from main | LangChain, LangGraph, MCP HTTP, local inspection and a Windows x64 folder ZIP |
 | v0.5 alpha | Features delivered from main; live acceptance pending | Pipecat, consecutive turns, source recovery, transcript status, ZIP and experimental NSIS |
 | v0.6 alpha | Features delivered from main | LangMem extraction, confirmation policies, entities, evidence and deletion protection |
-| v0.7 | Planned | Deep Agents and isolated subagents; richer inputs and pet later |
+| v0.7 alpha | Implemented; release validation pending | Two fixed read-only subagents: organize sources, review evidence, produce documents and save with a separate click; source, budget and recovery boundaries retained |
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-10-24。适用于包含 v0.6 结构化记忆的当前源码实现；构建、验证与发布状态以 [project-status.md](project-status.md) 为准。
+更新日期：2026-11-18。适用于包含 v0.7 固定双角色研究的当前源码实现；功能已实现不等于已发布，构建与验证状态以 [project-status.md](project-status.md) 和 [validation-v0.7.md](validation-v0.7.md) 为准。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -43,6 +43,8 @@ GreatSage/
 │  ├─ decisions.py                  回应策略
 │  ├─ materials.py / artifacts.py   资料、引用与版本化产物
 │  ├─ workflows.py / tasks.py       纪要规则与任务执行协调
+│  ├─ research.py / delegation.py   研究闭环与 Deep Agents 固定只读角色委派
+│  ├─ research_diagnostics.py        无网络的真实研究框架／冻结依赖诊断
 │  ├─ task_store.py                 任务、步骤与工具账本持久化
 │  ├─ agent_graph.py                LangGraph 图、检查点与恢复
 │  ├─ tools.py / mcp_tools.py       权限、本地工具与 MCP SDK 适配
@@ -86,6 +88,10 @@ GreatSage/
 | 纠正 / 删除内容和派生数据 | [ui/app.js](../ui/app.js): `renderMemories`, `renderHistory`；`PUT/DELETE /api/memories/{record_id}`, `/api/history/{record_id}` | [runtime.py](../greatsage/runtime.py): `before_delete`；[memory.py](../greatsage/memory.py): `revise_message`, `revise_memory`, `delete_message`, `delete_memory`, `_delete_derived`；关联清理见 [audit.py](../greatsage/audit.py), [artifacts.py](../greatsage/artifacts.py) | [test_memory.py](../tests/test_memory.py), [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py), [test_audit.py](../tests/test_audit.py) |
 | 导入 / 更新 / 检索资料 | [ui/work.js](../ui/work.js): `setupWork`；`/api/materials` 系列接口 | [materials.py](../greatsage/materials.py): `collect_markdown`, `split_markdown`, `MaterialsMixin.import_materials`, `rescan_materials`, `search_chunks` | [test_materials.py](../tests/test_materials.py), [test_server.py](../tests/test_server.py) |
 | 生成纪要、待办、文档 | [ui/work.js](../ui/work.js): `setupWork`；`POST /api/tasks` | [tasks.py](../greatsage/tasks.py): `TaskManager.start_minutes`, `_collect`, `_extract`, `_compose`, `_document`；[agent_graph.py](../greatsage/agent_graph.py): `AgentGraphs._minutes`；抽取与渲染规则在 [workflows.py](../greatsage/workflows.py) | [test_tasks.py](../tests/test_tasks.py), [scripts/evaluate_tasks.py](../scripts/evaluate_tasks.py) |
+| 选定资料／会话生成研究文档 | [ui/work.js](../ui/work.js): `setupWork`, `researchOverview`；`POST /api/tasks` 的 `kind=research`；工具 `create_research_task` | [tasks.py](../greatsage/tasks.py): `TaskManager.start_research`, `_internal`；[agent_graph.py](../greatsage/agent_graph.py): `AgentGraphs.graph`, `_research`；[research.py](../greatsage/research.py): `ResearchWorkflow.start`, `collect`, `research`, `compose`, `save` | [test_research.py](../tests/test_research.py), [test_server.py](../tests/test_server.py) |
+| 固定双角色规划、整理与证据核对 | 任务详情的计划、角色状态、待确认项；`task_updated` | [delegation.py](../greatsage/delegation.py): `run_delegation`, `ProviderDelegationModel.bind_tools`, `_agenerate`, `_Run.save_report`, `_Guard.awrap_tool_call`, `SnapshotBackend`；[research.py](../greatsage/research.py): `validate_report`, `render_report` | [test_delegation.py](../tests/test_delegation.py), [test_research.py](../tests/test_research.py) |
+| 研究审批、旧版本与迟到写入隔离 | 任务产物审阅、逐次点击 approve／deny | [research.py](../greatsage/research.py): `ResearchWorkflow.guard`, `records`, `save`；[tasks.py](../greatsage/tasks.py): `TaskManager._resolve`, `_call` 内 `execute_local`；[tools.py](../greatsage/tools.py): `ToolRunner.validate_artifact_export`, `_export_artifact` | [test_research.py](../tests/test_research.py): `test_pending_export_cannot_save_after_approval_identity_changes`, `test_worker_entry_rechecks_identity_after_thread_pool_queuing` |
+| 研究来源清理与恢复审计 | 素材重扫／删除、任务继续／删除 | [task_store.py](../greatsage/task_store.py): `bind_research_sources`, `_invalidate_research_sources`, `purge_task_bodies`, `delete_task`；[memory.py](../greatsage/memory.py): `_redact_events`；[tasks.py](../greatsage/tasks.py): `_step`, `resume` | [test_research.py](../tests/test_research.py): `test_material_rescan_clears_research_copies_even_after_completion`, `test_resume_preserves_accounted_calls_and_cumulative_budget` |
 | 编辑 / 重生成 / 导出产物 | [ui/work.js](../ui/work.js): `setupWork`；`/api/artifacts` 系列接口，`PUT /api/todos/{todo_id}` | [artifacts.py](../greatsage/artifacts.py): `ArtifactsMixin.add_artifact_version`, `update_todo`, `export_markdown`；[tasks.py](../greatsage/tasks.py): `TaskManager.regenerate` | [test_tasks.py](../tests/test_tasks.py), [test_materials.py](../tests/test_materials.py), [test_server.py](../tests/test_server.py) |
 | 任务存储与工具账本 | 内部持久化入口，由 `MemoryStore` 组合；任务详情经 `GET /api/tasks/{task_id}` 查看 | [task_store.py](../greatsage/task_store.py): `TaskStoreMixin.create_task`, `update_step`, `recover_tasks`, `add_tool_call`, `tool_call_by_key`, `update_tool_call`；执行协调仍在 [tasks.py](../greatsage/tasks.py) | [test_tasks.py](../tests/test_tasks.py), [test_memory.py](../tests/test_memory.py) |
 | 图任务状态、取消与恢复 | [ui/work.js](../ui/work.js): `setupWork`；`POST /api/tasks/{task_id}/cancel`, `/resume` | [tasks.py](../greatsage/tasks.py): `TaskManager._schedule`, `_run`, `cancel`, `resume`, `recover`；[agent_graph.py](../greatsage/agent_graph.py): `AgentGraphs.run`, `inspect` | [test_tasks.py](../tests/test_tasks.py), [scripts/smoke_backend.py](../scripts/smoke_backend.py) |
@@ -206,6 +212,18 @@ flowchart LR
 
 图只持久化控制状态；来源正文、步骤结果与产物仍在业务数据库。`TaskManager._step` 负责步骤状态，`changed` 推送进度；不能把 checkpoint 当成业务数据或工具执行账本。
 
+### 4a. 研究 → 双角色核对 → 文档审批
+
+完整组件图与容量限制见 [架构中的 v0.7 研究闭环](architecture.md#v07-研究选定来源--固定角色核对--审批保存)。按实际调用阅读：
+
+1. `TaskManager.start_research → ResearchWorkflow.start → _schedule → _run → AgentGraphs.run`；`AgentGraphs.graph` 只在研究任务需要时加载 `_research`，避免普通纪要启动承担框架导入成本。
+2. `_research` 的四个节点经 `TaskManager._step` 调用同名 `ResearchWorkflow` 方法。`collect` 复用 `_collect`，绑定来源 ID／哈希与 `research_sources`；`research` 创建运行身份和持久预算回调，再调用 `run_delegation`。
+3. `run_delegation` 使用 `create_agent` 和 Deep Agents middleware：planner 的 `write_todos → task(source_researcher) → task(evidence_reviewer) → submit_report`；角色内先 `read_source` 再 `submit_findings/submit_review`。这两个角色顺序执行、各一次，不能递归委派。`_skill_middleware` 只暴露 `SnapshotBackend` 的虚拟 Skill 读取。
+4. 每次 `ProviderDelegationModel._agenerate` 经 `before_request → Runtime.snapshot_request → Providers.stream_chat`；`on_usage/on_request_end` 回传用量、结局和步骤调用详情。`validate_report → render_report → create_artifact` 完成独立来源校验及确定性渲染。
+5. `ResearchWorkflow.save → TaskManager._call(force_click=True, pre_execute=check)` 进入已有审批账本。`_resolve` 校验审批身份与版本；恢复后 `execute_local` 在线程入口持锁再检查，随后 `ToolRunner._export_artifact → _write`。拒绝只跳过保存，文档仍在产物中。
+
+外层 checkpoint 只有控制状态；内层主／子图显式关闭 checkpoint。失败后 resume 重跑整个未完成的 research 阶段，保留原 `calls/budget`；成功阶段与已生成文档按业务账本复用，旧审批不能复用。来源清理由 `MemoryStore._redact_events → TaskStoreMixin._invalidate_research_sources` 覆盖素材重扫等入口，完成后的任务关联也参与清理。相关确定性覆盖分别在 `test_delegation.py`（真实框架、脚本化提供商）和 `test_research.py`（假委派、真实存储／图／审批）中，不能据此声称真实模型质量已验证。
+
 ### 5. 工具 → 审批中断 → 恢复
 
 ```mermaid
@@ -232,6 +250,8 @@ flowchart LR
 
 冻结记忆排障：`python -m greatsage --check-memory-runtime` 或包内后端同名参数 → [memory_diagnostics.py](../greatsage/memory_diagnostics.py) 的 `check_memory_runtime` → `extract_memory_proposals`。用假提供商执行一次真实 LangMem schema 路径，不读用户设置、不联网，不代表真实模型质量或最终包已经通过。
 
+冻结研究排障：`python -m greatsage --check-research-runtime` 或包内后端同名参数 → [research_diagnostics.py](../greatsage/research_diagnostics.py) 的 `check_research_runtime` → `run_delegation`。合成来源与脚本化提供商运行真实框架，检查角色委派及结构化提交依赖；不读私人会话、不联网，源码诊断成功不能替代冻结包执行或真实模型验收。
+
 语音监控：[inspector.py](../greatsage/inspector.py) 的 `voice_snapshot` → `inspect_runtime` → [ui/inspector.js](../ui/inspector.js) 的 `renderVoice`。修改耗时字段或错误码时同步 `_VOICE_METRICS`／`_VOICE_ERRORS` 白名单；定向检查为 [test_voice_inspector.py](../tests/test_voice_inspector.py)。
 
 语音管线入口：[voice_pipeline.py](../greatsage/voice_pipeline.py) 的 `VoiceIdentity`、`SourceVoicePipeline.start/feed/drain/close`；`_SegmentProcessor` 先传开始事件、后传 PCM、最后传结束事件，`_ResultProcessor` 仅回调固定身份和白名单端点信息。定向覆盖见 [test_voice_pipeline.py](../tests/test_voice_pipeline.py)；Runtime 接入状态见开发日志。
@@ -256,7 +276,7 @@ git blame -L '/async def _call/,+25' -- greatsage/tasks.py
 
 一次问题优先关联 `trace_id` → `task_id` / `call_id` → 请求快照与事件；快照全文默认关闭，监控页不等于完整请求档案。排查源码时不打印运行目录中的密钥、录音或私人会话。结论、原因、修复和验证边界写入 [development-log.md](development-log.md)，架构取舍回链到对应设计文档。
 
-当前尚未实现：Deep Agents / 多 Agent、旧会话继续交互、MCP stdio / OAuth。LangMem 提取、候选和实体列表已接入；实体按精确名称／类型分组，不承担同名消歧。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
+当前已实现 Deep Agents 的固定双角色只读研究；通用并发／递归多 Agent、旧会话继续交互、MCP stdio / OAuth 尚未实现。显式恢复旧研究任务不等于切回旧对话继续聊天。LangMem 提取、候选和实体列表已接入；实体按精确名称／类型分组，不承担同名消歧。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
 
 ### v0.5 音源、话轮与取消链
 
