@@ -177,3 +177,10 @@
 - **容量与排序**：共享 `_terms` 只保留 40 项，长旧要求会挤掉后追加的纠正词；本轮将纠正优先放入选材 query。草稿、全局要求和模型工具共同占预算，不能只验草稿长度：草稿 12,000／合并指令 16,000 字符上限之外，还须实际请求预算校验，失败不截断。
 - **何时复查**：新增“按意见修改”、手工编辑与自动生成混用、模型上下文扩展或版本比较时，检查编辑对象、事实来源、用户要求三者的不同身份。文本 diff 和有效引用标记都不证明语义正确。
 - **证据**：[research.py](../greatsage/research.py)、[artifacts.py](../greatsage/artifacts.py)、[artifact_review.py](../greatsage/artifact_review.py)、[test_workbench_research.py](../tests/test_workbench_research.py)、[test_artifact_revisions.py](../tests/test_artifact_revisions.py)。这些是实现和定向回归入口，不是本版真实模型质量证明。
+
+## L25 · 桌面夹具要检查真正交给 renderer 的代码与可见流程
+
+- **本轮故障**：Node 文件通过 `--check`，但 template literal 内嵌正则的转义在生成 renderer 源码时消失，直到包内运行才报语法错误；随后来源预算断言混用了精确数字与紧凑中文数字格式。
+- **处理**：简单路由匹配改用前缀／后缀解析，并用 `vm.Script` 检查烹煮后的 43 段 renderer 模板；来源预算显示精确整数，避免选中量与上限都缩写为“6.4万”时掩盖差距。会话切换后显式返回任务页再操作，不能依赖隐藏按钮的程序点击。
+- **何时复查**：修改 `executeJavaScript`／`evaluate` 多层字符串、时间／数字本地化或跨页面夹具时，区分脚本解析、可见页面状态和真实产品结果。只改夹具不重建产品；改界面时仅重建桌面层，复用相同的冻结后端。
+- **证据**：[smoke_desktop.cjs](../scripts/smoke_desktop.cjs)、[v0.8 验证](validation-v0.8.md)。

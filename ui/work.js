@@ -18,6 +18,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
 
   const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
   const compactNumber = value => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
+  const integerNumber = value => new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(Number(value) || 0);
   function callUsage(calls = []) {
     const totals = { calls: calls.length, input: 0, output: 0, total: 0, cost: 0, hasTokens: false, hasCost: false };
     for (const call of calls) {
@@ -541,7 +542,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   // ---- research source selection -----------------------------------------
   const sourceDialog = node('dialog', 'record-dialog research-sources-dialog');
   sourceDialog.innerHTML = `<div class="dialog-actions"><button type="button" class="button small ghost source-close">关闭</button></div>
-    <div class="source-dialog-head"><div><h2>研究来源</h2><p>这里显示任务实际可选和已读取的原文片段。固定、排除或更改模式会创建新任务，原任务与产物不变。</p></div></div>
+    <div class="source-dialog-head"><div><h2>研究来源</h2><p>这里显示任务范围内的候选与本轮选中的原文片段。固定、排除或更改模式会创建新任务，原任务与产物不变。</p></div></div>
     <div class="source-selection-alert" hidden></div>
     <div class="source-selection-stats"></div>
     <fieldset class="source-mode"><legend>片段选取方式</legend><label><input type="radio" name="source_mode" value="relevant" /> 自动选择相关片段</label><label><input type="radio" name="source_mode" value="full" /> 读取范围内全部片段</label><small>固定片段或完整范围超出 8 段 / 64,000 字符预算时会停止，不会截断或自动改成局部研究。</small></fieldset>
@@ -605,7 +606,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     };
     stats.replaceChildren(
       stat('实际选取', `${snapshot.selected_count || 0} / ${snapshot.total_sources || 0} 段`, snapshot.all_selected ? '范围内候选已全部选中' : '仅在选中来源内研究'),
-      stat('字符预算', `${compactNumber(snapshot.selected_chars || 0)} / ${compactNumber(snapshot.max_chars || 64000)}`, `上限 ${snapshot.max_sources || 8} 段`),
+      stat('字符预算', `${integerNumber(snapshot.selected_chars)} / ${integerNumber(snapshot.max_chars || 64000)}`, `上限 ${snapshot.max_sources || 8} 段`),
       stat('范围', `${snapshot.scope?.material_ids?.length || 0} 份资料 · ${snapshot.scope?.session_ids?.length || 0} 个会话`, snapshot.mode === 'full' ? '完整范围模式' : '相关片段模式'),
     );
     const alert = $('.source-selection-alert', sourceDialog);

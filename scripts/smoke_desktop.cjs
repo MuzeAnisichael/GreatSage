@@ -442,6 +442,8 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
         for (const release of fixture.artifactReleases.splice(0)) release();
       };
     })()`);
+    await evaluate("document.querySelector('[data-view=tasks]').click()");
+    await until(() => evaluate("!document.querySelector('#view-tasks').hidden && document.querySelector('#task-list').textContent.includes('SYNTHETIC 研究文档')"), 'visible research task surface');
     await evaluate("document.querySelector('#new-research-task').click()");
     await until(() => evaluate("document.querySelector('.research-task-dialog').open && document.querySelectorAll('.research-task-dialog [name=material]').length === 1"), 'research task dialog');
     await evaluate(`(() => {
@@ -483,7 +485,9 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     await until(() => evaluate("document.querySelector('.research-sources-dialog').open && document.querySelectorAll('.source-candidate').length === 2"), 'research source selection');
     check(await evaluate(`(() => {
       const dialog = document.querySelector('.research-sources-dialog');
-      return dialog.textContent.includes('1 / 2 段') && dialog.textContent.includes('28 / 64,000')
+      const budget = [...dialog.querySelectorAll('.source-selection-stat')].find(node => node.firstElementChild.textContent === '字符预算');
+      const expectedBudget = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(64000);
+      return dialog.textContent.includes('1 / 2 段') && budget?.querySelector('strong').textContent === '28 / ' + expectedBudget
         && dialog.textContent.includes('与研究问题相关') && dialog.textContent.includes('相关性不足')
         && dialog.textContent.includes('不会自动采用新内容') && dialog.textContent.includes('已选片段优先显示')
         && dialog.textContent.includes('本轮选中') && !dialog.querySelector('.source-update-scope').hidden;
