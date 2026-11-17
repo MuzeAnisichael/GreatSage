@@ -150,3 +150,11 @@
 - **处理**：研究步骤仅保留 `calls/budget` 后重跑，重新生成计划／角色状态；每次模型请求先持久预留累计请求数与输入估算加输出预算，结束后追加用量／结局。累计 active time 在轮次收尾记录，不能声称硬退出前未提交的耗时也能精确恢复。
 - **何时复查**：修改 reset／resume、预算和清理策略时，用“已记账调用后失败，再恢复”的一次定向场景检查两轮证据与总额，而不重复性能基准。
 - **证据**：[research.py](../greatsage/research.py)、[tasks.py](../greatsage/tasks.py)、[test_research.py](../tests/test_research.py) 的 `test_resume_preserves_accounted_calls_and_cumulative_budget`。最终验证／构建边界见 [validation-v0.7.md](validation-v0.7.md)。
+
+## L22 · 独立框架诊断不能替代真实外层图集成
+
+- **真实故障**：首次 API 探针中，纪要正常，研究在任何模型请求前抛出 `AsyncPregelLoop._put_checkpoint_fut` AttributeError；独立 Deep Agents 诊断和假委派 Runtime 测试都通过。
+- **定位与处理**：离线真实 Runtime + LangGraph + 假 provider 复现了内外图组合。临时研究图不能继承持久化外层 Pregel 上下文；在空 `contextvars.Context()` 内创建并直接 await 委派 task，同时保持内层 `checkpointer=False`。不使用 shield，也不放任后台 task；取消／超时沿 await 传播，本地 trace、来源、预算和运行身份通过明确回调传递。
+- **何时复查**：修改 SDK 嵌套图、ContextVar、检查点或取消方式时，至少保留一条真实外层图→真实内层框架→脚本化 provider→审批保存的完整路径，不因各层单独通过就推断组合成功。
+- **相邻审计缺口**：Skill 本体版本不足以追溯引用文件，研究快照补齐资源的 path/version/truncated 元数据，仍不在默认审计里保存正文。
+- **证据**：[research.py](../greatsage/research.py)、[test_research.py](../tests/test_research.py)、[验证记录](validation-v0.7.md)。

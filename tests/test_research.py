@@ -7,6 +7,8 @@ checks are exercised independently of a cooperative provider.
 import asyncio
 import copy
 import importlib
+import json
+import re
 import time
 
 import pytest
@@ -24,6 +26,56 @@ class NoModels:
 
     async def close(self):
         pass
+
+
+class ScriptedFrameworkProvider:
+    """Eight deterministic tool turns through the real Deep Agents graphs."""
+
+    def __init__(self):
+        self.calls = 0
+        self.closed = False
+        self.role_calls = {}
+        self.scripts = None
+
+    def bind_source(self, source_id, source_text):
+        finding = {"text": "SYNTHETIC evidence-backed owner and conflicting dates",
+                   "evidence": [{"source_id": source_id, "quote": source_text}]}
+        review = {**finding, "status": "supported",
+                  "reason": "The selected synthetic source contains the quoted evidence."}
+        self.scripts = {
+            "planner": [
+                ("write_todos", {"todos": [{"content": "Organize and verify selected evidence",
+                                              "status": "in_progress"}]}),
+                ("task", {"subagent_type": "source_researcher",
+                          "description": "Organize the selected synthetic evidence."}),
+                ("task", {"subagent_type": "evidence_reviewer",
+                          "description": "Check the finding against the selected synthetic original."}),
+                ("submit_report", {"confirmed": True}),
+            ],
+            "source_researcher": [
+                ("read_source", {"source_id": source_id}),
+                ("submit_findings", {"findings": [finding]}),
+            ],
+            "evidence_reviewer": [
+                ("read_source", {"source_id": source_id}),
+                ("submit_review", {"review": [review]}),
+            ],
+        }
+
+    async def stream_chat(self, config, messages):
+        assert self.scripts is not None
+        match = re.search(r"GreatSage role: (\w+)", json.dumps(messages, ensure_ascii=False))
+        assert match and match[1] in self.scripts
+        role = match[1]
+        self.calls += 1
+        self.role_calls[role] = self.role_calls.get(role, 0) + 1
+        name, arguments = self.scripts[role].pop(0)
+        yield {"tool_calls": [{"id": f"synthetic-framework-{self.calls}", "name": name,
+                               "arguments": json.dumps(arguments, ensure_ascii=False)}],
+               "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+
+    async def close(self):
+        self.closed = True
 
 
 class Delegate:
@@ -98,15 +150,15 @@ async def until(check, timeout=5):
     raise AssertionError("research condition did not arrive")
 
 
-async def settled(runtime, task_id):
+async def settled(runtime, task_id, timeout=5):
     await until(lambda: runtime.memory.task(task_id)["status"]
-                in ("succeeded", "failed", "cancelled", "interrupted"))
+                in ("succeeded", "failed", "cancelled", "interrupted"), timeout)
     return runtime.memory.task(task_id)
 
 
-async def approval(runtime, task_id):
+async def approval(runtime, task_id, timeout=5):
     await until(lambda: runtime.tasks.approvals_pending()
-                or runtime.memory.task(task_id)["status"] in ("failed", "cancelled"))
+                or runtime.memory.task(task_id)["status"] in ("failed", "cancelled"), timeout)
     detail = runtime.memory.task(task_id)
     assert detail["status"] == "waiting_approval", detail["error"]
     return next(call for call in runtime.tasks.approvals_pending() if call["task_id"] == task_id)
@@ -125,6 +177,73 @@ async def start(runtime, material, **extra):
     return await runtime.tasks.start_research(
         {"title": "SYNTHETIC evidence report", "material_ids": [material],
          "save_path": "notes/research.md", **extra}, "console", runtime.session_id)
+
+
+async def test_outer_graph_runs_real_framework_and_records_resource_audit(tmp_path, monkeypatch):
+    """The durable task graph must not leak its Pregel context into Deep Agents."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    provider = ScriptedFrameworkProvider()
+    data_dir = tmp_path / "runtime"
+    instance = Runtime(data_dir, providers=provider)
+    try:
+        # The real Skills middleware adds its tool schemas to every research
+        # turn. Leave ample fake-model context so this regression tests graph
+        # nesting and audit provenance rather than the conservative byte budget.
+        instance.settings.update({"llm": {"context_tokens": 131072, "max_tokens": 2048}})
+        skill = tmp_path / "synthetic-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\nname: synthetic-evidence\ndescription: Organize synthetic evidence.\n---\n"
+            "Consult [the evidence guide](evidence-guide.md) when structuring a report.\n",
+            encoding="utf-8")
+        resource_body = "SYNTHETIC RESOURCE BODY MUST NOT ENTER AUDIT METADATA"
+        (skill / "evidence-guide.md").write_text(resource_body + "\n", encoding="utf-8")
+        imported_skill = instance.skills.import_path(str(skill))[0]
+
+        source_path = tmp_path / "selected.md"
+        source_path.write_text(
+            "# SYNTHETIC evidence\nThe owner is Lin Lan; dates 2032-06-14 and 2032-06-21 conflict.\n",
+            encoding="utf-8")
+        material = instance.memory.import_materials(str(source_path))["materials"][0]
+        chunk = instance.memory.material_chunks(material_ids=[material["id"]])[0]
+        provider.bind_source(chunk["id"], chunk["text"])
+
+        task = await instance.tasks.start_research({
+            "title": "SYNTHETIC evidence integration",
+            "instructions": "Use the evidence guide and preserve the synthetic date conflict.",
+            "material_ids": [material["id"]], "use_session": False,
+            "save_path": "notes/research.md",
+        }, "console", instance.session_id)
+        call = await approval(instance, task["id"], timeout=30)
+        assert provider.calls == 8
+        assert provider.role_calls == {"planner": 4, "source_researcher": 2, "evidence_reviewer": 2}
+        assert all(not pending for pending in provider.scripts.values())
+        assert call["tool"] == "export_artifact" and not call["voice"] and not call["task_scope"]
+
+        snapshots = instance.memory.snapshots(task["trace_id"], limit=20)
+        assert len(snapshots) == 8
+        for snapshot in snapshots:
+            audit = snapshot["metadata"]["skills"]
+            assert len(audit) == 1 and audit[0]["id"] == imported_skill["id"]
+            assert set(audit[0]) == {"id", "version", "truncated", "resources"}
+            assert len(audit[0]["resources"]) == 1
+            resource = audit[0]["resources"][0]
+            assert set(resource) == {"path", "version", "truncated"}
+            assert resource["path"] == "evidence-guide.md" and len(resource["version"]) == 64
+            assert resource_body not in json.dumps(audit, ensure_ascii=False)
+
+        target = data_dir / "workspace" / "notes" / "research.md"
+        assert not target.exists()
+        await instance.tasks.resolve(call["id"], True, "once", "click")
+        detail = await settled(instance, task["id"], timeout=10)
+        assert detail["status"] == "succeeded", detail["error"]
+        assert target.is_file() and "SYNTHETIC evidence-backed" in target.read_text(encoding="utf-8")
+        assert len(detail["tool_calls"]) == 1
+        assert detail["tool_calls"][0]["approval"]["scope"] == "once"
+        assert detail["tool_calls"][0]["approval"]["via"] == "click"
+    finally:
+        await instance.close()
+    assert provider.closed
 
 
 async def test_document_evidence_and_single_click_save_use_real_ledger(runtime, delegate, tmp_path, monkeypatch):

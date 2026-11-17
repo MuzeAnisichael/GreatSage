@@ -6,6 +6,7 @@ the existing source-deletable task store; reviewed documents remain artifacts.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import re
 import time
@@ -173,7 +174,15 @@ class ResearchWorkflow:
         config = self.manager._llm(2048)
         counter = TokenCounter(config, self.runtime.data_dir)
         skills = self.runtime.skills.select(task["title"] + " " + task["params"]["instructions"], max_chars=5000)
-        skill_audit = [{key: item[key] for key in ("id", "version", "truncated") if key in item} for item in skills]
+        skill_audit = [
+            {key: item[key] for key in ("id", "version", "truncated") if key in item} | {
+                "resources": [
+                    {key: resource[key] for key in ("path", "version", "truncated") if key in resource}
+                    for resource in item.get("resources", [])
+                ]
+            }
+            for item in skills
+        ]
         pending = {}
         started = time.monotonic()
         state = self.memory.task(task["id"])["state"]
@@ -243,9 +252,17 @@ class ResearchWorkflow:
                            + self.runtime.settings.raw()["global_prompt"] + "\nTask: " + task["title"]
                            + "\n" + task["params"]["instructions"])
             async with asyncio.timeout(min(ATTEMPT_SECONDS, MAX_ACTIVE_SECONDS - budget["active_seconds"])):
-                report = await run_delegation(self.runtime.providers, config, records, counter, instruction=instruction,
-                                              skills=skills, before_request=before_request, on_usage=on_usage,
-                                              on_event=on_event, is_current=current, on_request_end=on_request_end)
+                # The research SDK builds its own temporary Pregel graph. Run it
+                # outside the durable outer task graph's context so LangGraph
+                # does not mistake the inner graph for an outer checkpointed
+                # subgraph. Only this boundary is detached; the research graph's
+                # own child-agent context and cancellation remain intact.
+                delegation = asyncio.create_task(
+                    run_delegation(self.runtime.providers, config, records, counter, instruction=instruction,
+                                   skills=skills, before_request=before_request, on_usage=on_usage,
+                                   on_event=on_event, is_current=current, on_request_end=on_request_end),
+                    context=contextvars.Context())
+                report = await delegation
             check()
             report = validate_report(report, records)
             reviews = report["review"]

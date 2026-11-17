@@ -35,7 +35,7 @@ from probe_providers import safe_error  # noqa: E402
 MODEL_DEFAULT = "openai/gpt-4.1-mini"
 CONTEXT_DEFAULT = 32_768
 MINUTES_REQUEST_LIMIT = 3  # One request plus the task's two bounded retries.
-RESEARCH_REQUEST_LIMIT = 8
+RESEARCH_REQUEST_LIMIT = 16  # Match one product attempt; three sources may be read serially.
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 USAGE_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
 
