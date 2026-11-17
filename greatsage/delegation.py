@@ -108,7 +108,7 @@ class SnapshotBackend(BackendProtocol):
             prefix = f"/skills/{name}/"
             # Rebuild frontmatter: include_tools, scripts and model settings from
             # imported Skills are not capabilities and must not enter the SDK.
-            description = str(skill.get("name", ""))[:200] + ": " + str(skill.get("description", ""))[:1000]
+            description = (str(skill.get("name", ""))[:200] + ": " + str(skill.get("description", ""))[:1000])[:1024]
             resources = []
             for resource in skill.get("resources", []):
                 path = str(resource.get("path", "")).replace("\\", "/")
@@ -130,7 +130,8 @@ class SnapshotBackend(BackendProtocol):
     def ls(self, path):
         if path.rstrip("/") != "/skills":
             raise DelegationError("skill_path_not_allowed")
-        directories = sorted({str(PurePosixPath(path).parent) for path in self.files if path.endswith("/SKILL.md")})
+        directories = sorted({str(PurePosixPath(path).parent) for path in self.files
+                              if path.endswith("/SKILL.md") and len(PurePosixPath(path).parts) == 4})
         return LsResult(entries=[{"path": path, "is_dir": True} for path in directories])
 
     async def als(self, path):

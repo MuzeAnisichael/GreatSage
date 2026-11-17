@@ -9,11 +9,6 @@ import sys
 import threading
 from pathlib import Path
 
-import uvicorn
-
-from .server import create_app
-from .settings import default_data_dir
-
 
 def _watch_desktop_pipe(server, stream):
     """Only the owning desktop's private pipe can request this shutdown path."""
@@ -30,7 +25,7 @@ def _watch_desktop_pipe(server, stream):
 def main():
     parser = argparse.ArgumentParser(description="GreatSage local desktop service")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--data-dir", type=Path, default=default_data_dir())
+    parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--exclude-pid", type=int)
     parser.add_argument("--ui-dir", type=Path)
     parser.add_argument("--shutdown-stdin", action="store_true",
@@ -39,7 +34,15 @@ def main():
                         help="Check voice package imports and a synthetic pipeline offline; print safe JSON and exit.")
     parser.add_argument("--check-memory-runtime", action="store_true",
                         help="Check LangMem with a synthetic model offline; print safe JSON and exit.")
+    parser.add_argument("--check-research-runtime", action="store_true",
+                        help="Check Deep Agents with synthetic sources offline; print safe JSON and exit.")
     args = parser.parse_args()
+    if args.check_research_runtime:
+        from .research_diagnostics import check_research_runtime
+
+        report = asyncio.run(check_research_runtime())
+        print(json.dumps(report, ensure_ascii=True))
+        raise SystemExit(0 if report["ok"] else 1)
     if args.check_memory_runtime:
         from .memory_diagnostics import check_memory_runtime
 
@@ -52,6 +55,15 @@ def main():
         report = asyncio.run(check_voice_runtime())
         print(json.dumps(report, ensure_ascii=True))
         raise SystemExit(0 if report["ok"] else 1)
+    # Keep offline checks independent of server imports, credentials and data
+    # directory selection, including when an optional dependency is missing.
+    import uvicorn
+
+    from .server import create_app
+    from .settings import default_data_dir
+
+    if args.data_dir is None:
+        args.data_dir = default_data_dir()
     token = os.environ.get("GREATSAGE_TOKEN") or secrets.token_urlsafe(32)
     args.data_dir.mkdir(parents=True, exist_ok=True)
     connection = args.data_dir / "connection.json"

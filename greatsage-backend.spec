@@ -18,6 +18,8 @@ for distribution in ('langgraph', 'langgraph-checkpoint', 'langgraph-checkpoint-
     data += copy_metadata(distribution)
 for distribution in ('langmem', 'trustcall', 'langchain', 'langchain-anthropic', 'anthropic', 'dydantic'):
     data += copy_metadata(distribution)
+for distribution in ('deepagents', 'wcmatch', 'bracex', 'langchain-google-genai', 'google-genai'):
+    data += copy_metadata(distribution)
 for package in ('mcp', 'mcp_types', 'jsonschema_specifications'):
     data += collect_data_files(package)
 for distribution in ('mcp', 'mcp-types', 'jsonschema', 'jsonschema-specifications'):
