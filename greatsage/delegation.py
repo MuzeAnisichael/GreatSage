@@ -29,7 +29,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langsmith import tracing_context
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 MAX_CALLS = 16
 MAX_ROLE_CALLS = 6
@@ -43,6 +43,57 @@ CHILD_ROLES = ("source_researcher", "evidence_reviewer")
 
 class DelegationError(RuntimeError):
     """Stable, text-free failure code suitable for the task audit log."""
+
+
+class _SchemaFailure(DelegationError):
+    def __init__(self, tool, issue):
+        super().__init__("invalid_tool_call")
+        self.tool, self.issue = tool, issue
+
+
+def _local_schema(node, root):
+    """Follow bounded local definitions only; never resolve an external URI."""
+    seen = set()
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        ref = node["$ref"]
+        if not ref.startswith(("#/$defs/", "#/definitions/")) or ref in seen or len(seen) >= 16:
+            break
+        seen.add(ref)
+        target = root
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            target = target.get(part) if isinstance(target, dict) else None
+        if not isinstance(target, dict):
+            break
+        node = {**target, **{key: value for key, value in node.items() if key != "$ref"}}
+    return node if isinstance(node, dict) else {}
+
+
+def _schema_issue(schema, *, error=None, path=(), kind="strict_schema"):
+    """Describe only schema-owned fields/constraints, never rejected values."""
+    if error is not None:
+        path, kind = error.absolute_path, error.validator
+    node, safe_path = _local_schema(schema, schema), "$"
+    for part in path:
+        if isinstance(part, int) and isinstance(node.get("items"), dict):
+            safe_path += "[]"
+            node = node["items"]
+        elif isinstance(part, str) and part in node.get("properties", {}):
+            safe_path += "." + part
+            node = node["properties"][part]
+        else:
+            # Extra property names are model input, not diagnostic metadata.
+            break
+        node = _local_schema(node, schema)
+    allowed = {"type", "required", "enum", "const", "additionalProperties", "minLength", "maxLength",
+               "minItems", "maxItems", "minimum", "maximum", "anyOf", "oneOf", "json_syntax", "strict_schema"}
+    issue = {"validation_kind": kind if kind in allowed else "strict_schema", "schema_path": safe_path}
+    # This content comes from the local tool schema, never ValidationError.message
+    # or .instance (both can contain source/model text and unknown property names).
+    issue["constraints"] = {key: node[key] for key in (
+        "type", "required", "enum", "const", "additionalProperties", "minLength", "maxLength", "minItems", "maxItems"
+    ) if key in node}
+    return issue
 
 
 class Evidence(BaseModel):
@@ -190,6 +241,7 @@ class _Run:
         self.on_request_end, self.is_current = on_request_end, is_current
         self.calls = 0
         self.role_calls = Counter()
+        self.schema_repairs = Counter()
         self.tool_calls = 0
         self.reads = {role: set() for role in ("planner", *CHILD_ROLES)}
         self.started = set()
@@ -271,12 +323,36 @@ class ProviderDelegationModel(BaseChatModel):
         return self.bind(tools=formatted)
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        outgoing = convert_to_openai_messages(messages)
+        while True:
+            try:
+                return await self._request(outgoing, kwargs.get("tools", []))
+            except _SchemaFailure as error:
+                state = self.run
+                state.current()
+                retrying = state.schema_repairs[self.role] < 1
+                await state.emit(agent=self.role, status="schema_validation_failed", tool=error.tool,
+                                 validation_kind=error.issue["validation_kind"], schema_path=error.issue["schema_path"],
+                                 call=state.calls, retrying=retrying)
+                if not retrying:
+                    raise DelegationError("invalid_tool_call") from None
+                state.schema_repairs[self.role] += 1
+                # Do not replay the invalid assistant response/arguments. The
+                # original authorized context and unchanged tool schemas remain.
+                feedback = {"tool": error.tool, **error.issue}
+                outgoing = [*outgoing, {"role": "user", "content": (
+                    "Your proposed tool call was rejected before execution because its arguments did not match "
+                    "the tool schema. This is your only schema correction attempt. Return a corrected tool call "
+                    "using the original task and evidence. Follow required fields, types, enums and limits; add no "
+                    "unknown fields. Do not change source scope, permissions or factual conclusions to bypass "
+                    "validation. Local schema feedback: " + json.dumps(feedback, ensure_ascii=False))}]
+
+    async def _request(self, outgoing, tools):
         state = self.run
         state.current()
         if state.calls >= MAX_CALLS or state.role_calls[self.role] >= MAX_ROLE_CALLS:
             raise DelegationError("model_call_limit")
-        outgoing = convert_to_openai_messages(messages)
-        config = {**self.provider_config, "tools": kwargs.get("tools", [])}
+        config = {**self.provider_config, "tools": tools}
         config["max_tokens"] = min(2048, config.get("max_tokens", 768))
         budget = config.get("context_tokens", 8192) - config["max_tokens"] - 128
         if self.counter.count([*outgoing, {"tools": config["tools"]}]) > budget:
@@ -285,6 +361,8 @@ class ProviderDelegationModel(BaseChatModel):
         state.role_calls[self.role] += 1
         snapshot_id = await _callback(state.before_request, self.role, outgoing, config, list(state.sources))
         content, calls, size, status = "", [], 0, "failed"
+        proposed, schema_failure = [], None
+        schemas = {tool["function"]["name"]: tool["function"]["parameters"] for tool in tools}
         try:
             state.current()
             async with aclosing(self.service.stream_chat(config, outgoing)) as stream:
@@ -293,21 +371,32 @@ class ProviderDelegationModel(BaseChatModel):
                     fragment = event.get("text", "")
                     raw_calls = event.get("tool_calls", [])
                     size += len(fragment) + len(json.dumps(raw_calls, ensure_ascii=False))
-                    if size > MAX_OUTPUT_CHARS or len(calls) + len(raw_calls) > MAX_SOURCES:
+                    if size > MAX_OUTPUT_CHARS or len(proposed) + len(raw_calls) > MAX_SOURCES:
                         raise DelegationError("output_limit_exceeded")
                     content += fragment
                     for call in raw_calls:
+                        # Capability/envelope errors are not schema-repairable.
+                        if (not isinstance(call, dict) or not isinstance(call.get("name"), str) or call["name"] not in schemas
+                                or not isinstance(call.get("id"), str) or not 1 <= len(call["id"]) <= 128
+                                or not isinstance(call.get("arguments"), str)):
+                            raise DelegationError("invalid_tool_call")
+                        name, schema = call["name"], schemas[call["name"]]
+                        proposed.append((call["id"], name))
                         try:
                             arguments = json.loads(call["arguments"])
-                            schema = next(tool["function"]["parameters"] for tool in config["tools"]
-                                          if tool["function"]["name"] == call["name"])
                             Draft202012Validator(schema).validate(arguments)
-                            if call["name"] in STRICT_SCHEMAS:
-                                STRICT_SCHEMAS[call["name"]].model_validate(arguments)
-                            if not isinstance(call["id"], str) or not 1 <= len(call["id"]) <= 128:
-                                raise ValueError
-                        except (KeyError, TypeError, ValueError, StopIteration, ValidationError):
-                            raise DelegationError("invalid_tool_call") from None
+                            if name in STRICT_SCHEMAS:
+                                STRICT_SCHEMAS[name].model_validate(arguments)
+                        except json.JSONDecodeError:
+                            schema_failure = schema_failure or _SchemaFailure(name, _schema_issue(schema, kind="json_syntax"))
+                            continue
+                        except ValidationError as error:
+                            schema_failure = schema_failure or _SchemaFailure(name, _schema_issue(schema, error=error))
+                            continue
+                        except PydanticValidationError as error:
+                            path = error.errors(include_input=False, include_url=False)[0]["loc"]
+                            schema_failure = schema_failure or _SchemaFailure(name, _schema_issue(schema, path=path))
+                            continue
                         calls.append({"id": call["id"], "name": call["name"], "args": arguments})
                     if usage := event.get("usage"):
                         for key in ("prompt_tokens", "completion_tokens", "total_tokens", "cost"):
@@ -316,12 +405,16 @@ class ProviderDelegationModel(BaseChatModel):
                                 state.usage[key] = state.usage.get(key, 0) + value
                         await _callback(state.on_usage, self.role, usage)
                         state.current()
-            if not calls:
+            if not proposed:
                 raise DelegationError("missing_structured_result")
-            if len({call["id"] for call in calls}) != len(calls):
+            if len({call_id for call_id, _ in proposed}) != len(proposed):
                 raise DelegationError("duplicate_tool_call")
-            if len(calls) > 1 and any(call["name"] not in ("read_source", "read_file") for call in calls):
+            if len(proposed) > 1 and any(name not in ("read_source", "read_file") for _, name in proposed):
                 raise DelegationError("parallel_control_tools")
+            # Drain usage before a bounded schema repair; no rejected call reaches
+            # the framework/tool node, including valid siblings in the same turn.
+            if schema_failure is not None:
+                raise schema_failure
             state.current()
             status = "completed"
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content, tool_calls=calls))])

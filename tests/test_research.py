@@ -179,7 +179,8 @@ async def start(runtime, material, **extra):
          "save_path": "notes/research.md", **extra}, "console", runtime.session_id)
 
 
-async def test_outer_graph_runs_real_framework_and_records_resource_audit(tmp_path, monkeypatch):
+@pytest.mark.parametrize("repair", [False, True])
+async def test_outer_graph_runs_real_framework_and_records_resource_audit(tmp_path, monkeypatch, repair):
     """The durable task graph must not leak its Pregel context into Deep Agents."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     provider = ScriptedFrameworkProvider()
@@ -207,6 +208,11 @@ async def test_outer_graph_runs_real_framework_and_records_resource_audit(tmp_pa
         material = instance.memory.import_materials(str(source_path))["materials"][0]
         chunk = instance.memory.material_chunks(material_ids=[material["id"]])[0]
         provider.bind_source(chunk["id"], chunk["text"])
+        if repair:
+            name, valid = provider.scripts["evidence_reviewer"][-1]
+            invalid = copy.deepcopy(valid)
+            invalid["review"][0]["status"] = "SYNTHETIC PRIVATE BAD ENUM"
+            provider.scripts["evidence_reviewer"].insert(1, (name, invalid))
 
         task = await instance.tasks.start_research({
             "title": "SYNTHETIC evidence integration",
@@ -215,13 +221,21 @@ async def test_outer_graph_runs_real_framework_and_records_resource_audit(tmp_pa
             "save_path": "notes/research.md",
         }, "console", instance.session_id)
         call = await approval(instance, task["id"], timeout=30)
-        assert provider.calls == 8
-        assert provider.role_calls == {"planner": 4, "source_researcher": 2, "evidence_reviewer": 2}
+        assert provider.calls == 8 + int(repair)
+        assert provider.role_calls == {"planner": 4, "source_researcher": 2, "evidence_reviewer": 2 + int(repair)}
         assert all(not pending for pending in provider.scripts.values())
         assert call["tool"] == "export_artifact" and not call["voice"] and not call["task_scope"]
 
         snapshots = instance.memory.snapshots(task["trace_id"], limit=20)
-        assert len(snapshots) == 8
+        assert len(snapshots) == 8 + int(repair)
+        if repair:
+            calls = instance.memory.step(task["id"], "research")["detail"]["calls"]
+            rejected = next(row for row in calls if row.get("validation"))
+            assert rejected["status"] == "failed" and rejected["usage"]["total_tokens"] == 15
+            assert rejected["validation"]["schema_path"] == "$.review[].status"
+            assert rejected["validation"]["validation_kind"] == "enum"
+            assert rejected["validation"]["retrying"] is True
+            assert "SYNTHETIC PRIVATE BAD ENUM" not in json.dumps(calls, ensure_ascii=False)
         for snapshot in snapshots:
             audit = snapshot["metadata"]["skills"]
             assert len(audit) == 1 and audit[0]["id"] == imported_skill["id"]

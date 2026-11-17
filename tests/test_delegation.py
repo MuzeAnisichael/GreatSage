@@ -139,6 +139,7 @@ async def test_planner_cannot_override_verifier_or_cite_without_reading(tmp_path
     scripted = script()
     scripted["evidence_reviewer"][-1] = step("submit_review", review=[{**REVIEW, "status": "uncertain"}])
     scripted["planner"][-1] = step("submit_report", confirmed=True, review=[REVIEW])
+    scripted["planner"].append(copy.deepcopy(scripted["planner"][-1]))
     with pytest.raises(DelegationError, match="invalid_tool_call"):
         await run(tmp_path, ScriptedProvider(scripted))
     scripted = script()
@@ -165,6 +166,56 @@ async def test_cancellation_and_stale_results_close_stream_and_snapshot(tmp_path
                   on_request_end=lambda *args: ends.append(args), is_current=lambda: current[0])
     assert provider.closed == 1
     assert ends == [("snapshot-2", "stale")]
+
+
+@pytest.mark.parametrize("repair_valid", [True, False])
+async def test_schema_repair_is_once_audited_and_never_replays_invalid_arguments(tmp_path, repair_valid):
+    from greatsage.delegation import ReviewReport, _schema_issue
+
+    referenced = _schema_issue(ReviewReport.model_json_schema(), path=("review", 0, "status"))
+    assert referenced["schema_path"] == "$.review[].status"
+    assert referenced["constraints"]["enum"] == ["supported", "uncertain", "conflict", "unsupported"]
+    scripted = script()
+    invalid = step("submit_review", review=[{**REVIEW, "status": "PRIVATE_REJECTED_VALUE"}])
+    repair = step("submit_review", review=[REVIEW]) if repair_valid else step(
+        "submit_review", review=[REVIEW], PRIVATE_REJECTED_KEY="PRIVATE_REJECTED_VALUE")
+    scripted["evidence_reviewer"] = [scripted["evidence_reviewer"][0], invalid, repair,
+                                     step("submit_review", review=[REVIEW])]
+    provider, snapshots, ends, usage, events = ScriptedProvider(scripted), [], [], [], []
+
+    def before_request(role, messages, request_config, source_ids):
+        snapshots.append((role, copy.deepcopy(messages)))
+        return len(snapshots)
+
+    callbacks = dict(before_request=before_request, on_request_end=lambda *args: ends.append(args),
+                     on_usage=lambda *args: usage.append(args), on_event=events.append)
+    if repair_valid:
+        result = await run(tmp_path, provider, **callbacks)
+        assert result["review"] == [REVIEW]
+        assert result["calls"] == 9
+        assert result["usage"]["total_tokens"] == 270
+    else:
+        with pytest.raises(DelegationError, match="invalid_tool_call"):
+            await run(tmp_path, provider, **callbacks)
+    assert len(provider.requests) == len(snapshots) == len(ends) == len(usage) == (9 if repair_valid else 8)
+    assert provider.closed == len(provider.requests)
+    assert sum(status == "failed" for _, status in ends) == (1 if repair_valid else 2)
+    assert len(provider.scripts["evidence_reviewer"]) == 1  # Never a second repair.
+    failures = [event for event in events if event["status"] == "schema_validation_failed"]
+    assert failures[0] == {"agent": "evidence_reviewer", "status": "schema_validation_failed",
+                           "tool": "submit_review", "validation_kind": "enum", "schema_path": "$.review[].status",
+                           "call": 7, "retrying": True}
+    if not repair_valid:
+        assert failures[1]["validation_kind"] == "additionalProperties"
+        assert failures[1]["schema_path"] == "$"
+        assert failures[1]["retrying"] is False
+    safe_feedback = json.dumps(snapshots)
+    repair_request = provider.requests[7][2]
+    assert "only schema correction attempt" in repair_request[-1]["content"]
+    for marker in ("PRIVATE_REJECTED_VALUE", "PRIVATE_REJECTED_KEY"):
+        assert marker not in json.dumps(events)
+        assert marker not in json.dumps(repair_request)
+        assert marker not in safe_feedback
 
 
 async def test_budget_rejection_precedes_provider_and_has_no_retry(tmp_path):

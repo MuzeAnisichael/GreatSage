@@ -217,7 +217,7 @@ flowchart LR
 完整组件图与容量限制见 [架构中的 v0.7 研究闭环](architecture.md#v07-研究选定来源--固定角色核对--审批保存)。按实际调用阅读：
 
 1. `TaskManager.start_research → ResearchWorkflow.start → _schedule → _run → AgentGraphs.run`；`AgentGraphs.graph` 只在研究任务需要时加载 `_research`，避免普通纪要启动承担框架导入成本。
-2. `_research` 的四个节点经 `TaskManager._step` 调用同名 `ResearchWorkflow` 方法。`collect` 复用 `_collect`，绑定来源 ID／哈希与 `research_sources`；`research` 创建运行身份和持久预算回调，再调用 `run_delegation`。
+2. `_research` 的四个节点经 `TaskManager._step` 调用同名 `ResearchWorkflow` 方法。`collect` 复用 `_collect`，绑定来源 ID／哈希与 `research_sources`；`research` 创建运行身份和持久预算回调，在空 Context 的新 task 内直接等待 `run_delegation`，避免临时内层图继承外层 Pregel 状态。
 3. `run_delegation` 使用 `create_agent` 和 Deep Agents middleware：planner 的 `write_todos → task(source_researcher) → task(evidence_reviewer) → submit_report`；角色内先 `read_source` 再 `submit_findings/submit_review`。这两个角色顺序执行、各一次，不能递归委派。`_skill_middleware` 只暴露 `SnapshotBackend` 的虚拟 Skill 读取。
 4. 每次 `ProviderDelegationModel._agenerate` 经 `before_request → Runtime.snapshot_request → Providers.stream_chat`；`on_usage/on_request_end` 回传用量、结局和步骤调用详情。`validate_report → render_report → create_artifact` 完成独立来源校验及确定性渲染。
 5. `ResearchWorkflow.save → TaskManager._call(force_click=True, pre_execute=check)` 进入已有审批账本。`_resolve` 校验审批身份与版本；恢复后 `execute_local` 在线程入口持锁再检查，随后 `ToolRunner._export_artifact → _write`。拒绝只跳过保存，文档仍在产物中。

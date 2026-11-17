@@ -236,13 +236,35 @@ class ResearchWorkflow:
         async def on_event(event):
             check()
             detail = self.memory.step(task["id"], "research")["detail"]
+            if event.get("status") == "schema_validation_failed":
+                # The adapter supplies only names/paths from our own schemas,
+                # never rejected argument values or arbitrary model keys.
+                metadata = {key: event[key] for key in (
+                    "tool", "validation_kind", "schema_path", "call", "retrying") if key in event}
+                for entry in reversed(list(pending.values())):
+                    if entry["agent"] == event.get("agent"):
+                        entry["validation"] = metadata
+                        break
+                else:
+                    # Schema repair is announced after the failed request's
+                    # finally callback has recorded its usage and closed it.
+                    calls = detail.get("calls", [])
+                    if calls and calls[-1].get("agent") == event.get("agent"):
+                        calls[-1]["validation"] = metadata
+                await self.runtime.emit("research_validation", {
+                    "task_id": task["id"], "agent": event.get("agent"), **metadata}, task["trace_id"])
+                detail["progress"] = ("模型报告格式未通过，正在进行一次修正。" if event.get("retrying")
+                                      else "模型报告格式仍未通过，已停止研究。")
             if isinstance(event.get("plan"), list):
                 detail["plan"] = event["plan"]
             role = event.get("role", event.get("agent"))
             if role:
                 detail["agent"] = role
                 children = {item["name"]: item for item in detail.get("children", [])}
-                children[role] = {"name": role, "status": event.get("status", event.get("type", "running"))}
+                status = event.get("status", event.get("type", "running"))
+                if status == "schema_validation_failed":
+                    status = "running" if event.get("retrying") else "failed"
+                children[role] = {"name": role, "status": status}
                 detail["children"] = list(children.values())
             self.memory.update_step(task["id"], "research", detail=detail)
             await self.manager.changed(task["id"])
