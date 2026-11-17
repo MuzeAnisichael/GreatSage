@@ -64,6 +64,7 @@ class MeasuredProviders(Providers):
         self.stage = ""
         self.limit = 0
         self.requests: list[dict] = []
+        self.tool_responses: list[dict] = []
 
     def begin(self, stage: str, limit: int) -> None:
         self.stage, self.limit = stage, limit
@@ -89,6 +90,11 @@ class MeasuredProviders(Providers):
             # Never persist the credential in the isolated SettingsStore.
             request_config = {**config, "api_key": self._api_key}
             async for event in super().stream_chat(request_config, messages):
+                if event.get("tool_calls"):
+                    # Synthetic-only diagnostic, kept in the isolated ignored
+                    # directory. Never copy config, headers or credentials.
+                    self.tool_responses.append({"stage": self.stage, "request_index": entry["request_index"],
+                                                "tool_calls": event["tool_calls"]})
                 if event.get("text") and entry["first_text_ms"] is None:
                     entry["first_text_ms"] = round((time.perf_counter() - started) * 1000)
                 usage = event.get("usage") or {}
@@ -458,6 +464,8 @@ async def run_cloud(args) -> tuple[bool, dict, Path]:
                     pass
             await runtime.close()
         report["finished_at"] = utc_now()
+        if provider is not None:
+            write_json(run_root / "tool-responses.json", {"synthetic_only": True, "responses": provider.tool_responses})
         if provider is not None:
             report["actual_request_count"] = len(provider.requests)
         write_json(report_path, report)

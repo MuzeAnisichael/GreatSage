@@ -86,7 +86,7 @@ def render_report(title: str, report: dict, records: list[dict]) -> str:
         lines += [f"- **{labels[item['status']]}**：{display(item['text'])} " + "".join(f"[{handle}]" for handle in handles),
                   f"  核对说明：{display(item['reason'])}"]
     if not uncertain:
-        lines.append("本轮核对未标记分歧；这不保证没有遗漏。")
+        lines.append("本轮核对未单列其他待确认项；正文中的分歧仍需审阅，这不保证没有遗漏。")
     lines += ["", "## 核对依据", ""]
     for item in report["review"]:
         for cite in item["evidence"]:
