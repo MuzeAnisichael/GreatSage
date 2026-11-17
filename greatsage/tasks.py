@@ -12,6 +12,7 @@ import json
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime
 
 from langgraph.types import interrupt
@@ -36,6 +37,7 @@ MAX_ROUNDS = 4
 RETRY_DELAYS = (1.0, 3.0)
 RETRYABLE = {"upstream_error", "upstream_stream_error", "upstream_unavailable", "rate_limited",
              "stream_ended_before_completion", "connection_failed"}
+CANCEL_WAIT_SECONDS = .25
 
 
 class TaskError(RuntimeError):
@@ -55,6 +57,10 @@ class TaskManager:
         self.runtime = runtime
         self.jobs: dict[str, asyncio.Task] = {}
         self.run_tokens: dict[str, object] = {}
+        # LangGraph child coroutines inherit this scope. Reading the latest token
+        # alone would accidentally authorize an old coroutine after a resume.
+        self._run_scope = ContextVar("greatsage_task_run", default=None)
+        self._graph_cleanup: asyncio.Task | None = None
         self.approvals: set[str] = set()
         self.approval_lock = asyncio.Lock()
         self.grants: dict[str, set[str]] = {}
@@ -80,23 +86,103 @@ class TaskManager:
 
     async def close(self) -> None:
         self.closing = True
-        self.run_tokens.clear()
-        jobs = list(self.jobs.values())
+        if self._graph_cleanup is None:
+            _, jobs = self._stop_active("interrupted")
+
+            async def close_graphs():
+                # A provider may ignore cancellation. Keep its checkpoint
+                # connection until the graph really exits, without blocking UI.
+                await asyncio.gather(*jobs, return_exceptions=True)
+                await self.graphs.close()
+
+            self._graph_cleanup = asyncio.create_task(close_graphs())
+        await asyncio.wait({self._graph_cleanup}, timeout=CANCEL_WAIT_SECONDS)
+
+    def _identity(self):
+        return (self.runtime.session_id, self.runtime.data_epoch, self.runtime.settings.version())
+
+    def _check_control_identity(self, identity):
+        if self.closing:
+            raise ValueError("应用正在关闭，请稍后继续任务。")
+        if getattr(self.runtime, "_session_switching", False) or identity != self._identity():
+            raise ValueError("运行状态已改变，请重新继续任务或确认操作。")
+
+    def _abandon_control(self, task_id):
+        # A settings change can invalidate a resume/approval without the session
+        # cleanup doing it for us. Leave an explicitly resumable state, not a
+        # queued task with a stale approval and no scheduled worker.
+        if not self.closing:
+            with self.memory._lock:
+                row = self.memory._db.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+                if row is not None and row[0] in ACTIVE:
+                    self._expire_approvals(task_id)
+                    self.memory.finish_task(task_id, "interrupted", None)
+
+    def _guard(self, task_id: str):
+        scope = self._run_scope.get()
+        if scope is None or scope[0] != task_id:
+            # Also supports direct step/tool calls used by adapters and tests.
+            scope = (task_id, self.run_tokens.get(task_id), self._identity())
+
+        def check():
+            if (self.closing or getattr(self.runtime, "_session_switching", False)
+                    or scope[1] is not self.run_tokens.get(task_id) or scope[2] != self._identity()):
+                raise TaskError("任务运行状态已改变，请继续任务后重试。")
+            with self.memory._lock:
+                row = self.memory._db.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None or row[0] not in ACTIVE:
+                raise TaskError("任务已中断或结束，已丢弃迟到结果。")
+
+        return check
+
+    def _stop_active(self, status: str, task_id: str | None = None):
+        # Everything through job.cancel() is synchronous: no old result can
+        # regain authority while session switching waits for cleanup.
+        if task_id is None:
+            self.run_tokens.clear()
+        else:
+            self.run_tokens.pop(task_id, None)
+        with self.memory._lock:
+            ids = [row[0] for row in self.memory._db.execute(
+                f"SELECT id FROM tasks WHERE status IN {ACTIVE}" + (" AND id=?" if task_id else ""),
+                (task_id,) if task_id else ())]
+            for id in ids:
+                self.memory.finish_task(id, status, None)
+                self._expire_approvals(id)
+                for call in self.memory.task(id)["tool_calls"]:
+                    if call["status"] == "running":
+                        self.memory.update_tool_call(call["id"], status="unknown", error="任务在执行期间中断，结果未知，不会自动重试。")
+        if task_id is None:
+            self.approvals.clear()
+            self.grants.clear()
+        jobs = [job for id, job in self.jobs.items() if task_id is None or id == task_id]
         for job in jobs:
-            job.cancel()
-        await asyncio.gather(*jobs, return_exceptions=True)
-        for call_id in tuple(self.approvals):
-            call = self.memory.tool_call(call_id)
-            if call:
-                self.memory.finish_task(call["task_id"], "interrupted", None)
-                self._expire_approvals(call["task_id"])
-        await self.graphs.close()
+            if not job.done():
+                job.cancel()
+        return ids, jobs
+
+    @staticmethod
+    async def _cancel_and_wait(jobs):
+        if jobs:
+            # wait_for(gather(...)) still waits indefinitely when cancellation
+            # is swallowed. wait() leaves unfinished jobs tracked by _schedule.
+            await asyncio.wait(jobs, timeout=CANCEL_WAIT_SECONDS)
+
+    async def suspend_for_session(self) -> None:
+        ids, jobs = self._stop_active("interrupted")
+        await self._cancel_and_wait(jobs)
+        for id in ids:
+            await self.changed(id)
 
     async def changed(self, id: str) -> None:
         summary = self.memory.task_summary(id)
         await self.runtime.emit("task_updated", summary, summary["trace_id"], persist=False)
 
     def _schedule(self, id: str, approval=None) -> None:
+        if self.closing or self.memory.task(id)["status"] != "queued":
+            return
+        if id in self.jobs and not self.jobs[id].done():
+            raise ValueError("上一次运行仍在退出，请稍后继续任务。")
         job = asyncio.create_task(self._run(id, approval))
         self.jobs[id] = job
         def completed(done):
@@ -112,31 +198,37 @@ class TaskManager:
         self.grants.pop(id, None)
 
     async def invalidate(self) -> None:
-        ids = set(self.jobs) | {call["task_id"] for call in self.memory.pending_tool_calls()}
+        ids, jobs = self._stop_active("cancelled")
+        await self._cancel_and_wait(jobs)
         for id in ids:
-            if self.memory.task(id)["status"] in ACTIVE:
-                await self.cancel(id)
+            await self.changed(id)
 
     async def cancel(self, id: str) -> dict:
         task = self.memory.task(id)
         if task["status"] not in ACTIVE:
             raise ValueError("任务不在进行中。")
-        job = self.jobs.get(id)
-        self.run_tokens.pop(id, None)
-        if task["kind"] == "research":
-            # A provider may swallow cancellation. Invalidate before awaiting it.
-            self.memory.finish_task(id, "cancelled", None)
-        if job:
-            job.cancel()
-            await asyncio.gather(job, return_exceptions=True)
-        if self.memory.task(id)["status"] in ACTIVE:
-            self.memory.finish_task(id, "cancelled", None)
-            await self.changed(id)
-        self._expire_approvals(id)
+        _, jobs = self._stop_active("cancelled", id)
+        await self._cancel_and_wait(jobs)
         await self.changed(id)
         return self.memory.task_summary(id)
 
     async def resume(self, id: str) -> dict:
+        identity = self._identity()
+        self._check_control_identity(identity)
+        # Serialize checkpoint deletion with other resume/approval requests.
+        # Session suspension deliberately does not wait for this lock.
+        async with self.approval_lock:
+            self._check_control_identity(identity)
+            try:
+                return await self._resume(id, identity)
+            except ValueError:
+                if self.closing or getattr(self.runtime, "_session_switching", False) or identity != self._identity():
+                    self._abandon_control(id)
+                raise
+
+    async def _resume(self, id: str, identity) -> dict:
+        if id in self.jobs and not self.jobs[id].done():
+            raise ValueError("上一次运行仍在退出，请稍后继续任务。")
         task = self.memory.task(id)
         if task["status"] not in ("interrupted", "failed", "cancelled"):
             raise ValueError("只有中断、失败或已取消的任务可以继续。")
@@ -146,22 +238,30 @@ class TaskManager:
             # Drop obsolete resume values after cancellation/restart. Canonical
             # task cursors and the execution ledger retain completed work.
             await self.graphs.delete(id)
+        self._check_control_identity(identity)
         self.memory.reset_unfinished_steps(id)
         await self.changed(id)
+        self._check_control_identity(identity)
         self._schedule(id)
         return self.memory.task_summary(id)
 
     async def _run(self, id: str, approval=None) -> None:
         status, error, waiting = "succeeded", None, False
+        token, context = None, None
         try:
             async with self.slot:
                 task = self.memory.task(id)
                 if task["status"] != "queued":
                     return
                 self.memory.update_task(id, status="running", error=None)
-                self.run_tokens[id] = object()
+                token = self.run_tokens[id] = object()
+                context = self._run_scope.set((id, token, self._identity()))
+                check = self._guard(id)
+                check()
                 await self.changed(id)
+                check()
                 waiting = await self.graphs.run(task, approval)
+                check()
         except asyncio.CancelledError:
             status = "interrupted" if self.closing else "cancelled"
             raise
@@ -172,35 +272,53 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001 - reported as a task failure, never swallowed silently
             status, error = "failed", f"任务失败：{type(exc).__name__}"
         finally:
-            self.run_tokens.pop(id, None)
-            if not waiting:
-                self._expire_approvals(id)
-            if not waiting and self.memory.task(id)["status"] in ACTIVE:
-                self.memory.finish_task(id, status, error)
-                if status == "succeeded":
-                    self.memory.purge_task_bodies(id)
-                await self.changed(id)
-                await self.runtime.emit("task_finished", {"task_id": id, "status": status, "error": error},
-                                        self.memory.task(id)["trace_id"])
+            try:
+                if token is not None and self.run_tokens.get(id) is token:
+                    self.run_tokens.pop(id, None)
+                    if not waiting:
+                        self._expire_approvals(id)
+                    if not waiting and self.memory.task(id)["status"] in ACTIVE:
+                        self.memory.finish_task(id, status, error)
+                        if status == "succeeded":
+                            self.memory.purge_task_bodies(id)
+                        trace_id = self.memory.task(id)["trace_id"]
+                        await self.changed(id)
+                        # close() may have returned and closed MemoryStore while
+                        # an event subscriber ignored cancellation. Do not read
+                        # the task again or persist a late terminal event.
+                        if not self.closing and self._run_scope.get()[2] == self._identity():
+                            await self.runtime.emit("task_finished", {"task_id": id, "status": status, "error": error},
+                                                    trace_id)
+            finally:
+                if context is not None:
+                    self._run_scope.reset(context)
 
     async def _step(self, task_id: str, name: str, work):
+        check = self._guard(task_id)
+        check()
         step = self.memory.step(task_id, name)
         if step["status"] == "succeeded":
             return step["result"]
         detail = {key: step["detail"][key] for key in ("calls", "budget") if key in step["detail"]} if name == "research" else {}
         self.memory.update_step(task_id, name, status="running", started_at=_now(), finished_at=None, detail=detail)
         await self.changed(task_id)
+        check()
         result = await work()
+        check()
         detail = self.memory.step(task_id, name)["detail"]
         self.memory.update_step(task_id, name, status="succeeded", finished_at=_now(), result=result, detail=detail)
         await self.changed(task_id)
+        check()
         return result
 
     async def _progress(self, task_id: str, name: str, **values) -> None:
+        check = self._guard(task_id)
+        check()
         detail = self.memory.step(task_id, name)["detail"]
         detail.update(values)
         self.memory.update_step(task_id, name, detail=detail)
         await self.changed(task_id)
+        check()
 
     # ---- model calls -----------------------------------------------------
     def _llm(self, output_tokens: int) -> dict:
@@ -213,24 +331,32 @@ class TaskManager:
 
     async def _model(self, task: dict, step: str, purpose: str, messages: list, config: dict,
                      source_ids: list[str]) -> tuple[str, list[dict]]:
+        check = self._guard(task["id"])
         for attempt, delay in enumerate(RETRY_DELAYS + (None,), 1):
+            check()
             try:
                 return await self._model_once(task, step, purpose, messages, config, source_ids, attempt)
             except ProviderError as exc:
+                check()
                 if delay is None or not (exc.code in RETRYABLE or exc.status == 408):
                     raise
                 detail = self.memory.step(task["id"], step)["detail"]
                 retries = detail.get("retries", []) + [{"purpose": purpose, "code": exc.code, "attempt": attempt}]
                 await self._progress(task["id"], step, retries=retries, retrying=f"{attempt}/{len(RETRY_DELAYS)}")
                 await asyncio.sleep(delay)
+                check()
 
     async def _model_once(self, task: dict, step: str, purpose: str, messages: list, config: dict,
                           source_ids: list[str], attempt: int) -> tuple[str, list[dict]]:
+        check = self._guard(task["id"])
+        check()
         trace = task["trace_id"]
         snapshot = await self.runtime.snapshot_request(trace, purpose, messages, source_ids, provider=config)
         started, first, text, calls, usage = time.monotonic(), None, "", [], {}
         try:
+            check()
             async for item in self.runtime.providers.stream_chat(config, messages):
+                check()
                 if item.get("text"):
                     first = first or time.monotonic()
                     text += item["text"]
@@ -242,12 +368,16 @@ class TaskManager:
                     usage = item["usage"]
                     await self.runtime.emit("usage", {"component": "llm", "purpose": purpose, "usage": usage,
                                                       "task_id": task["id"], "source_ids": source_ids}, trace)
+                    check()
+            check()
             self.memory.finish_snapshot(snapshot, "completed")
         except asyncio.CancelledError:
-            self.memory.finish_snapshot(snapshot, "cancelled")
+            if not self.closing:
+                self.memory.finish_snapshot(snapshot, "cancelled")
             raise
         except Exception:
-            self.memory.finish_snapshot(snapshot, "failed")
+            if not self.closing:
+                self.memory.finish_snapshot(snapshot, "failed")
             raise
         timing = {"purpose": purpose, "latency_ms": round((time.monotonic() - started) * 1000),
                   "first_token_ms": round((first - started) * 1000) if first else None, "usage": usage,
@@ -257,6 +387,7 @@ class TaskManager:
         detail.pop("retrying", None)
         self.memory.update_step(task["id"], step, detail=detail)
         await self.runtime.emit("metrics", {"component": "task", "task_id": task["id"], **timing}, trace)
+        check()
         return text, calls
 
     async def _model_json(self, task, step, purpose, messages, llm, schema, source_ids) -> dict:
@@ -296,15 +427,18 @@ class TaskManager:
         self._schedule(id)
         return self.memory.task_summary(id)
 
-    async def regenerate(self, artifact_id: str, instructions: str) -> dict:
+    async def regenerate(self, artifact_id: str, instructions: str, *, expected_version=None, update_sources=False) -> dict:
         artifact = self.memory.artifact(artifact_id)
+        if expected_version is not None and artifact["version"] != expected_version:
+            raise ValueError("文档已有新版本，请刷新后再修订。")
         original = self.memory.task(artifact["task_id"])
+        if original["kind"] == "research":
+            from .research import ResearchWorkflow
+            return await ResearchWorkflow(self).revise(artifact_id, instructions, expected_version, update_sources)
         params = dict(original["params"])
         note = str(instructions or "").strip()[:4000]
         if note:
             params["instructions"] = (params.get("instructions", "") + "\n用户纠正：" + note).strip()
-        if original["kind"] == "research":
-            return await self.start_research({**params, "title": original["title"]}, "console", self.runtime.session_id)
         params["revise"] = {item["kind"]: item["id"] for item in original["artifacts"]}
         params["document"] = params.get("document") or "document" in params["revise"]
         return await self.start_minutes({**params, "title": original["title"]}, "console", original["session_id"])
@@ -318,7 +452,8 @@ class TaskManager:
                 row = messages[ref["id"]]
                 when = datetime.fromisoformat(row["created_at"]).astimezone().strftime("%m-%d %H:%M")
                 speaker = "你" if row["role"] == "user" else "旁听"
-                source = "麦克风" if row["source"].startswith("microphone") else "文字" if row["source"] == "text" else "桌面声音"
+                source = ("用户纠正" if row["source"] == "artifact_correction" else
+                          "麦克风" if row["source"].startswith("microphone") else "文字" if row["source"] == "text" else "桌面声音")
                 records.append({"handle": ref["handle"], "kind": "speech" if row["role"] == "user" else "observation",
                                 "source_kind": "message", "id": row["id"], "label": f"会话原文 · {speaker} · {source} · {when}",
                                 "text": row["text"]})
@@ -397,6 +532,7 @@ class TaskManager:
                                  "excerpt": item["text"][:300]} for item in records}
 
     async def _compose(self, task: dict, collected: dict, extraction: dict) -> dict:
+        self._guard(task["id"])()
         records = self._records(collected["sources"])
         extraction = keep_sources(extraction, {item["handle"] for item in records})
         sources, revise = self._source_map(records), task["params"].get("revise", {})
@@ -418,6 +554,8 @@ class TaskManager:
         return {"artifact_ids": [minutes["id"], todo["id"]], "items": {key: len(extraction[key]) for key in ("points", "decisions", "todos", "questions")}}
 
     async def _document(self, task: dict, collected: dict, extraction: dict) -> dict:
+        check = self._guard(task["id"])
+        check()
         records = self._records(collected["sources"])
         handles = {item["handle"] for item in records}
         extraction = keep_sources(extraction, handles)
@@ -431,6 +569,7 @@ class TaskManager:
         if counter.count(build(selected)) > budget:
             raise TaskError("纪要内容超出模型上下文预算，请在设置中调大上下文预算后继续。")
         text, _ = await self._model(task, "document", "task_document", build(selected), llm, [item["id"] for item in selected])
+        check()
         content, unknown = clean_markers(text, handles)
         note = f"模型写入了不存在的引用：{'、'.join(unknown)}" if unknown else ""
         revise = task["params"].get("revise", {})
@@ -459,6 +598,8 @@ class TaskManager:
         return {"status": call["status"], "error": call["error"] or call["reason"]}
 
     async def _call(self, task: dict, key: str, call: dict, *, force_click=False, pre_execute=None) -> dict:
+        check = self._guard(task["id"])
+        check()
         row = self.memory.tool_call_by_key(task["id"], key)
         if row and row["status"] in FINISHED_CALLS:
             return self._outcome(row)
@@ -476,6 +617,7 @@ class TaskManager:
                                                    "", "deny", "参数无效。", "failed")
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc))
             await self._call_changed(row)
+            check()
             return self._outcome(row)
         if any(item["status"] == "unknown" for item in self.memory.task(task["id"])["tool_calls"]):
             # The model may have requested several tools in one reply. Removing
@@ -492,22 +634,28 @@ class TaskManager:
         if decision == "deny":
             row = self.memory.update_tool_call(row["id"], status="denied", error=reason)
             await self._call_changed(row)
+            check()
             return self._outcome(row)
         if decision == "ask":
             answer = await self._ask(task, row)
+            check()
             if not answer["approved"]:
                 row = self.memory.update_tool_call(row["id"], status="denied", error="你拒绝了这项操作。")
                 await self._call_changed(row)
+                check()
                 return self._outcome(row)
             if answer["scope"] == "task":
                 self.grants.setdefault(task["id"], set()).add(spec.name)
-        if pre_execute:
-            pre_execute()
+        def execute_check():
+            check()
+            if pre_execute:
+                pre_execute()
+
+        execute_check()
         row = self.memory.update_tool_call(row["id"], status="running")
         await self._call_changed(row)
         try:
-            if pre_execute:
-                pre_execute()
+            execute_check()
             if spec.effect == "internal":
                 result, undo = await self._internal(task, spec, arguments), None
             elif spec.effect == "external":
@@ -517,21 +665,34 @@ class TaskManager:
                     if pre_execute:
                         # Recheck after thread-pool queuing, at the write boundary.
                         with self.memory._lock:
-                            pre_execute()
+                            execute_check()
                             return self.runner.run(row["id"], spec, arguments)
+                    # Already-started OS operations cannot be recalled. Do not
+                    # hold the memory lock throughout a potentially long command.
+                    execute_check()
                     return self.runner.run(row["id"], spec, arguments)
                 result, undo = await asyncio.to_thread(execute_local)
+            check()
             row = self.memory.update_tool_call(row["id"], status="succeeded", result=result, undo=undo)
         except asyncio.CancelledError:
-            self.memory.update_tool_call(row["id"], status="unknown", error="任务在执行期间被取消，结果未知。")
+            if not self.closing and self.memory.tool_call(row["id"])["status"] == "running":
+                self.memory.update_tool_call(row["id"], status="unknown", error="任务在执行期间被取消，结果未知。")
+            raise
+        except TaskError:
+            if not self.closing and self.memory.tool_call(row["id"])["status"] == "running":
+                self.memory.update_tool_call(row["id"], status="unknown", error="任务身份已改变，执行结果未知。")
             raise
         except ToolOutcomeUnknown as exc:
+            check()
             row = self.memory.update_tool_call(row["id"], status="unknown", error=str(exc))
         except (ToolError, ValueError, KeyError) as exc:
+            check()
             row = self.memory.update_tool_call(row["id"], status="failed", error=str(exc)[:500])
         except OSError as exc:
+            check()
             row = self.memory.update_tool_call(row["id"], status="failed", error=f"系统操作失败：{exc.strerror or type(exc).__name__}")
         await self._call_changed(row)
+        check()
         return self._outcome(row)
 
     async def _internal(self, task: dict, spec, arguments: dict) -> dict:
@@ -556,11 +717,15 @@ class TaskManager:
         return [self.approval_view(call) for call in self.memory.pending_tool_calls() if call["id"] in self.approvals]
 
     async def _ask(self, task: dict, row: dict) -> dict:
+        check = self._guard(task["id"])
+        check()
         self.approvals.add(row["id"])
         row = self.memory.update_tool_call(row["id"], status="awaiting_approval")
         self.memory.update_task(task["id"], status="waiting_approval")
         await self.changed(task["id"])
+        check()
         await self.runtime.emit("approval_requested", self.approval_view(row), task["trace_id"])
+        check()
         # Exactly one tool per graph node keeps interrupt ordering stable.
         # Only identifiers enter the checkpoint; approval previews remain local.
         answer = interrupt({"call_id": row["id"]})
@@ -570,22 +735,35 @@ class TaskManager:
         self.approvals.discard(row["id"])
         self.memory.update_task(task["id"], status="running")
         await self.changed(task["id"])
+        check()
         return answer
 
     async def resolve(self, call_id: str, approved: bool, scope: str = "once", via: str = "click") -> dict:
+        identity = self._identity()
+        self._check_control_identity(identity)
         # A click may arrive before the interrupted node's checkpoint is written.
         call = self.memory.tool_call(call_id)
         job = self.jobs.get(call["task_id"]) if call else None
         if job:
-            await asyncio.gather(asyncio.shield(job), return_exceptions=True)
+            await asyncio.wait({job}, timeout=CANCEL_WAIT_SECONDS)
+            if not job.done():
+                raise ValueError("任务仍在保存检查点或退出，请稍后重试。")
         async with self.approval_lock:
-            return await self._resolve(call_id, approved, scope, via)
+            self._check_control_identity(identity)
+            try:
+                return await self._resolve(call_id, approved, scope, via)
+            except TaskError as exc:
+                if call:
+                    self._abandon_control(call["task_id"])
+                raise ValueError(str(exc)) from None
 
     async def _resolve(self, call_id: str, approved: bool, scope: str, via: str) -> dict:
         call = self.memory.tool_call(call_id)
         if not call or call["status"] != "awaiting_approval" or call_id not in self.approvals:
             raise ValueError("这项操作已经处理过，或者任务已中断。")
         task = self.memory.task(call["task_id"])
+        check = self._guard(task["id"])
+        check()
         if task["kind"] == "research":
             if scope != "once" or via != "click":
                 raise ValueError("文档保存需要在控制台逐次点击确认。")
@@ -601,6 +779,7 @@ class TaskManager:
                 await self.changed(task["id"])
                 raise ValueError("文档或来源已改变；请继续任务并重新审阅确认。") from None
         saved = await self.graphs.inspect(task)
+        check()
         if task["status"] != "waiting_approval" or call_id not in saved["pending_calls"]:
             raise ValueError("审批状态已改变，请刷新后重试。")
         if scope not in ("once", "task") or (scope == "task" and call["effect"] in NO_STANDING_ALLOW):
@@ -613,6 +792,7 @@ class TaskManager:
         self.memory.update_task(call["task_id"], status="queued")
         await self.runtime.emit("approval_resolved", {"id": call_id, "task_id": call["task_id"], **approval},
                                 self.memory.task(call["task_id"])["trace_id"])
+        check()
         self._schedule(call["task_id"], approval)
         return approval
 
@@ -659,6 +839,8 @@ class TaskManager:
         await self.changed(call["task_id"])
 
     async def _reply(self, task: dict, outcome: dict) -> dict:
+        check = self._guard(task["id"])
+        check()
         text = (outcome.get("text") or "").strip() or "操作已处理，详细结果见任务页。"
         reply_to = task["params"].get("reply_to")
         sources = [reply_to] if reply_to and self.memory.record(reply_to) else []
@@ -666,7 +848,10 @@ class TaskManager:
                                         {"source_ids": sources, "task_id": task["id"], "complete": True})
         if task["session_id"] == self.runtime.session_id:
             await self.runtime.emit("response_start", {}, task["trace_id"], False)
+            check()
             await self.runtime.emit("response_delta", {"text": text}, task["trace_id"], False)
+            check()
             await self.runtime.emit("response_done", {"text": text, "id": saved["id"], "complete": True,
                                                       "source_ids": sources}, task["trace_id"])
+            check()
         return {"message_id": saved["id"]}
