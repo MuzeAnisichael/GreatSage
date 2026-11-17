@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-11-18。本文记录包含 v0.7 研究闭环的当前源码架构：在 LangChain、LangGraph、MCP、Pipecat 与 LangMem 基础上接入 Deep Agents 的固定角色委派，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。功能实现不等于已发布；源码、构建及真实服务边界见[项目现状](project-status.md)和[v0.7 验证记录](validation-v0.7.md)。记忆范围见[v0.6 方案](v0.6-plan.md)，研究范围见[v0.7 方案](v0.7-plan.md)，按功能定位文件和函数见[代码导航](code-map.md)。
+更新日期：2026-11-18。本文记录包含 v0.8 会话续接、来源选择和文档修订的当前源码架构；沿用 LangChain、LangGraph、MCP、Pipecat、LangMem 与 Deep Agents 固定角色委派，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。功能实现不等于已发布，当前验证与交付边界见[项目现状](project-status.md)。记忆范围见[v0.6 方案](v0.6-plan.md)，研究底座及历史证据见[v0.7 方案](v0.7-plan.md)、[v0.7 验证](validation-v0.7.md)，本轮范围见[v0.8 方案](v0.8-plan.md)。旧版真实模型、构建和安装记录不能代替本轮验收；按功能定位见[代码导航](code-map.md)。
 
 ## 1. 组成与调用关系
 
@@ -18,6 +18,9 @@ flowchart LR
     ASR --> Runtime
     Turn --> Runtime
     Runtime <--> Memory[SQLite 记忆与摘要]
+    UI --> Sessions[显式会话切换与关联任务]
+    Sessions --> Runtime
+    Sessions --> Memory
     Runtime -. 空闲后台单批 .-> Extract[LangMem 结构化提取]
     Extract --> LLM
     Extract --> Validate[来源与证据复核／确认策略]
@@ -32,9 +35,12 @@ flowchart LR
     Materials[Markdown 资料] --> Memory
     Runtime --> Tasks[LangGraph 后台任务]
     Tasks --> LLM
-    Tasks --> Research[Deep Agents 固定双角色研究]
+    Tasks -->|研究任务| Select[冻结范围内的本地词法选材]
+    Select --> Research[Deep Agents 固定双角色研究]
     Research --> LLM
     Tasks --> Artifacts[纪要／待办／文档产物]
+    Artifacts --> ReviewUI[引用定位／版本差异／用户纠正]
+    ReviewUI --> Tasks
     Tasks --> Policy[权限层与审批]
     Policy --> Tools[工作目录内的本地工具]
     Policy --> MCP[MCP HTTP 外部工具]
@@ -50,6 +56,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | ui/ | 控制台、桌宠、语音播放、状态和日志展示 |
 | greatsage/server.py | 有认证的本地 HTTP／WebSocket 接口与输入校验 |
 | greatsage/runtime.py | 音频任务、行为预设、上下文、回复、播放、压缩与记忆提取调度 |
+| greatsage/sessions.py、ui/session-workspace.js | 持久当前会话入口、会话元数据与显式切换；不复制会话正文 |
 | greatsage/audio.py、winloopback.py | 麦克风、系统／进程回环、PCM 转换与线程队列 |
 | greatsage/echo.py | 播放参考及自身声音抑制；不是完整 AEC |
 | greatsage/segmentation.py | 30 ms VAD 帧、预留音频、临时快照、静音结束与最长分段 |
@@ -61,6 +68,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/chat_models.py | LangChain OpenAI／Ollama 聊天适配，复用应用连接池与凭据 |
 | greatsage/agent_graph.py | LangGraph 纪要／操作／研究图、SQLite 控制 checkpoint 和审批恢复 |
 | greatsage/research.py | 研究来源快照、累计预算、证据复核、文档渲染及审批保存协调 |
+| greatsage/source_selection.py | 用户所选范围冻结、本地词法排序、固定／排除与完整范围预算检查 |
 | greatsage/delegation.py | Deep Agents 委派／Skills 薄适配；固定两个只读子角色与现有模型传输 |
 | greatsage/mcp_tools.py | 官方 SDK 的显式发现、定义版本、参数校验与受控 HTTP 调用 |
 | greatsage/inspector.py、ui/inspector.js | 本地状态、消息／上下文和记忆元数据检查 |
@@ -73,7 +81,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | greatsage/decisions.py、background.py | 结构化回应策略、有限批次及失败退避 |
 | greatsage/audit.py | 受控请求快照、凭据移除、导出与来源失效 |
 | greatsage/materials.py（v0.3） | Markdown 导入、分块、版本、重新扫描和片段检索 |
-| greatsage/artifacts.py（v0.3） | 产物版本、引用表、待办和 Markdown 导出 |
+| greatsage/artifacts.py、artifact_review.py | 产物版本与修订血缘、引用定位、有界文本差异、待办和 Markdown 导出；不做语义事实认证 |
 | greatsage/workflows.py（v0.3） | 纪要抽取的提示与 JSON Schema、条目清理、合并和渲染 |
 | greatsage/task_store.py | 任务／步骤／工具账本的 SQLite 持久化，复用 MemoryStore 的数据库与锁 |
 | greatsage/tasks.py（v0.3） | 任务执行、模型调用重试、审批、取消与恢复协调 |
@@ -82,7 +90,7 @@ Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python �
 | ui/memory.js、audit.js | 记忆来源、冲突、历史浏览、索引和审计控件 |
 | ui/structured-memory.js | 提取设置／状态、候选确认／拒绝、实体关系和原文证据；复用记忆修改／删除 |
 
-存储层的 `TaskStoreMixin` 从 `task_store.py` 注入 `MemoryStore`，不再经 `tasks.py` 导入任务执行依赖。`StructuredMemoryMixin` 同样只依赖本地存储与哈希辅助，不为读取实体或记忆而加载 LangMem；LangMem 管理器只在真正提取时创建。`tasks.py` 保留原符号兼容入口。目录按当前职责组织，较大的 Runtime／路由拆分随对应功能迁移进行，避免无关搬迁。
+存储层的 `TaskStoreMixin` 从 `task_store.py` 注入 `MemoryStore`，不再经 `tasks.py` 导入任务执行依赖。`SessionsMixin` 仅增加当前会话指针和元数据查询；`StructuredMemoryMixin` 同样只依赖本地存储与哈希辅助，不为读取实体或记忆而加载 LangMem；LangMem 管理器只在真正提取时创建。`tasks.py` 保留原符号兼容入口。目录按当前职责组织，较大的 Runtime／路由拆分随对应功能迁移进行，避免无关搬迁。
 
 ## 2. 音频与实时响应
 
@@ -127,7 +135,7 @@ LLM 内容逐段送往界面，适合朗读的片段进入语音队列。TTS 失
 
 压缩与正常回答使用同一提供商适配接口，但后台压缩让出前台交互。保存摘要前重新验证来源。具体结构和删除规则见 [memory-design.md](memory-design.md)。
 
-后台每轮至多压缩一批、提取一批、索引 4 条记录；前台说话或最终识别／回复时让出资源。失败按 5–300 秒退避，界面可重试；重启根据 SQLite 未覆盖来源／未处理提取来源／未建索引记录继续，不重放旧回答。嵌入有独立开关与凭据，文本按 UTF-8 切块，索引按 provider/base URL/model/chunk version 隔离。前台嵌入和本地扫描共享等待上限；扫描分批检查截止时间，超时回退词法。
+后台每轮至多压缩一批、提取一批、索引 4 条记录；前台说话或最终识别／回复时让出资源。失败按 5–300 秒退避，界面可重试。v0.8 重启只恢复会话入口；明确聊天、切换会话、开启监听或手动维护等交互后，才允许按既有开关调度后台维护。届时根据 SQLite 未覆盖来源／未处理提取来源／未建索引记录继续，不重放旧回答或自动恢复模型任务。嵌入有独立开关与凭据，文本按 UTF-8 切块，索引按 provider/base URL/model/chunk version 隔离。前台嵌入和本地扫描共享等待上限；扫描分批检查截止时间，超时回退词法。
 
 ### v0.6 提取与本地记忆边界
 
@@ -158,6 +166,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 | compression_start/done、memory_updated | 压缩来源与数据变化 |
 | memory_extraction（v0.6） | 提取阶段、数量与安全错误码；候选正文由记忆详情单独读取 |
 | stream_reset | 慢客户端丢失连续事件后明确要求重载状态 |
+| session | 当前会话已切换；前端重载对应历史并使旧详情请求失效 |
 | error | 服务或管线异常及可用的降级信息 |
 | task_updated、task_finished、task_deleted（v0.3） | 任务状态与步骤进度（只推送，不写日志）、结束结果、删除 |
 | approval_requested、approval_resolved、approval_hint（v0.3） | 待确认操作、审批结果、语音确认的提示 |
@@ -195,7 +204,7 @@ LangMem 0.0.30 的 `create_memory_manager` 复用结构化抽取和 schema 校�
 - 重新扫描时内容有变化就提升版本号，并按删除语义处理旧片段。
 - 片段进入独立的 FTS5 索引。开启语义检索后也建立向量，并作为“资料”组进入对话上下文。
 
-**纪要任务。**`TaskManager` 用信号量保证同一时间只运行一个任务，v0.4 中由 LangGraph 驱动下列步骤。每步结果写入原 SQLite 业务表，控制 checkpoint 写入单独数据库；重启后从未完成步骤继续：
+**纪要任务。**`TaskManager` 用信号量保证同一时间只运行一个任务，v0.4 中由 LangGraph 驱动下列步骤。每步结果写入原 SQLite 业务表，控制 checkpoint 写入单独数据库；重启将未完成任务标为中断，用户显式继续后从未完成步骤进入：
 
 1. **collect**：收集所选会话原文和资料片段，给每条来源分配 `S1`、`S2` 这样的标记。
 2. **extract**：模型按 JSON Schema 输出摘要、要点、决定、待办和未决问题，温度为 0；超出上下文预算时分批抽取再合并。
@@ -287,3 +296,43 @@ flowchart TD
 `ResearchWorkflow.research()` 用 `asyncio.create_task(..., context=contextvars.Context())` 启动并直接 await `run_delegation`，在外层与临时研究图之间清除继承的 Pregel 上下文，避免内层被误认为外层的持久化子图；直接等待保留取消传播，研究图内部自己的角色上下文不被拆散。内层主规划器和两个子图仍均显式 `checkpointer=False, store=None`，避免默认 `None` 继承外层 SQLite 并落盘完整消息。只有外层控制信息进检查点，来源正文与研究报告归业务库的删除规则管理。`research_sources` 保留任务到来源 ID 的关联，完成后也保留到删除任务；来源修改／移除时事务清除相关中间正文与计划等可能含原文的详情。细节见 [记忆设计](memory-design.md)。研究重试保留步骤 `calls/budget`，累计请求与预留预算在出站前落盘；active time 在该轮收尾累计，不是强制杀进程前每毫秒都落盘的计时器。
 
 保存始终要求控制台逐次点击，不能用语音、任务级授权或普通 allow 规则跳过。审批绑定 `artifact_id/version/content_hash` 与会话／设置版本／数据代际；拒绝保存仍保留可审阅产物。模型返回和写入边界还核对运行 token、当前身份及来源；`TaskManager._call` 在线程池真正开始执行后持存储锁再调用 guard，`ToolRunner` 同锁复核产物再写入，覆盖批准后排队期间发生的来源／版本变化。取消先使运行 token 失效，即使服务吞掉取消也不能提交迟到报告。显式 resume 可以在当前会话继续旧任务，但不会把研究结果自动写进当前对话。
+
+## v0.8 工作台：会话入口、选材与连续修订
+
+```mermaid
+flowchart TD
+    Launch["重启：读取 session_state 当前入口"] --> Session["显示历史；监听关闭；旧任务保持中断"]
+    Pick["用户点击继续某会话"] --> Switch["Runtime.activate_session：锁定切换／撤销旧身份"]
+    Switch --> Suspend["TaskManager.suspend_for_session：中断任务／撤销审批"]
+    Suspend --> Entry["持久 active_session_id；刷新历史及关联任务"]
+    Entry --> Request["明确选定会话／资料并提出问题"]
+    Request --> Freeze["固定范围：新建时 freeze；修订默认复用快照"]
+    Freeze --> Select["collect：本地词法排序＋固定／排除＋预算"]
+    Select -->|"满足选材契约"| Research["research：两个只读角色核对选中原文"]
+    Select -->|"来源失效／全文或固定项放不下"| Stop["可见失败；用户调整或明确更新来源"]
+    Stop -->|"新任务；保留旧任务"| Freeze
+    Research --> Compose["compose：新产物或 commit_revision 原子追加版本"]
+    Compose --> Review["审阅来源定位、引用状态、版本血缘与差异"]
+    Review -->|"用户纠正独立保存为 user 消息"| Revision["ResearchWorkflow.revise：绑定 expected_version"]
+    Revision -->|"复用旧范围；显式更新才重新 freeze"| Freeze
+    Review --> Approval["save：新版本／内容哈希逐次点击批准"]
+    Approval --> Export["工作目录写入；旧版本或来源变化则拒绝"]
+```
+
+**会话与运行身份。**`session_state` 单行表只保存 `active_session_id`，指向原有 `sessions`；首次迁移没有指针时选择最近活动会话，无会话才新建。`SessionsMixin.sessions()` 返回时间、消息数和 active 标记，不生成标题摘要或保存正文副本。`Runtime.activate_session()` 先验证 ID，再在 `_session_lock` 内串行切换；未知 ID 不撤销当前运行。切换在首次 await 前提升回复、音频、数据和记忆提取代际，随后挂起任务、使审批／任务授权失效并有界等待清理。吞取消的旧任务仍被跟踪，同 ID 未退出前不能恢复；迟到返回必须通过运行 token 与固定身份检查。已进入执行的外部副作用仍可能为 unknown，不能因切换成功就认为它已经撤回。
+
+`POST /api/sessions/{id}/activate` 返回当前状态及所选历史，`POST /api/sessions` 创建新会话；`GET /api/tasks?session_id=...` 和 `/api/artifacts?session_id=...` 支持关联筛选。跨会话修订的同一文档可关联多个会话，依靠生成任务的版本血缘查询。重启不自动聆听、回答或恢复任务；切换已经开启监听的会话会丢弃旧音频身份，不能补播旧队列。清空历史后建立新的有效入口，旧 ID 不可继续。
+
+**冻结范围与自动选材。**`SourceSelection.freeze()` 在创建任务时固定明确选中的资料／会话范围，只保存消息／片段 ID、内容哈希和资料版本。后续新增消息不会悄悄扩大该范围。`select()` 复用 `memory._relevance` 的英文词和中文短语／bigram 词法评分，在范围内扫描排序；它不是嵌入检索、重排模型或语义完整性判定，也没有在此路径直接调用 FTS。资料库搜索与聊天记忆的 FTS／可选向量检索仍是各自的既有入口。
+
+默认按问题自动执行，不增设选材审批；可在详情固定／排除来源或要求完整范围。纠正消息固定参加修订，并优先参与查询词提取。小范围最多 8 段时可全部选入；较大范围按相关性和预算选择完整片段，绝不截断一条来源来凑容量。冻结上限为 1500 条来源；每个所选会话的历史读取也有 1500 条消息上限。发送给研究角色仍最多 8 段、总计 64,000 字符、单段 32,000 字符，同时经过预选 token 预算和实际框架请求预算。固定项放不下、完整范围不能全覆盖、没有可用片段或范围已失效都会明确失败；局部选材不代表读过整个文件。来源面板最多列 100 条候选并标明显示限制，全文原文按需从存储解析，不在任务详情另存摘录库。
+
+`reselect()` 新建关联旧任务的任务，不改写原任务。默认复用旧范围快照；只有明确开启 `update_sources` 才重新冻结当前来源。资料重扫或来源修正／删除导致旧 ID／哈希失效，不能把“继续任务”当成同意采用新内容。已选来源通过 `research_sources` 纳入删除传播，旧研究正文与可能含原文的详情清除；产物正文按既有规则保留，引用失效。
+
+**审阅与修订。**`ArtifactsMixin.artifact_review()` 返回当前版本、生成任务、父版本、纠正来源和逐版本 lineage；`artifact_review.review_passages()` 只按 Markdown 正文行建立引用标记映射，区分 cited／uncited／invalid／unknown，显式返回 `semantic_verification=False`。资料定位含文件名、资料版本、标题及行号；会话定位含会话 ID 与时间。`bounded_diff()` 复用 `difflib.unified_diff`，限制输入／输出并报告截断；这是方便审阅的文本差异，不是语义 diff。
+
+`ResearchWorkflow.revise()` 以最近有生成任务的血缘记录找回原范围，用户修改要求保存为独立 `user` 消息（`source=artifact_correction`），保留文档 ID／基准版本元数据。旧草稿从产物实时读取，仅作为待修改上下文，不能成为 evidence 来源；原引用标记也必须按本轮来源重建。草稿超过 12,000 字符明确拒绝，完整指令（含全局要求和草稿）超过 16,000 字符也拒绝，仍须通过实际模型请求的上下文预算；这些边界均不截断正文。新的纠正不是已认证事实，与原资料有分歧时仍需模型标注并由用户审阅。
+
+`commit_revision()` 在同一事务内核对 `expected_version`、纠正来源及引用，向同一 artifact 追加版本，并记录 `generating_task_id/parent_version/correction_source_id`；同一任务重复提交返回自己已经提交的版本。手工编辑也支持 `expected_version`，避免旧弹窗覆盖新版本。修订默认生成 `.vN.md` 保存路径、关闭覆盖，不继承旧批准。`GET /api/artifacts/{id}/export` 是显式下载副本；研究的 `export_artifact` 则写入受控工作目录，必须重新点击批准，二者入口和副作用不同。
+
+这些边界的定位用例见 `test_sessions.py`、`test_task_session_lifecycle.py`、`test_source_selection.py`、`test_workbench_api.py`、`test_workbench_research.py` 与产物审阅测试；执行结果以本轮验证记录为准。词法选择的召回率、修订后的结论正确率、真实模型多轮修订、真实连续语音和长期运行均不能由确定性回归推定通过。

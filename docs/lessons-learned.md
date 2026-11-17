@@ -15,6 +15,7 @@
 - **处理**：脚本保存并明确传递原会话 ID；无需放宽产品会话隔离。
 - **何时复查**：重启、会话续接、任务恢复、测试夹具初始化变化时。先区分数据选择错误与产品恢复故障。
 - **证据**：[冻结后端记录](validation-v0.4.md)、[smoke_backend.py](../scripts/smoke_backend.py)。
+- **v0.8 更新**：当前入口改为 `SessionsMixin.active_session()` 持久指针，重启不会再无条件新建空会话；历史故障仍说明夹具应明确来源 ID，而不能依赖默认选择。重启只恢复入口，不自动运行任务／后台模型；用户激活会话和显式恢复任务分开处理。见 [sessions.py](../greatsage/sessions.py)、[test_sessions.py](../tests/test_sessions.py)。
 
 ## L03 · 环境权限错误不要修成产品逻辑
 
@@ -36,6 +37,7 @@
 - **处理**：来源删除先取消相关任务、撤销审批、清理上下文；异步提交核对来源／版本和代际。取消、重启后的未执行授权失效，恢复需重新确认。
 - **何时复查**：新增后台写入、缓存、实体记忆、会话续接或子 Agent 时，把每份派生内容纳入来源失效路径。
 - **证据**：[框架审批与取消边界日志](development-log.md)、[记忆与删除设计](memory-design.md)、[test_tasks.py](../tests/test_tasks.py)。
+- **v0.8 补充**：会话切换也须在第一次清理 await 前撤销回复／音频／数据代际及任务 token，再把活动任务标为 interrupted、撤销审批并有界等待。只检查模型正文循环会漏掉 `_respond.finally` 的完成事件与工具任务创建；两处都要核对固定身份。见 [runtime.py](../greatsage/runtime.py)、[test_sessions.py](../tests/test_sessions.py)、[test_task_session_lifecycle.py](../tests/test_task_session_lifecycle.py)。
 
 ## L06 · 验证结果绑定对象，不能相互替代
 
@@ -108,6 +110,7 @@
 - **处理**：超长完整原文按预算指纹延后，既不截断也不标已处理；新预算重新尝试。前台取消最多等待 0.25 秒，保留旧任务占位并用代际拒绝写回，避免无限替代任务；来源谓词覆盖真实 `microphone:<device>` 标签。
 - **何时复查**：加入新后台任务、输入来源或上下文预算时，优先用具体竞态及长来源夹具检查，不反复运行性能基准。
 - **证据**：[test_memory_runtime.py](../tests/test_memory_runtime.py)、[test_structured_memory.py](../tests/test_structured_memory.py)。
+- **v0.8 补充**：相同原则扩展到任务取消／会话挂起。使用 `asyncio.wait` 有界等待后仍保留未结束 job，直到它真正完成才移除；同一任务旧运行仍未退场时拒绝 resume，避免两个 runner 共享账本。ContextVar 固定每次运行的 token／会话／设置／数据身份，旧 runner 的 finally 也不能结束替代运行。见 [tasks.py](../greatsage/tasks.py)、[test_task_session_lifecycle.py](../tests/test_task_session_lifecycle.py)。
 
 ## L16 · 弹窗关闭要同步失效，后台刷新不能负责打开
 
@@ -158,3 +161,19 @@
 - **何时复查**：修改 SDK 嵌套图、ContextVar、检查点或取消方式时，至少保留一条真实外层图→真实内层框架→脚本化 provider→审批保存的完整路径，不因各层单独通过就推断组合成功。
 - **相邻审计缺口**：Skill 本体版本不足以追溯引用文件，研究快照补齐资源的 path/version/truncated 元数据，仍不在默认审计里保存正文。
 - **证据**：[research.py](../greatsage/research.py)、[test_research.py](../tests/test_research.py)、[验证记录](validation-v0.7.md)。
+
+## L23 · 当前候选不等于历史实际读取范围
+
+- **审查边界**：任务开始后新增消息、资料重扫或旧版本没有范围快照时，直接重新查询数据库会悄悄改变任务输入；全库候选先截断再过滤，也可能把用户所选资料挤出候选集。
+- **处理**：创建时保存所选范围的来源 ID／内容哈希／资料版本；实际选材只在冻结范围内排序，详情从存储实时读取原文。来源变化必须由用户显式更新并创建新任务，旧任务保留。旧 v0.7 任务没有 manifest 时显示当前候选和 stale 标志，不能伪称原执行范围。资料搜索先限制 material IDs，再应用候选上限。
+- **范围与取舍**：自动相关选择是有界本地词法评分，不等于全文覆盖或语义召回。全文和固定来源无法满足预算时明确失败；片段保持完整，显示候选上限单独提示，不能用静默截断伪装成功。
+- **何时复查**：扩展导入格式、检索器、分页、重选或任务恢复时，同时核对“授权范围”“冻结范围”“实际读到的范围”和“界面展示范围”。
+- **证据**：[source_selection.py](../greatsage/source_selection.py)、[materials.py](../greatsage/materials.py)、[test_source_selection.py](../tests/test_source_selection.py)、[test_workbench_research.py](../tests/test_workbench_research.py)。
+
+## L24 · 文档修订要保留编辑对象，但不能把它升级为证据
+
+- **本轮实现审查**：只把纠正附在原研究问题后重跑，会丢失用户正在修改哪份草稿；把旧文档塞进 sources 又会形成模型自证。手工编辑版本的 generating_task_id 为空时，只看当前版本还会丢失最近研究任务与此前纠正范围。
+- **处理**：从版本 lineage 查最近生成任务；旧草稿仅作为明确标注的待修改上下文，不分配来源 ID。用户纠正另存 `artifact_correction` 用户消息，固定参加本轮选择；每项结论重新绑定原文证据。同一 artifact 以 expected_version 原子追加版本，记录生成任务／父版本／纠正来源，每版保存重新批准。
+- **容量与排序**：共享 `_terms` 只保留 40 项，长旧要求会挤掉后追加的纠正词；本轮将纠正优先放入选材 query。草稿、全局要求和模型工具共同占预算，不能只验草稿长度：草稿 12,000／合并指令 16,000 字符上限之外，还须实际请求预算校验，失败不截断。
+- **何时复查**：新增“按意见修改”、手工编辑与自动生成混用、模型上下文扩展或版本比较时，检查编辑对象、事实来源、用户要求三者的不同身份。文本 diff 和有效引用标记都不证明语义正确。
+- **证据**：[research.py](../greatsage/research.py)、[artifacts.py](../greatsage/artifacts.py)、[artifact_review.py](../greatsage/artifact_review.py)、[test_workbench_research.py](../tests/test_workbench_research.py)、[test_artifact_revisions.py](../tests/test_artifact_revisions.py)。这些是实现和定向回归入口，不是本版真实模型质量证明。

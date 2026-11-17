@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-11-18。适用于包含 v0.7 固定双角色研究的当前源码实现；功能已实现不等于已发布，构建与验证状态以 [project-status.md](project-status.md) 和 [validation-v0.7.md](validation-v0.7.md) 为准。
+更新日期：2026-11-18。适用于包含 v0.8 会话续接、范围选材和连续修订的当前源码实现；功能已实现不等于已发布，构建与验证状态以 [project-status.md](project-status.md) 为准。本轮边界见 [v0.8-plan.md](v0.8-plan.md)，[validation-v0.7.md](validation-v0.7.md) 只记录上一版证据。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -18,6 +18,7 @@ GreatSage/
 ├─ ui/
 │  ├─ index.html / styles.css        控制台布局与样式
 │  ├─ app.js / client.js             页面协调、播放、HTTP / WebSocket 客户端
+│  ├─ session-workspace.js           会话入口、显式切换与关联任务跳转
 │  ├─ memory.js / audit.js           历史、记忆冲突、索引及审计
 │  ├─ structured-memory.js           提取设置、候选、实体关系与原文证据
 │  ├─ work.js / mcp.js               资料、任务、产物、审批与 MCP 配置
@@ -36,14 +37,17 @@ GreatSage/
 │  ├─ providers.py / chat_models.py 模型、ASR、TTS、嵌入适配
 │  ├─ settings.py / skills.py       配置、凭据与只读 Skill
 │  ├─ memory.py / semantic.py       记忆持久化、来源关系、向量检索
+│  ├─ sessions.py                    当前会话指针、迁移与无正文会话元数据
 │  ├─ structured_memory.py          结构化记忆、实体分组、提取进度与抑制
 │  ├─ memory_extraction.py          LangMem schema 与现有模型传输薄适配
 │  ├─ memory_diagnostics.py         无网络的真实 LangMem 加载与合成提案检查
 │  ├─ budget.py / background.py     上下文预算与后台退避
 │  ├─ decisions.py                  回应策略
 │  ├─ materials.py / artifacts.py   资料、引用与版本化产物
+│  ├─ artifact_review.py             有界版本差异、正文行与引用映射
 │  ├─ workflows.py / tasks.py       纪要规则与任务执行协调
 │  ├─ research.py / delegation.py   研究闭环与 Deep Agents 固定只读角色委派
+│  ├─ source_selection.py             范围快照、词法选材、固定／排除与预算
 │  ├─ research_diagnostics.py        无网络的真实研究框架／冻结依赖诊断
 │  ├─ task_store.py                 任务、步骤与工具账本持久化
 │  ├─ agent_graph.py                LangGraph 图、检查点与恢复
@@ -77,7 +81,9 @@ GreatSage/
 | API / Ollama 流式聊天 | `POST /api/providers/test`；服务端 `test_provider` | [providers.py](../greatsage/providers.py): `Providers.stream_chat` → [chat_models.py](../greatsage/chat_models.py): `stream_chat`；`MeteredChatOpenAI`, `NamedToolChatOllama` | [test_providers.py](../tests/test_providers.py), [test_probe_providers.py](../tests/test_probe_providers.py) |
 | 全局指令与现成 Skills | [ui/app.js](../ui/app.js): `refreshSkills`；`/api/skills` 系列接口 | [skills.py](../greatsage/skills.py): `SkillsManager.import_path`, `select`, `set_enabled`；[runtime.py](../greatsage/runtime.py): `_build_context` | [test_skills.py](../tests/test_skills.py), [test_runtime.py](../tests/test_runtime.py) |
 | 语音语言、音色与播放 | [ui/app.js](../ui/app.js): `AudioPlayer.enqueue`, `next`, `stop`, `notify`；`POST /api/playback` | [runtime.py](../greatsage/runtime.py): `_speak_worker`, `playback`，校验每句身份／顺序与一次性停止回执；[providers.py](../greatsage/providers.py): `synthesize`, `voices` | [test_providers.py](../tests/test_providers.py), [test_runtime.py](../tests/test_runtime.py), [test_audio_player.py](../tests/test_audio_player.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
-| 新会话与历史浏览 | [ui/app.js](../ui/app.js) 的新会话监听器；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/sessions`, `/api/history/page` | [runtime.py](../greatsage/runtime.py): `reset_session`；[memory.py](../greatsage/memory.py): `new_session`, `sessions`, `history_page` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime.py](../tests/test_runtime.py), [test_server.py](../tests/test_server.py) |
+| 继续旧会话、新会话与重启入口 | [ui/session-workspace.js](../ui/session-workspace.js): `setupSessionWorkspace`；`GET/POST /api/sessions`、`POST /api/sessions/{id}/activate` | [runtime.py](../greatsage/runtime.py): `activate_session`, `reset_session`, `_switch_session`, `note_interaction`；[sessions.py](../greatsage/sessions.py): `SessionsMixin.active_session`, `activate_session`, `sessions`；历史分页仍由 `MemoryStore.history_page` 提供 | [test_sessions.py](../tests/test_sessions.py), [test_workbench_api.py](../tests/test_workbench_api.py) |
+| 切换中断、旧审批与迟到结果 | `session` 事件、会话工作台与显式继续任务 | [runtime.py](../greatsage/runtime.py): `_switch_session`, `_wait_session_cleanup`, `_invalidate_audio`, `_respond`；[tasks.py](../greatsage/tasks.py): `suspend_for_session`, `_stop_active`, `_guard`, `_schedule`, `resume` | [test_task_session_lifecycle.py](../tests/test_task_session_lifecycle.py), [test_sessions.py](../tests/test_sessions.py) |
+| 按会话查任务与产物 | [ui/work.js](../ui/work.js): `setSessionFilter`, `refreshTasks`；`GET /api/tasks?session_id=...`、`/api/artifacts?session_id=...` | [task_store.py](../greatsage/task_store.py): `tasks`；[artifacts.py](../greatsage/artifacts.py): `artifacts`，含跨会话修订任务关联 | [test_workbench_api.py](../tests/test_workbench_api.py) |
 | 显式长期记忆与冲突 | [ui/app.js](../ui/app.js): `renderMemories`；[ui/memory.js](../ui/memory.js): `setupMemoryPanel`；`/api/memories`, `/api/memory/conflicts` | [runtime.py](../greatsage/runtime.py): `_remember_explicit`, `add_memory_checked`；[memory.py](../greatsage/memory.py): `add_memory`, `conflicts`, `resolve_conflict` | [test_memory_v02.py](../tests/test_memory_v02.py), [test_runtime_v02.py](../tests/test_runtime_v02.py) |
 | 自动提取设置、手动提取与状态 | [ui/structured-memory.js](../ui/structured-memory.js): `setupStructuredMemory`；`PUT /api/settings`、`GET/POST /api/memory/extraction` | [runtime.py](../greatsage/runtime.py): `request_memory_extraction`, `memory_extraction_status`, `_background_cycle`, `extract_memories`, `pause_background`, `_memory_work_identity`, `_set_extraction_attention`；[settings.py](../greatsage/settings.py): `_validate` | [test_memory_runtime.py](../tests/test_memory_runtime.py), [test_settings.py](../tests/test_settings.py), [test_server.py](../tests/test_server.py) |
 | LangMem 提取与原文证据校验 | 后台 `Runtime.extract_memories`；[ui/memory.js](../ui/memory.js): `showRecord` → [ui/structured-memory.js](../ui/structured-memory.js): `appendStructuredEvidence`；`GET /api/records/{id}` | [memory_extraction.py](../greatsage/memory_extraction.py): `MemoryFact`, `NoMemory`, `plan_sources`, `extraction_budget_version`, `ProviderMemoryModel._agenerate`, `extract_memory_proposals`；[structured_memory.py](../greatsage/structured_memory.py): `extraction_sources`, `defer_extraction_sources`, `_validate_extraction_sources`, `_validate_extraction_item`, `save_extraction` | [test_memory_extraction.py](../tests/test_memory_extraction.py), [test_structured_memory.py](../tests/test_structured_memory.py), [test_memory_runtime.py](../tests/test_memory_runtime.py) |
@@ -89,6 +95,9 @@ GreatSage/
 | 导入 / 更新 / 检索资料 | [ui/work.js](../ui/work.js): `setupWork`；`/api/materials` 系列接口 | [materials.py](../greatsage/materials.py): `collect_markdown`, `split_markdown`, `MaterialsMixin.import_materials`, `rescan_materials`, `search_chunks` | [test_materials.py](../tests/test_materials.py), [test_server.py](../tests/test_server.py) |
 | 生成纪要、待办、文档 | [ui/work.js](../ui/work.js): `setupWork`；`POST /api/tasks` | [tasks.py](../greatsage/tasks.py): `TaskManager.start_minutes`, `_collect`, `_extract`, `_compose`, `_document`；[agent_graph.py](../greatsage/agent_graph.py): `AgentGraphs._minutes`；抽取与渲染规则在 [workflows.py](../greatsage/workflows.py) | [test_tasks.py](../tests/test_tasks.py), [scripts/evaluate_tasks.py](../scripts/evaluate_tasks.py) |
 | 选定资料／会话生成研究文档 | [ui/work.js](../ui/work.js): `setupWork`, `researchOverview`；`POST /api/tasks` 的 `kind=research`；工具 `create_research_task` | [tasks.py](../greatsage/tasks.py): `TaskManager.start_research`, `_internal`；[agent_graph.py](../greatsage/agent_graph.py): `AgentGraphs.graph`, `_research`；[research.py](../greatsage/research.py): `ResearchWorkflow.start`, `collect`, `research`, `compose`, `save` | [test_research.py](../tests/test_research.py), [test_server.py](../tests/test_server.py) |
+| 范围冻结、自动选材与全文失败 | `GET /api/tasks/{id}/sources[/{source_id}]`、`POST /api/tasks/{id}/reselect`；[ui/work.js](../ui/work.js): `loadSourceText` | [source_selection.py](../greatsage/source_selection.py): `SourceSelection.freeze`, `records`, `select`, `inspect`, `source`, `selection_options`；[memory.py](../greatsage/memory.py): `_relevance`, `_terms`；[research.py](../greatsage/research.py): `collect`, `reselect` | [test_source_selection.py](../tests/test_source_selection.py), [test_workbench_research.py](../tests/test_workbench_research.py) |
+| 证据审阅、引用定位与版本差异 | `GET /api/artifacts/{id}/review?version=...&compare_to=...`；[ui/work.js](../ui/work.js): `loadArtifactReview`, `renderArtifactReview`, `renderCitations` | [artifacts.py](../greatsage/artifacts.py): `artifact_review`, `_version_lineage`；[artifact_review.py](../greatsage/artifact_review.py): `review_passages`, `bounded_diff`；返回 `semantic_verification=False` | [test_artifact_revisions.py](../tests/test_artifact_revisions.py), [scripts/smoke_desktop.cjs](../scripts/smoke_desktop.cjs) |
+| 用户纠正、草稿续改与版本冲突 | `POST /api/artifacts/{id}/regenerate`，`expected_version/update_sources` | [tasks.py](../greatsage/tasks.py): `regenerate` → [research.py](../greatsage/research.py): `revise`, `research`, `compose` → [artifacts.py](../greatsage/artifacts.py): `commit_revision`；纠正保存为 `artifact_correction` 用户消息 | [test_workbench_research.py](../tests/test_workbench_research.py), [test_artifact_revisions.py](../tests/test_artifact_revisions.py) |
 | 固定双角色规划、整理与证据核对 | 任务详情的计划、角色状态、待确认项；`task_updated` | [delegation.py](../greatsage/delegation.py): `run_delegation`, `ProviderDelegationModel.bind_tools`, `_agenerate`, `_Run.save_report`, `_Guard.awrap_tool_call`, `SnapshotBackend`；[research.py](../greatsage/research.py): `validate_report`, `render_report` | [test_delegation.py](../tests/test_delegation.py), [test_research.py](../tests/test_research.py) |
 | 研究格式修正与安全诊断 | 任务步骤的修正进度、调用详情；`research_validation` 事件 | [delegation.py](../greatsage/delegation.py): `_schema_issue`, `ProviderDelegationModel._agenerate`, `_request`；[research.py](../greatsage/research.py): `ResearchWorkflow.research` 内 `on_event` 将白名单诊断写入 `calls[].validation` | [test_research.py](../tests/test_research.py): `test_outer_graph_runs_real_framework_and_records_resource_audit`；[test_delegation.py](../tests/test_delegation.py) |
 | 研究审批、旧版本与迟到写入隔离 | 任务产物审阅、逐次点击 approve／deny | [research.py](../greatsage/research.py): `ResearchWorkflow.guard`, `records`, `save`；[tasks.py](../greatsage/tasks.py): `TaskManager._resolve`, `_call` 内 `execute_local`；[tools.py](../greatsage/tools.py): `ToolRunner.validate_artifact_export`, `_export_artifact` | [test_research.py](../tests/test_research.py): `test_pending_export_cannot_save_after_approval_identity_changes`, `test_worker_entry_rechecks_identity_after_thread_pool_queuing` |
@@ -218,12 +227,24 @@ flowchart LR
 完整组件图与容量限制见 [架构中的 v0.7 研究闭环](architecture.md#v07-研究选定来源--固定角色核对--审批保存)。按实际调用阅读：
 
 1. `TaskManager.start_research → ResearchWorkflow.start → _schedule → _run → AgentGraphs.run`；`AgentGraphs.graph` 只在研究任务需要时加载 `_research`，避免普通纪要启动承担框架导入成本。
-2. `_research` 的四个节点经 `TaskManager._step` 调用同名 `ResearchWorkflow` 方法。`collect` 复用 `_collect`，绑定来源 ID／哈希与 `research_sources`；`research` 创建运行身份和持久预算回调，在空 Context 的新 task 内直接等待 `run_delegation`，避免临时内层图继承外层 Pregel 状态。
+2. `_research` 的四个节点经 `TaskManager._step` 调用同名 `ResearchWorkflow` 方法。v0.8 的 `start` 先调用 `SourceSelection.freeze`；`collect` 调用 `SourceSelection.select`，绑定实际选中来源 ID／哈希与 `research_sources`，不再复用纪要 `_collect`；`research` 创建运行身份和持久预算回调，在空 Context 的新 task 内直接等待 `run_delegation`，避免临时内层图继承外层 Pregel 状态。
 3. `run_delegation` 使用 `create_agent` 和 Deep Agents middleware：planner 的 `write_todos → task(source_researcher) → task(evidence_reviewer) → submit_report`；角色内先 `read_source` 再 `submit_findings/submit_review`。这两个角色顺序执行、各一次，不能递归委派。`_skill_middleware` 只暴露 `SnapshotBackend` 的虚拟 Skill 读取。
-4. `ProviderDelegationModel._agenerate → _request` 经 `before_request → Runtime.snapshot_request → Providers.stream_chat`；`on_usage/on_request_end` 回传每次请求的用量、结局和步骤调用详情。每个角色在一次研究尝试中至多一次 schema 格式修正，失败及修正请求仍计入全部预算；来源／权限／取消和过期身份错误不走该重试。`_schema_issue → on_event` 把安全诊断写入 `calls[].validation` 并发出 `research_validation`。`validate_report → render_report → create_artifact` 完成独立来源校验及确定性渲染。
+4. `ProviderDelegationModel._agenerate → _request` 经 `before_request → Runtime.snapshot_request → Providers.stream_chat`；`on_usage/on_request_end` 回传每次请求的用量、结局和步骤调用详情。每个角色在一次研究尝试中至多一次 schema 格式修正，失败及修正请求仍计入全部预算；来源／权限／取消和过期身份错误不走该重试。`_schema_issue → on_event` 把安全诊断写入 `calls[].validation` 并发出 `research_validation`。`validate_report → render_report → create_artifact`（首版）或 `commit_revision`（修订）完成独立来源校验及确定性渲染。
 5. `ResearchWorkflow.save → TaskManager._call(force_click=True, pre_execute=check)` 进入已有审批账本。`_resolve` 校验审批身份与版本；恢复后 `execute_local` 在线程入口持锁再检查，随后 `ToolRunner._export_artifact → _write`。拒绝只跳过保存，文档仍在产物中。
 
 外层 checkpoint 只有控制状态；内层主／子图显式关闭 checkpoint。失败后 resume 重跑整个未完成的 research 阶段，保留原 `calls/budget`；成功阶段与已生成文档按业务账本复用，旧审批不能复用。来源清理由 `MemoryStore._redact_events → TaskStoreMixin._invalidate_research_sources` 覆盖素材重扫等入口，完成后的任务关联也参与清理。`test_delegation.py` 使用真实框架与脚本化提供商；`test_research.py` 既有假委派边界回归，也有 `test_outer_graph_runs_real_framework_and_records_resource_audit` 的真实 Runtime／外层图／研究框架集成，覆盖正常与一次格式修正路径。测试提供商仍是脚本化输入，不能据此声称真实模型质量已验证。
+
+### 4b. v0.8 会话续接与文档迭代
+
+按一条用户流程阅读，避免把任务恢复、会话切换和来源更新混为同一操作：
+
+1. `Runtime.__init__ → MemoryStore.active_session` 读取 SQLite 会话指针；`Runtime.start` 恢复任务状态，但不恢复运行，也不在启动时调度后台模型。`note_interaction` 才允许配置内的后台维护。
+2. `setupSessionWorkspace → POST /api/sessions/{id}/activate → Runtime.activate_session → _switch_session`：验证目标、持锁、先撤销代际，再 `TaskManager.suspend_for_session` 和有界清理，最后更新持久指针。`setupWork.setSessionFilter` 只过滤列表，不激活会话。
+3. `ResearchWorkflow.start → SourceSelection.freeze → collect/select`：范围中只持久 ID／哈希／资料版本，本地 `_relevance` 排序后受完整片段预算约束。范围外不能补搜；全文／固定项失败直接停止。`inspect/source` 从活存储读取原文；旧 v0.7 任务没有快照时明确标记 stale，不把当前候选冒充当时执行范围。
+4. `GET /api/artifacts/{id}/review → ArtifactsMixin.artifact_review → review_passages/bounded_diff`：展示原文定位、文本差异、父版本和生成任务。`semantic_verification=False` 明确区分引用状态与语义判断。
+5. `TaskManager.regenerate → ResearchWorkflow.revise`：从 lineage 追溯最近生成任务；保存独立纠正消息，默认复用冻结范围，`update_sources=True` 才重读当前范围。研究 prompt 中的旧草稿是非证据上下文；纠正为固定用户来源。`commit_revision(expected_version)` 原子追加同一文档版本，再经 `save` 请求新批准。
+
+关键存储为 `session_state`、任务 `params.source_scope`／collect 的选择详情、`research_sources`、`artifact_revision_links` 与原有版本／引用／工具调用表；选材元数据没有摘录副本，暂存研究报告和可选审计正文仍按既有来源清理规则管理。重点回归入口是 [test_sessions.py](../tests/test_sessions.py)、[test_task_session_lifecycle.py](../tests/test_task_session_lifecycle.py)、[test_workbench_research.py](../tests/test_workbench_research.py)；产品质量与真实模型结论仍需单独证据。
 
 ### 5. 工具 → 审批中断 → 恢复
 
@@ -277,7 +298,7 @@ git blame -L '/async def _call/,+25' -- greatsage/tasks.py
 
 一次问题优先关联 `trace_id` → `task_id` / `call_id` → 请求快照与事件；快照全文默认关闭，监控页不等于完整请求档案。排查源码时不打印运行目录中的密钥、录音或私人会话。结论、原因、修复和验证边界写入 [development-log.md](development-log.md)，架构取舍回链到对应设计文档。
 
-当前已实现 Deep Agents 的固定双角色只读研究；通用并发／递归多 Agent、旧会话继续交互、MCP stdio / OAuth 尚未实现。显式恢复旧研究任务不等于切回旧对话继续聊天。LangMem 提取、候选和实体列表已接入；实体按精确名称／类型分组，不承担同名消歧。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
+当前已实现 Deep Agents 的固定双角色只读研究，以及独立的旧会话激活入口；恢复旧研究任务与切回旧对话聊天仍是两个不同操作。通用并发／递归多 Agent、MCP stdio / OAuth 尚未实现。LangMem 提取、候选和实体列表已接入；实体按精确名称／类型分组，不承担同名消歧。Pipecat 和 NSIS 配置已实现，真实语音与安装验收状态见当前验证文档；新增目录不能被当成质量和性能已经验收的证据。
 
 ### v0.5 音源、话轮与取消链
 
