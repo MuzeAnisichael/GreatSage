@@ -107,9 +107,11 @@ class TaskStoreMixin:
             "current_step": current["title"] if current else "", "progress": (current or {}).get("detail", {}).get("progress", ""),
             "artifact_ids": [item["id"] for item in task["artifacts"]]}
 
-    def tasks(self, limit: int = 50) -> list[dict]:
+    def tasks(self, limit: int = 50, session_id: str | None = None) -> list[dict]:
         with self._lock:
-            ids = [row[0] for row in self._db.execute("SELECT id FROM tasks ORDER BY created_at DESC LIMIT ?", (max(1, min(limit, 200)),))]
+            where, args = (" WHERE session_id=?", [session_id]) if session_id is not None else ("", [])
+            ids = [row[0] for row in self._db.execute("SELECT id FROM tasks" + where + " ORDER BY created_at DESC LIMIT ?",
+                                                    [*args, max(1, min(limit, 200))])]
         return [self.task_summary(id) for id in ids]
 
     def finish_task(self, id: str, status: str, error: str | None) -> None:

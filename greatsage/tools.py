@@ -63,9 +63,11 @@ _STR, _BOOL = {"type": "string"}, {"type": "boolean"}
 SPECS = {spec.name: spec for spec in (
     ToolSpec("create_research_task", "资料核对与文档", "internal",
              "Start a bounded research task: organize selected sources, review evidence, create a cited document, "
-             "then wait for a click to save it to the workspace. Only use on the user's direct request.",
+             "then wait for a click to save it to the workspace. Select relevant evidence only inside the explicit "
+             "material/session scope; use full for whole-source coverage (fails if over budget). Only use on the user's direct request.",
              _object({"title": _STR, "use_session": _BOOL, "material_ids": {"type": "array", "items": _STR},
-                      "instructions": _STR, "save_path": _STR, "overwrite": _BOOL})),
+                      "instructions": _STR, "save_path": _STR, "overwrite": _BOOL,
+                      "selection_mode": {"type": "string", "enum": ["relevant", "full"]}})),
     ToolSpec("create_minutes_task", "整理纪要", "internal",
              "Start a background task that writes cited meeting minutes, editable todos and optionally a document "
              "draft from the current conversation and imported Markdown materials.",

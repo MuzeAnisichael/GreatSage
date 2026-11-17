@@ -102,3 +102,15 @@ def test_scoped_search_filters_before_global_candidate_limits(manager, tmp_path)
     results = manager.memory.search_chunks("needle", 8, task["params"]["material_ids"])
     assert len(results) == 1 and "uniquely" in results[0]["text"]
     assert manager.memory.search_chunks("needle", 8, []) == []
+
+
+def test_new_correction_terms_are_not_crowded_out_by_original_instruction(manager, tmp_path):
+    selector, task, _ = scope(manager, tmp_path, "".join(f"# Old{i}\n旧采购记录{i}\n" for i in range(10))
+                              + "# 青鸟\n青鸟项目经理是林蓝\n")
+    task["params"]["instructions"] = " ".join(f"oldterm{i}" for i in range(50))
+    correction = manager.memory.add_message("user", "请补充青鸟的项目经理", "artifact_correction")
+    task["params"]["correction_source_id"] = correction["id"]
+    task["params"]["source_scope"] = selector.freeze(task["params"])
+    selected = selector.select(task)
+    texts = [selector.source(task, ref["id"])["text"] for ref in selected["sources"]]
+    assert not selected["error"] and any("经理是林蓝" in text for text in texts)

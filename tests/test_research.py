@@ -371,7 +371,7 @@ async def test_late_delegation_cannot_cross_changed_sources_or_run_identity(runt
         runtime.settings.update({"global_prompt": "SYNTHETIC updated instructions"})
     delegate.release.set()
     detail = await settled(runtime, task["id"])
-    assert detail["status"] in ("failed", "cancelled"), detail
+    assert detail["status"] in (("interrupted",) if mutation == "session" else ("failed", "cancelled")), detail
     assert not detail["artifacts"] and not detail["tool_calls"]
     assert not any(row["metadata"].get("task_id") == task["id"] for row in runtime.memory.history())
 
@@ -573,7 +573,7 @@ async def test_worker_entry_rechecks_identity_after_thread_pool_queuing(runtime,
     finally:
         release.set()
     detail = await settled(runtime, task["id"])
-    assert detail["status"] == "failed", detail
-    assert runtime.memory.tool_call(call["id"])["status"] == "failed"
+    assert detail["status"] == "interrupted", detail
+    assert runtime.memory.tool_call(call["id"])["status"] == "unknown"
     assert not executed, "a stale queued worker must not enter the filesystem tool"
     assert not (tmp_path / "workspace" / "notes" / "research.md").exists()

@@ -132,7 +132,7 @@ class ArtifactsMixin:
                 for row in self._db.execute("SELECT * FROM citations WHERE version_id=?", (version_id,))}
 
     def add_artifact_version(self, id: str, content: str, origin: str = "edited", note: str = "",
-                             sources: dict | None = None) -> dict:
+                             sources: dict | None = None, expected_version: int | None = None) -> dict:
         """Edits keep the previous citation map; regeneration supplies a new one."""
         if not isinstance(content, str) or not content.strip() or len(content) > 400_000:
             raise ValueError("产物内容需要 1–400000 个字符。")
@@ -140,6 +140,8 @@ class ArtifactsMixin:
             row = self._db.execute("SELECT * FROM artifacts WHERE id=?", (id,)).fetchone()
             if not row:
                 raise KeyError(id)
+            if expected_version is not None and row["current_version"] != expected_version:
+                raise ValueError("文档已有新版本，请刷新后再编辑。")
             previous = self._db.execute("SELECT id FROM artifact_versions WHERE artifact_id=? AND version=?",
                                         (id, row["current_version"])).fetchone()
             if sources is None:
@@ -325,8 +327,8 @@ class ArtifactsMixin:
             self._db.execute("UPDATE artifacts SET updated_at=? WHERE id=?", (_now(), row["artifact_id"]))
         return next(todo for todo in self.todos(row["artifact_id"]) if todo["id"] == todo_id)
 
-    def export_markdown(self, id: str) -> str:
-        artifact = self.artifact(id)
+    def export_markdown(self, id: str, version: int | None = None) -> str:
+        artifact = self.artifact(id, version)
         used = set(markers(artifact["content"]))
         lines = [artifact["content"].rstrip(), ""]
         cited = [item for item in artifact["citations"] if item["marker"] in used]

@@ -85,9 +85,11 @@ class SourceSelection:
         query = params.get("instructions", "").strip() or task["title"]
         correction = by_id.get(params.get("correction_source_id"))
         if correction:
-            query += " " + correction["text"]
+            # The shared term extractor is capped. Prioritize the current edit
+            # request so a long original instruction cannot crowd it out.
+            query = correction["text"] + " " + query
         full = options["selection_mode"] == "full" or bool(re.search(
-            r"全文|通读|逐段|逐条|完整覆盖|全部(?:资料|内容|来源|段落)|\b(?:full[- ]text|every (?:source|section)|all sources)\b", query, re.I))
+            r"全文|通读|逐段|逐条|完整(?:覆盖|整理|总结|梳理)|(?:全部|所有)(?:资料|内容|来源|段落)|\b(?:full[- ]text|every (?:source|section)|all sources)\b", query, re.I))
         mode = "full" if full else "relevant"
         error = None
         if stale:
@@ -142,6 +144,9 @@ class SourceSelection:
         manifest, records, stale = self.records(params)
         detail = self.memory.step(task["id"], "collect")["detail"].get("selection")
         detail = detail or self.select(task)
+        if "source_scope" not in params:
+            detail = {**detail, "sources": [], "selected_chars": 0, "all_selected": False,
+                      "selection_status": "stale", "error": "旧任务未保存范围快照；下方仅为当前候选，请明确更新来源后重新选择。"}
         selected = {ref["id"]: ref for ref in detail["sources"]}
         pins, excluded = set(params.get("pinned_source_ids", [])), set(params.get("excluded_source_ids", []))
         if params.get("correction_source_id"):
