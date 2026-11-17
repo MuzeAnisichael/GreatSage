@@ -4,6 +4,7 @@ import { setupWork } from './work.js';
 import { setupMCP } from './mcp.js';
 import { setupInspector } from './inspector.js';
 import { setupVoiceHealth } from './voice.js';
+import { setupSessionWorkspace } from './session-workspace.js';
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -19,8 +20,11 @@ let refreshChatWithMemory = false;
 let historySearchTimer;
 let historySearchEpoch = 0;
 let historySearchResults = null;
+let sessionSyncEpoch = 0;
+let memoryRefreshEpoch = 0;
 let enhancements;
 let work;
+let sessionWorkspace;
 let mcp;
 let inspector;
 let voiceHealth;
@@ -450,8 +454,23 @@ function onEvent(event) {
     case 'interrupt': stopLocalResponse(data); break;
     case 'session':
       stopLocalResponse();
+      memoryRefreshEpoch += 1;
       state.status.session_id = data.session_id;
+      sessionWorkspace?.setActive(data.session_id);
+      work?.setActiveSession(data.session_id);
+      state.history = [];
+      renderChat();
+      renderHistory();
       resetTranscripts();
+      {
+        const expectedSession = data.session_id;
+        const epoch = ++sessionSyncEpoch;
+        client.request('/api/history').then(result => {
+          if (epoch !== sessionSyncEpoch || state.status.session_id !== expectedSession) return;
+          state.history = Array.isArray(result) ? result : result.messages || result.history || [];
+          renderChat(); renderHistory();
+        }).catch(() => {});
+      }
       break;
     case 'error':
       if (['audio_pipeline', 'asr'].includes(data.component)) markUnfinishedTranscripts(data.source);
@@ -538,7 +557,10 @@ function scheduleMemoryRefresh(refreshChat = false) {
 }
 
 async function refreshMemory({ refreshChat = false } = {}) {
+  const generation = ++memoryRefreshEpoch;
+  const expectedSession = state.status.session_id;
   const [memories, history, summaries] = await Promise.all([client.request('/api/memories'), client.request('/api/history'), client.request('/api/summaries')]);
+  if (generation !== memoryRefreshEpoch || expectedSession !== state.status.session_id) return;
   state.memories = Array.isArray(memories) ? memories : memories.memories || [];
   state.history = Array.isArray(history) ? history : history.messages || history.history || [];
   state.summaries = Array.isArray(summaries) ? summaries : summaries.summaries || [];
@@ -781,11 +803,30 @@ function stopLocalResponse(command) {
   updateState(state.listening ? 'listening' : 'idle');
 }
 
+function applySessionPayload(payload = {}, fallbackId = '') {
+  sessionSyncEpoch += 1;
+  memoryRefreshEpoch += 1;
+  const returnedStatus = payload.status && typeof payload.status === 'object' ? payload.status : {};
+  const sessionState = Object.keys(returnedStatus).length ? returnedStatus : { state: 'idle', listening: false };
+  const sessionId = payload.session_id || returnedStatus.session_id || fallbackId;
+  const history = Array.isArray(payload.history) ? payload.history : payload.history?.messages || payload.history?.history || [];
+  state.status = { ...state.status, ...sessionState, session_id: sessionId };
+  state.history = history;
+  state.streams.clear();
+  updateState(state.status.state || 'idle', state.status.listening);
+  renderChat();
+  renderHistory();
+  resetTranscripts();
+  sessionWorkspace?.setActive(sessionId);
+  work?.setActiveSession(sessionId);
+}
+
 async function loadInitial() {
   const status = await client.request('/api/status');
   state.status = status;
   $('#version').textContent = status.version ? `v${String(status.version).replace(/^v/, '')}` : 'v0.1';
-  $('#session-label').textContent = status.session_id ? `会话 ${String(status.session_id).slice(0, 8)}` : '本地会话';
+  sessionWorkspace?.setActive(status.session_id);
+  work?.setActiveSession(status.session_id);
   updateState(status.state || 'idle', status.listening);
   const requests = [
     ['设置', async () => fillSettings(await client.request('/api/settings'))],
@@ -810,6 +851,12 @@ enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, ref
   },
 });
 work = setupWork({ client, toast, busy, confirmAction });
+sessionWorkspace = setupSessionWorkspace({
+  client, busy, toast,
+  beforeActivate: () => stopLocalResponse(),
+  onActivated: (result, id) => { applySessionPayload(result, id); showView('conversation'); },
+  onOpenTasks: id => { work.setSessionFilter(id); showView('tasks'); },
+});
 mcp = setupMCP({ client, toast, busy });
 voiceHealth = setupVoiceHealth({ client, busy, toast,
   openAsrSettings() { showView('settings'); const provider = $('[name="asr.provider"]'); provider.scrollIntoView({ block: 'center' }); provider.focus(); },
@@ -853,10 +900,7 @@ $('#resume-audio').addEventListener('click', () => busy($('#resume-audio'), () =
 $('#new-session').addEventListener('click', () => busy($('#new-session'), async () => {
   stopLocalResponse();
   const result = await client.request('/api/sessions', { method: 'POST' });
-  state.status.session_id = result.session_id || result.id;
-  $('#session-label').textContent = `会话 ${String(state.status.session_id || '').slice(0, 8)}`;
-  await refreshMemory(); renderChat();
-  resetTranscripts();
+  applySessionPayload(result, result.session_id || result.id);
   showView('conversation'); toast('新会话已开始，长期记忆继续保留。');
 }));
 
@@ -912,7 +956,14 @@ client.addEventListener('connection', event => {
   voiceHealth.setConnected(event.detail.state === 'connected');
   if (event.detail.state === 'connected' && state.initialized) {
     voiceHealth.refresh().catch(() => {});
-    client.request('/api/status').then(status => { state.status = status; updateState(status.state, status.listening); }).catch(error => showConnection('error', error.message));
+    client.request('/api/status').then(status => {
+      const changedSession = state.status.session_id && status.session_id !== state.status.session_id;
+      state.status = status;
+      sessionWorkspace?.setActive(status.session_id);
+      work?.setActiveSession(status.session_id);
+      updateState(status.state, status.listening);
+      if (changedSession) refreshMemory({ refreshChat: true }).catch(() => {});
+    }).catch(error => showConnection('error', error.message));
     client.request('/api/events').then(result => { for (const item of Array.isArray(result) ? result : result.events || []) addEvent(item); }).catch(() => {});
   }
 });

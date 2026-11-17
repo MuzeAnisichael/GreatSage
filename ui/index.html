@@ -53,7 +53,7 @@
           <div class="topbar-actions">
             <button class="approval-indicator" id="approval-indicator" hidden>待确认 <span id="approval-indicator-count">0</span></button>
             <span class="status-pill" id="state-pill"><i></i><span>连接中</span></span>
-            <span class="quiet-label" id="session-label">本地会话</span>
+            <button type="button" class="session-switcher" id="session-label" title="浏览并继续历史会话">本地会话</button>
             <button class="button ghost small" id="new-session"><svg class="icon"><use href="#i-plus"/></svg>新会话</button>
             <button class="icon-button" id="minimize" title="最小化" aria-label="最小化窗口"><svg class="icon"><use href="#i-minus"/></svg></button>
           </div>
@@ -105,7 +105,7 @@
           </div>
           <div class="tasks-layout">
             <div class="panel">
-              <div class="panel-heading"><h2>任务</h2><button class="button subtle small" id="refresh-tasks"><svg class="icon"><use href="#i-refresh"/></svg>刷新</button></div>
+              <div class="panel-heading"><h2>任务</h2><div class="panel-tools"><select id="task-session-filter" class="task-session-filter" aria-label="按会话筛选任务"><option value="all">全部会话</option><option value="active">当前会话</option></select><button class="button subtle small" id="refresh-tasks"><svg class="icon"><use href="#i-refresh"/></svg>刷新</button></div></div>
               <div id="task-list" class="task-list"><div class="small-empty">还没有任务。</div></div>
             </div>
             <div class="panel task-detail-panel"><div id="task-detail"><div class="small-empty">选择左侧的任务，查看步骤、操作和产物。</div></div></div>
