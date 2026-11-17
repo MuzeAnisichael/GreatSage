@@ -67,7 +67,11 @@ class Runtime:
         self.providers = providers or Providers()
         self.capture = AudioCaptureManager()
         self.exclude_pid = exclude_pid
-        self.session_id = self.memory.new_session()
+        self.session_id = self.memory.active_session()
+        self._session_lock = asyncio.Lock()
+        self._session_switching = False
+        self._session_cleanup: set[asyncio.Task] = set()
+        self._background_enabled = False
         self.state = "idle"
         self.listening = False
         self.subscribers: set[asyncio.Queue] = set()
@@ -143,14 +147,15 @@ class Runtime:
         self.consumer_task = asyncio.create_task(self._audio_consumer())
         self.housekeeping_task = asyncio.create_task(self._housekeeping())
         await self.emit("started", {"version": __version__, "session_id": self.session_id})
-        self._schedule_compression()
+        # Restore the conversation entry point only. Background model work waits
+        # for an explicit interaction in this process, not merely an app restart.
 
     async def close(self):
         await self.set_listening(False)
         await self.interrupt("shutdown")
         await self.tasks.close()
         tasks = [self.consumer_task, self.housekeeping_task, self.compression_task, self.memory_extraction_task]
-        tasks += list(self.partials.values()) + list(self.final_tasks)
+        tasks += list(self.partials.values()) + list(self.final_tasks) + list(self._session_cleanup)
         for task in tasks:
             if task:
                 task.cancel()
@@ -200,7 +205,7 @@ class Runtime:
     def status(self):
         config = self.settings.get()
         return {"version": __version__, "state": self.state, "session_id": self.session_id,
-                "listening": self.listening,
+                "listening": self.listening, "session_switching": self._session_switching,
                 "background": self.background.snapshot(),
                 "semantic_index": {**self.memory.vector_status(fingerprint(config["embedding"])),
                                    "enabled": config["embedding"]["enabled"]},
@@ -210,6 +215,8 @@ class Runtime:
                 "data_bytes": sum(p.stat().st_size for p in self.data_dir.rglob("*") if p.is_file())}
 
     async def set_listening(self, enabled):
+        if enabled:
+            self.note_interaction()
         if enabled == self.listening:
             return self.status()
         if enabled:
@@ -385,7 +392,7 @@ class Runtime:
         return self.audio_status()
 
     def _enqueue(self, chunk, capture_generation=None, epoch=None):
-        if not self.listening or (capture_generation is not None and capture_generation != self.capture_generation):
+        if self._session_switching or not self.listening or (capture_generation is not None and capture_generation != self.capture_generation):
             return
         epoch = self.epoch if epoch is None else epoch
         if epoch != self.epoch:
@@ -398,7 +405,7 @@ class Runtime:
             self.source_epochs[dropped.source] = self.source_epochs.get(dropped.source, 0) + 1
         self.audio_queue.put_nowait((epoch, chunk))
 
-    async def _invalidate_audio(self):
+    async def _invalidate_audio(self, *, timeout=None):
         self.epoch += 1
         self.voice_retries.clear()
         pipelines = list(self.voice_pipelines.values())
@@ -407,7 +414,7 @@ class Runtime:
         self.pending_voice.clear()
         self.voice_approvals.clear()
         self.voice_completed_versions.clear()
-        tasks = list(self.partials.values()) + list(self.final_tasks)
+        tasks = [task for task in (*self.partials.values(), *self.final_tasks) if task is not asyncio.current_task()]
         for task in tasks:
             task.cancel()
         self.partials.clear()
@@ -422,11 +429,27 @@ class Runtime:
         self.pending_desktop = None
         while not self.audio_queue.empty():
             self.audio_queue.get_nowait()
+        closers = [asyncio.create_task(self._close_voice_pipeline(pipeline)) for pipeline in pipelines]
+        closers += [task for task in self.voice_closers if task is not asyncio.current_task()]
+        if timeout is not None:
+            await self._wait_session_cleanup([*tasks, *closers], timeout)
+        elif tasks or closers:
+            await asyncio.gather(*tasks, *closers, return_exceptions=True)
+
+    async def _wait_session_cleanup(self, tasks, timeout=.25):
+        """Keep retiring work reachable without letting slow providers block a switch."""
+        tasks = {task for task in tasks if task is not asyncio.current_task()}
+        for task in tasks:
+            self._session_cleanup.add(task)
+
+            def finished(done):
+                self._session_cleanup.discard(done)
+                if not done.cancelled():
+                    done.exception()  # Cleanup failures cannot restore the old identity.
+
+            task.add_done_callback(finished)
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if pipelines or self.voice_closers:
-            await asyncio.gather(*(self._close_voice_pipeline(pipeline) for pipeline in pipelines),
-                                 *list(self.voice_closers), return_exceptions=True)
+            await asyncio.wait(tasks, timeout=timeout)
 
     def _provider(self, name):
         config = self.settings.provider(name)
@@ -439,7 +462,7 @@ class Runtime:
             epoch, chunk = await self.audio_queue.get()
             identity = None
             try:
-                if epoch != self.epoch or not self.listening:
+                if epoch != self.epoch or self._session_switching or not self.listening:
                     continue
                 config = self.settings.raw()
                 source = chunk.source
@@ -519,7 +542,7 @@ class Runtime:
         return VoiceIdentity(source, self.session_id, self.epoch, self.source_epochs.get(source, 0))
 
     def _voice_current(self, identity):
-        return (self.listening and identity.generation == self.epoch
+        return (not self._session_switching and self.listening and identity.generation == self.epoch
                 and identity.session_id == self.session_id and identity.source not in self.voice_disabled
                 and identity.source_generation == self.source_epochs.get(identity.source, 0))
 
@@ -1024,10 +1047,17 @@ class Runtime:
         return respond
 
     async def chat(self, text):
-        trace_id = uuid.uuid4().hex
-        message = self.memory.add_message("user", text, "text", self.session_id, trace_id)
+        async with self._session_lock:
+            self.note_interaction()
+            trace_id = uuid.uuid4().hex
+            scope = (self.session_id, self.epoch, self.data_epoch)
+            message = self.memory.add_message("user", text, "text", self.session_id, trace_id)
         await self.emit("user_message", {**message, "source_ids": [message["id"]]}, trace_id)
+        if scope != (self.session_id, self.epoch, self.data_epoch) or self._session_switching:
+            return {"id": message["id"], "trace_id": trace_id, "discarded": True}
         await self._remember_explicit(message)
+        if scope != (self.session_id, self.epoch, self.data_epoch) or self._session_switching:
+            return {"id": message["id"], "trace_id": trace_id, "discarded": True}
         await self.submit_message(message, time.time())
         return {"id": message["id"], "trace_id": trace_id}
 
@@ -1108,8 +1138,13 @@ class Runtime:
         return memory
 
     async def submit_message(self, message, speech_end):
+        scope = (self.session_id, self.epoch, self.data_epoch)
+        if self._session_switching or message["session_id"] != self.session_id:
+            return
         await self.interrupt("new_request")
         await self.pause_background()
+        if self._session_switching or scope != (self.session_id, self.epoch, self.data_epoch):
+            return
         if self._defer_voice_message(message, speech_end):
             return
         self.reply_task = asyncio.create_task(self._respond(message, speech_end, False))
@@ -1397,14 +1432,17 @@ class Runtime:
                                                      "voice_requested": config["voice_enabled"], "voice_failed": voice_failed})
                 except ValueError:
                     pass  # Its source was deleted while the request was active.
-            await self.emit("response_done", {"text": text if saved else "", "id": saved["id"] if saved else None,
-                                              "complete": completed, "source_ids": source_ids}, trace,
-                            persist=bool(saved))
-            if not self.playing:
+            current_session = (not self._session_switching and epoch == self.epoch
+                               and data_epoch == self.data_epoch and session_id == self.session_id)
+            if current_session:
+                await self.emit("response_done", {"text": text if saved else "", "id": saved["id"] if saved else None,
+                                                  "complete": completed, "source_ids": source_ids}, trace,
+                                persist=bool(saved))
+            if current_session and not self.playing:
                 await self.set_state("listening" if self.listening else "idle", trace)
             if self.reply_task is asyncio.current_task():
                 self.reply_task = None
-            if completed and tool_calls and not silent and data_epoch == self.data_epoch:
+            if current_session and completed and tool_calls and not silent and generation == self.generation:
                 # Tool work runs as its own task, so later speech cannot cancel it mid-approval.
                 await self.tasks.start_action(message, messages, text, tool_calls, trace)
             if completed and epoch == self.epoch and data_epoch == self.data_epoch:
@@ -1542,6 +1580,8 @@ class Runtime:
         return True
 
     def _schedule_compression(self):
+        if self._session_switching:
+            return
         if self.memory_extraction_task and not self.memory_extraction_task.done():
             return
         if not self.compression_task or self.compression_task.done():
@@ -1565,7 +1605,7 @@ class Runtime:
                     task.result()
 
     def _foreground_busy(self):
-        return (self.mic_speaking or self.playing or (self.reply_task and not self.reply_task.done())
+        return (self._session_switching or self.mic_speaking or self.playing or (self.reply_task and not self.reply_task.done())
                 or any(not task.done() and task is not asyncio.current_task() for task in self.final_tasks))
 
     async def _background_cycle(self):
@@ -1625,6 +1665,7 @@ class Runtime:
             raise ValueError("请先启用自动提取记忆，再安排会话提取。")
         if session_id is not None and session_id != self.session_id:
             raise ValueError("手动提取只支持当前会话。")
+        self.note_interaction()
         self._set_extraction_attention()
         self.background.state("memory_extraction").update(attempts=0, retry_at=0)
         self._memory_extraction_request = {"session_id": session_id, "runtime_session": self.session_id,
@@ -1897,14 +1938,55 @@ class Runtime:
         finally:
             self.background.cancel("compression")
 
+    def session_state(self):
+        return {"active_session_id": self.session_id, "sessions": self.memory.sessions()}
+
+    def note_interaction(self):
+        """Allow configured background maintenance after an explicit user action."""
+        self._background_enabled = True
+
+    async def activate_session(self, session_id):
+        async with self._session_lock:
+            if not isinstance(session_id, str) or self.memory.session(session_id) is None:
+                raise ValueError("会话不存在或已删除。")
+            if session_id == self.session_id:
+                self.note_interaction()
+                return {"session_id": self.session_id}
+            return await self._switch_session(session_id)
+
     async def reset_session(self):
-        await self._invalidate_audio()
-        await self.interrupt("new_session")
-        self.recent_transcripts.clear()
-        self.proactive_seen.clear()
-        self.session_id = self.memory.new_session()
-        await self.emit("session", {"session_id": self.session_id})
-        return {"session_id": self.session_id}
+        async with self._session_lock:
+            return await self._switch_session(None)
+
+    async def _switch_session(self, session_id):
+        # Revoke every asynchronous identity before the first cleanup await. A
+        # provider swallowing cancellation can no longer write/emit/start tools.
+        self._session_switching = True
+        self.epoch += 1
+        self.data_epoch += 1
+        self.generation += 1
+        self.memory_extraction_epoch += 1
+        self._memory_extraction_request = None
+        reply, self.reply_task = self.reply_task, None
+        if reply and reply is not asyncio.current_task() and not reply.done():
+            reply.cancel()
+        try:
+            await self.tasks.suspend_for_session()
+            await self._invalidate_audio(timeout=.25)
+            await self.interrupt("new_session" if session_id is None else "session_changed")
+            if reply:
+                await self._wait_session_cleanup([reply])
+            self.recent_transcripts.clear()
+            self.proactive_seen.clear()
+            self.played_texts.clear()
+            self.generated_texts.clear()
+            target = session_id if session_id is not None else self.memory.new_session()
+            self.session_id = self.memory.activate_session(target)
+            self.note_interaction()
+            await self.emit("session", {"session_id": self.session_id})
+            return {"session_id": self.session_id}
+        finally:
+            self._session_switching = False
 
     async def before_delete(self):
         self.data_epoch += 1
@@ -1941,6 +2023,6 @@ class Runtime:
                 if self.pending_stop and time.perf_counter() - self.pending_stop["started"] > 60:
                     self.pending_stop = None
                 next_cleanup = now + 60
-            if not self._foreground_busy():
+            if self._background_enabled and not self._foreground_busy():
                 self._schedule_compression()
             await asyncio.sleep(5)
