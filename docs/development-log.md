@@ -8,6 +8,13 @@
 - 新增 [v0.7 方案](v0.7-plan.md)，明确来源与产物版本、取消恢复、预算和最小验证边界。基线本地与远端 main 均为 `f369143`，工作区干净；使用 `codex/v07-evidence-workflow` 保留小切片后交付 main。
 - 本切片仅文档，无需运行应用测试；下一片核对 Deep Agents 实际依赖与受限适配接口。
 
+## 2026-11-18 · 只读 Deep Agents 委派适配
+
+- 新增 `delegation.run_delegation`：复用官方 SubAgentMiddleware、TodoListMiddleware、SkillsMiddleware，以及只开放 read_file 的 FilesystemMiddleware。选定来源与 Skill 以只读内存快照提供；模型仍走现有 Providers，不启用额外服务或远端追踪。
+- 固定 `deepagents==0.7.28` 与兼容适配依赖，保留现有 LangChain/core/LangGraph。使用官方中间件组合而非默认全能力构造器，避免文件写入、命令与 general-purpose Agent；最多两次固定职责委派。
+- 真实框架离线检查首轮 12 passed / 1 failed；失败定位到工具 schema 转换丢失 additionalProperties，改用规范 Pydantic schema 并双重校验后仅重跑失败项通过。父图嵌套检查确认 `checkpointer=False` 禁止正文继承持久化。
+- 这是合成模型验证，尚不代表真实模型质量或冻结包成功。后续接入来源存储、审批保存、控制台和发布诊断。
+
 ## 2026-10-24 · v0.6 最终验证与 main 交付
 
 - Python 运行代码为 `9f57833`，最终 UI 为 `2e67a10`；最后提交只补交付文档。Windows CI 375 passed／3 skipped，冻结记忆与语音诊断、后端14项、正常退出检查通过。修复真实包内弹窗竞态后，最终桌面 **56/56**，数据保持合成、音源关闭。

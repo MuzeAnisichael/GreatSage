@@ -2,6 +2,8 @@
 
 本页记录 2026-10-21 引入的语音依赖，不是项目全部依赖清单。GreatSage 自身采用 MIT；第三方组件分别适用其原许可证。冻结后端随附本页和下表组件的发行元数据，不改变上游归属或许可。
 
+2026-11-18 v0.7 使用 [Deep Agents](https://github.com/langchain-ai/deepagents) 0.7.28（MIT），复用 SubAgentMiddleware、SkillsMiddleware 与只读文件工具扩展点，未修改上游代码。固定此版本以兼容现有 langchain 1.4.6 / langchain-core 1.6.11。上游传递引入 langchain-google-genai 4.4.2（MIT）和 wcmatch 12.0.3（MIT）；Google 模型集成仅为依赖，不新增用户服务或自动发送数据。运行仍使用已选择的 Providers 适配器；无框架默认宿主文件系统、命令或远端持久化。
+
 2026-10-24 记忆提取新增 MIT 组件：LangMem 0.0.30、trustcall 0.0.39、langchain 1.4.6、langchain-anthropic 1.7.6、anthropic 1.17.0、dydantic 0.0.8。来源为 [LangMem](https://github.com/langchain-ai/langmem)、[trustcall](https://github.com/hinthornw/trustcall)、[LangChain](https://github.com/langchain-ai/langchain)、[Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python)、[dydantic](https://github.com/hinthornw/dydantic)。后两项模型依赖由上游包引入，不代表应用启用额外模型服务；提取仍使用用户选择的聊天适配器。固定 langchain 1.4.6 以保留现有 langchain-core 1.6.11，冻结包携带发行元数据与原许可证。复用提取与 schema 校验，不接入 LangMem 远端存储或 prompt 优化。
 
 | 组件与本次版本 | 许可 | 来源 |
