@@ -6,6 +6,32 @@ function yesterday() {
 
 const localTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 
+export function briefColumns(content, openCitation) {
+  const grid = document.createElement('div');
+  grid.className = 'brief-columns';
+  let section;
+  for (const line of content.split(/\r?\n/)) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      section = document.createElement('section');
+      const title = document.createElement('h3');
+      title.textContent = heading[1];
+      section.append(title); grid.append(section); continue;
+    }
+    if (!section || !line.trim()) continue;
+    const p = document.createElement('p');
+    for (const part of line.replace(/^\s*[-*]\s+/, '').split(/(\[S\d+\])/g)) {
+      if (!/^\[S\d+\]$/.test(part)) { p.append(document.createTextNode(part)); continue; }
+      const link = document.createElement('button');
+      link.type = 'button'; link.className = 'source-link'; link.textContent = part;
+      link.addEventListener('click', () => openCitation(part.slice(1, -1))); p.append(link);
+    }
+    section.append(p);
+  }
+  if (!grid.children.length) grid.textContent = content;
+  return grid;
+}
+
 export function setupContinuation({ client, getSession, onCreated, toast }) {
   const dialog = document.createElement('dialog');
   dialog.className = 'record-dialog continuation-dialog';
@@ -23,7 +49,7 @@ export function setupContinuation({ client, getSession, onCreated, toast }) {
   const question = find('textarea'), range = find('select'), date = find('input[type=date]');
   const scope = find('.continuation-scope'), start = find('.continuation-start'), error = find('.continuation-error');
   const materials = find('.continuation-materials');
-  const selectedDate = () => range.value === 'day' ? date.value : /昨天|昨日/.test(question.value) ? yesterday() : '';
+  const selectedDate = () => range.value === 'day' ? date.value : /昨天|昨日|\byesterday\b/i.test(question.value) ? yesterday() : '';
   let session = '', revision = 0, serial = 0, requestedDate, valid = false, submitting = false, loaded = false;
   function sync() { start.disabled = !valid || submitting || !loaded; }
   function report(message) { error.textContent = message; error.hidden = !message; }
