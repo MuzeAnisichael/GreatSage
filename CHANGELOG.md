@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0-alpha.1 — 2026-11-18
+
+从同一会话接续跨天工作。完整范围、三场景数据、复现方式和已知限制分别见[方案](docs/v0.9-plan.md)与[验证记录](docs/validation-v0.9.md)。[Windows 预发布](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1)
+
+- 会话卡、对话页和任务页可直接生成接续简报。默认使用会话至今的原文，“昨天”或指定日期按本机日历筛选。创建前显示记录数及起止时间，可另选 Markdown。
+- 简报分为已确认的决定、下一步和待确认事项。建议标注身份，引用可以回看原文和位置。
+- 纠正入口同时支持文字和主动录音。转写先填入可编辑草稿，提交生成同一产物的新版本并定位本次差异，关闭或切换后丢弃迟到的显示结果。
+- 保存时单独审阅版本、目标和内容指纹，新版本需要新审批。拒绝保存保留简报，重启后可回到关联任务审阅、继续纠正。
+
 ## 0.8.0-alpha.1 — 2026-11-18
 
 日常资料工作台从 main 交付，并提供 [Windows x64 ZIP／实验性 NSIS](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1)。交付检查以 [v0.8 验证](docs/validation-v0.8.md) 为准，完整范围见 [方案](docs/v0.8-plan.md)。

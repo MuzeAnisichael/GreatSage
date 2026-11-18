@@ -938,7 +938,7 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
     inDialog('.brief-controls').hidden = !brief;
     inDialog('.brief-correct').disabled = !latest || work.activeSessionId !== artifact.session_id || Boolean(revisionIntent);
     inDialog('.brief-correct').title = !latest ? '请选择最新版本进行纠正' : work.activeSessionId !== artifact.session_id ? '请先继续简报所属会话，再提交纠正' : '用文字或麦克风提出纠正';
-    inDialog('.brief-approval').disabled = !latest || !artifact.generating_task_id;
+    inDialog('.brief-approval').disabled = !latest || !artifact.generating_task_id || Boolean(revisionIntent);
     inDialog('.artifact-regenerate').hidden = brief;
     inDialog('.artifact-export').hidden = brief;
     inDialog('.artifact-save').hidden = brief || artifact.kind === 'todos';
@@ -1023,7 +1023,7 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
     inDialog('.regenerate-form textarea').value = '';
     inDialog('.regenerate-update-sources input').checked = false;
     voiceArea.hidden = !brief;
-    inDialog('.regenerate-update-sources').hidden = brief;
+    inDialog('.regenerate-update-sources').hidden = false;
     inDialog('.regenerate-start').textContent = brief ? '提交纠正，查看差异' : '开始重新生成';
     inDialog('.regenerate-error').hidden = true;
     if (!artifactDialog.open) {

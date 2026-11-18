@@ -650,6 +650,7 @@ dialog p { margin: 8px 0 20px; color: var(--text-2); line-height: 1.7; }
 .brief-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 14px 0; }
 .brief-columns section { padding: 12px; border: 1px solid var(--border); border-radius: 9px; min-width: 0; }
 .brief-columns h3 { font-size: 14px; margin: 0 0 9px; }
+.brief-columns .brief-scope { grid-column: 1 / -1; }
 .brief-columns p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; margin: 6px 0; }
 .brief-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .brief-feedback { padding: 10px 0; }

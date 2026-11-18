@@ -29,7 +29,7 @@ It hears what you say and can also listen in on meeting audio from your computer
 > [!NOTE]
 > GreatSage is an **alpha**, developed on Windows 11 with Python 3.11. Use the Windows x64 folder ZIP, experimental NSIS installer or source setup.
 >
-> - **Version:** [0.8.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) ships the daily document workspace from main. It adds conversation continuation, scoped evidence selection, evidence/version review and revision saves. See [v0.8 validation](docs/validation-v0.8.md) for exact source, build, CI and unverified boundaries.
+> - **Current version 0.9.0-alpha.1** helps you pick up yesterday’s work. Reopen a conversation, check its decisions, revise the brief and approve the file save. [Release](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1) · [Validation and limitations](docs/validation-v0.9.md)
 > - **Frameworks and scope:** LangChain, LangGraph, MCP HTTP, Pipecat, LangMem and local inspection remain in use. v0.7 adds two fixed read-only research roles with Deep Agents, not a general autonomous multi-agent system. See the [development log](docs/development-log.md) for individual changes (Chinese).
 > - **Language:** the interface and the detailed docs are in Simplified Chinese. Replies can be in Chinese, English or Japanese.
 > - **Screenshots:** made with fictional data and a local demo model.
@@ -41,6 +41,11 @@ It hears what you say and can also listen in on meeting audio from your computer
 **Research documents in v0.7:** select imported Markdown materials or the current session. A planner delegates source organization and evidence review to two read-only subagents in sequence, producing a cited document with unresolved items. Each workspace save requires a click after review; declining keeps the artifact. Task details expose the plan, role status, usage and save progress. OpenRouter GPT-4.1 completed one synthetic-source workflow; mini's schema and quotation failures remain recorded. This does not establish general quality or an advantage over the minutes workflow. See the [v0.7 scope](docs/v0.7-plan.md) and [validation record](docs/validation-v0.7.md).
 
 ## What it does
+
+- **Pick up work across days (v0.9)**
+  - Select **接续工作** from a conversation card, the chat or the tasks view. Preview the time range and message count, and optionally add Markdown sources. Asking about yesterday selects the previous local calendar day. An empty day lets you choose another date.
+  - Review the brief’s confirmed decisions, next steps and unresolved items. Follow a citation to inspect its source.
+  - Select **纠正简报** to type a correction or record and edit its transcript. Submitting opens the new version’s diff. Select **查看保存审批** to check the version, destination and content hash before authorizing a file write.
 
 - **Daily document workspace (v0.8)**
   - Continue a previous conversation and see its related work. Restart restores the session entry, with unfinished tasks requiring explicit resumption.
@@ -101,16 +106,16 @@ It hears what you say and can also listen in on meeting audio from your computer
 
 ### Download the Windows folder build
 
-Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.8.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
+Download the Windows x64 ZIP and `SHA256SUMS.txt` from the [v0.9.0-alpha.1 prerelease](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1). In your download directory, compare the ZIP's SHA256 with the checksum file:
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.8.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.9.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 Extract the entire ZIP into a new folder and run `GreatSage.exe`, keeping all accompanying files. Python and Node.js are bundled; configure your own model services and credentials. The build is unsigned and has not passed clean-machine install, upgrade or uninstall acceptance. Existing users should quit the old app and back up their data before using the new folder; keep the existing data directory.
 
-The same release includes experimental `GreatSage-0.8.0-alpha.1-win-x64-Setup.exe`; verify its checksum too. It installs for the current user and is configured to preserve data on uninstall. Quit the previous app from the tray and back up the complete data directory before installing or upgrading. Manual installer acceptance is pending; the ZIP is preferred for initial trials.
+The same release includes experimental `GreatSage-0.9.0-alpha.1-win-x64-Setup.exe`. Verify its checksum too. It installs for the current user and is configured to preserve data on uninstall. Quit the previous app from the tray and back up the complete data directory before installing or upgrading. Manual installation and upgrade checks remain open. The ZIP is preferred for initial trials.
 
 ### Run from source
 
@@ -215,6 +220,7 @@ Measurements and samples are in [v0.2 validation](docs/validation-v0.2.md), [v0.
 | v0.6 alpha | Features delivered from main | LangMem extraction, confirmation policies, entities, evidence and deletion protection |
 | v0.7 alpha | Features delivered from main | Two fixed read-only subagents: organize sources, review evidence, produce documents and save with a separate click; source, budget and recovery boundaries retained |
 | v0.8 alpha | Features delivered from main | Conversation continuation, scoped selection, evidence review, document revisions and fresh save approval |
+| v0.9 alpha | Cross-day work | Time-scoped handoff briefs, citations, editable voice corrections, parent-version diffs and separate file approval |
 
 ## Contributing
 

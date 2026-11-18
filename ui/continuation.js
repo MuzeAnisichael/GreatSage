@@ -11,6 +11,11 @@ export function briefColumns(content, openCitation) {
   grid.className = 'brief-columns';
   let section;
   for (const line of content.split(/\r?\n/)) {
+    if (!section && line.startsWith('> ')) {
+      const scope = document.createElement('p');
+      scope.className = 'brief-scope source-note'; scope.textContent = line.slice(2);
+      grid.append(scope); continue;
+    }
     const heading = line.match(/^##\s+(.+?)\s*$/);
     if (heading) {
       section = document.createElement('section');

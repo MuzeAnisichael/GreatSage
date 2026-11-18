@@ -29,7 +29,7 @@
 > [!NOTE]
 > 项目处于 **alpha** 阶段，以 Windows 11 和 Python 3.11 为开发基准。提供 Windows x64 目录 ZIP、实验性 NSIS 安装器和源码运行方式。
 >
-> - **版本**：[0.8.0-alpha.1](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 从 main 交付；新增旧会话继续、有范围的自动选材、证据／版本审阅与修订保存。准确的源码、构建、CI 和未测边界见 [v0.8 验证](docs/validation-v0.8.md)。
+> - **当前版本为 0.9.0-alpha.1**。回到昨天的项目会话，可以核对决定、纠正简报并批准保存。 [发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1) · [本版验证与限制](docs/validation-v0.9.md)
 > - **框架与边界**：LangChain、LangGraph、MCP HTTP、Pipecat、LangMem 和本地监控继续保留；v0.7 用 Deep Agents 实现两个固定只读研究角色，不是通用自主多 Agent。逐片记录见[开发日志](docs/development-log.md)。
 > - **截图**：使用虚构数据和本地演示模型生成。
 > - **进度**：已实现和已验证的内容见[项目现状](docs/project-status.md)。
@@ -41,6 +41,11 @@
 **v0.7 的研究文档**：选择已导入的 Markdown 资料或当前会话，由主规划器顺序委派“资料整理”和“证据核对”两个只读子 Agent，生成带来源与待确认项的文档。审阅后逐次点击批准才写入工作目录；拒绝保存仍保留产物。角色状态、调用用量与保存进度可查看，取消、来源变更和恢复继续受原权限与审计边界约束。OpenRouter GPT-4.1 完成一次虚构资料闭环，mini 的结构／引文失败也保留在记录中；这不是普遍质量或多 Agent 优于纪要的证明。见[v0.7 方案](docs/v0.7-plan.md)和[验证记录](docs/validation-v0.7.md)。
 
 ## 它能做什么
+
+- **跨天接续工作（v0.9）**
+  - 从会话卡、对话页或任务页点“接续工作”。预览会话时间与记录数，按需选择 Markdown；问“昨天”会按本机日期筛选。没有记录的日期可以直接调整。
+  - 在三栏简报中分别核对已确认的决定、下一步和待确认事项。点引用能查看原文和位置。
+  - 点“纠正简报”输入文字，或主动录音并编辑转写。提交后直接查看父版本与修订版的差异。需要文件时，点“查看保存审批”，核对版本、路径和内容指纹后批准。
 
 - **日常资料工作台（v0.8）**
   - 回到旧会话继续聊天、查看关联任务；重启恢复入口，未完成工作需显式继续。
@@ -101,16 +106,16 @@
 
 ### 下载 Windows 目录包
 
-从 [v0.8.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.8.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
+从 [v0.9.0-alpha.1 预发布页](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1) 下载 Windows x64 ZIP 和 `SHA256SUMS.txt`。在下载目录核对 ZIP 的 SHA256 与清单一致：
 
 ```powershell
-Get-FileHash -LiteralPath '.\GreatSage-0.8.0-alpha.1-win-x64.zip' -Algorithm SHA256
+Get-FileHash -LiteralPath '.\GreatSage-0.9.0-alpha.1-win-x64.zip' -Algorithm SHA256
 Get-Content -LiteralPath '.\SHA256SUMS.txt'
 ```
 
 完整解压 ZIP 到新目录，再运行其中的 `GreatSage.exe`，保留所有随附文件。目录包自带运行环境，无需安装 Python 或 Node.js；模型服务与密钥仍需自行配置。它没有发行签名，也未完成干净电脑安装、升级和卸载验收。已有用户应先退出旧版、备份数据，再使用新目录；不要覆盖或删除原有数据目录。
 
-同页提供实验性 `GreatSage-0.8.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户、卸载保留数据；安装／升级前先从托盘退出旧应用并备份完整数据目录。安装器尚未经过人工安装／升级／卸载验收，包内组件检查不代表安装链通过；目前优先使用 ZIP 试用。
+同页提供实验性 `GreatSage-0.9.0-alpha.1-win-x64-Setup.exe`，也须核对清单。默认安装到当前用户，卸载保留数据。安装或升级前先从托盘退出旧应用，备份完整数据目录。人工安装、升级和卸载仍待验收，初次试用建议使用 ZIP。
 
 ### 从源码运行
 
@@ -219,6 +224,7 @@ Electron 管理窗口、桌宠和托盘；Python 后端只监听 127.0.0.1，负
 | v0.6 alpha | 功能从 main 交付 | LangMem 提取、三档确认、实体关系、来源与删除保护 |
 | v0.7 alpha | 功能从 main 交付 | 固定双只读子 Agent：资料整理、证据核对、文档产出与逐次点击保存；保留来源／预算／恢复边界 |
 | v0.8 alpha | 功能从 main 交付 | 旧会话继续、范围内选材、证据审阅、文档修订与重新审批保存 |
+| v0.9 alpha | 跨天工作接续 | 会话时间预览、带出处的三栏简报、可编辑语音纠正、修订差异与独立保存审批 |
 
 详细计划见[路线图](docs/roadmap.md)。版本号表示开发顺序，不承诺日期。
 
