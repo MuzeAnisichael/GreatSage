@@ -17,6 +17,7 @@ from . import __version__
 from .audio import AudioCaptureManager, AudioChunk
 from .background import BackgroundState
 from .budget import TokenCounter
+from .correction_voice import CorrectionVoice
 from .decisions import triage, default_reply, decision_messages, parse_decision, DECISION_SCHEMA, CONFLICT_SCHEMA
 from .echo import EchoGuard, decode_reference
 from .memory import MemoryStore
@@ -140,6 +141,7 @@ class Runtime:
         except (OSError, ValueError, TypeError):
             pass
         self.tasks = TaskManager(self)
+        self.correction_voice = CorrectionVoice(self)
 
     async def start(self):
         self.memory.recover_snapshots()
@@ -151,6 +153,7 @@ class Runtime:
         # for an explicit interaction in this process, not merely an app restart.
 
     async def close(self):
+        await self.correction_voice.cancel()
         await self.set_listening(False)
         await self.interrupt("shutdown")
         await self.tasks.close()
@@ -216,6 +219,8 @@ class Runtime:
 
     async def set_listening(self, enabled):
         if enabled:
+            if self.correction_voice.busy:
+                raise ValueError("请先完成或取消语音纠正，再开启常规监听。")
             self.note_interaction()
         if enabled == self.listening:
             return self.status()
@@ -230,6 +235,8 @@ class Runtime:
             if config["asr"]["provider"] == "faster_whisper":
                 await self.emit("model_loading", {"component": "asr", "message": "准备本地识别模型"})
                 await self.providers.load_local(self._provider("asr"))
+                if self.correction_voice.busy:
+                    raise ValueError("麦克风已用于语音纠正，请先完成或取消录音。")
             loop = asyncio.get_running_loop()
             self.capture_generation += 1
             capture_generation = self.capture_generation
@@ -1972,6 +1979,7 @@ class Runtime:
             reply.cancel()
         try:
             await self.tasks.suspend_for_session()
+            await self.correction_voice.cancel()
             await self._invalidate_audio(timeout=.25)
             await self.interrupt("new_session" if session_id is None else "session_changed")
             if reply:
@@ -1993,6 +2001,7 @@ class Runtime:
         self.epoch += 1
         # Idle tasks keep no intermediate copies of text that is about to be deleted.
         await self.tasks.invalidate()
+        await self.correction_voice.cancel()
         self.memory.purge_task_bodies()
         for queue in tuple(self.subscribers):
             while not queue.empty():
