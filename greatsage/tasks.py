@@ -232,9 +232,12 @@ class TaskManager:
         task = self.memory.task(id)
         if task["status"] not in ("interrupted", "failed", "cancelled"):
             raise ValueError("只有中断、失败或已取消的任务可以继续。")
+        if task["params"].get("profile") == "continuation" and task["session_id"] != self.runtime.session_id:
+            raise ValueError("请先打开该简报所属会话，再继续接续任务。")
         if task["kind"] == "action" and not task["state"].get("messages"):
             raise ValueError("这项操作的上下文已清除，请重新发起请求。")
-        if any(call["status"] == "expired" for call in task["tool_calls"]):
+        if any(call["status"] == "expired" and not call["call_key"].startswith("expired:")
+               for call in task["tool_calls"]):
             # Drop obsolete resume values after cancellation/restart. Canonical
             # task cursors and the execution ledger retain completed work.
             await self.graphs.delete(id)
@@ -629,6 +632,8 @@ class TaskManager:
             decision, reason = "ask", "请审阅当前文档版本，并点击确认保存。"
         if row is None:
             row = self.memory.add_tool_call(task["id"], key, spec.name, arguments, spec.effect, target, decision, reason, "proposed")
+        elif row["status"] == "expired":
+            row = self.memory.reissue_expired_call(row, decision, reason)
         else:
             row = self.memory.update_tool_call(row["id"], decision=decision, reason=reason, status="proposed")
         if decision == "deny":
