@@ -51,7 +51,10 @@ export function setupContinuation({ client, getSession, onCreated, toast }) {
   const materials = find('.continuation-materials');
   const selectedDate = () => range.value === 'day' ? date.value : /昨天|昨日|\byesterday\b/i.test(question.value) ? yesterday() : '';
   let session = '', revision = 0, serial = 0, requestedDate, valid = false, submitting = false, loaded = false;
-  function sync() { start.disabled = !valid || submitting || !loaded; }
+  function sync() {
+    start.disabled = !valid || submitting || !loaded;
+    for (const input of dialog.querySelectorAll('input, select, textarea')) input.disabled = submitting;
+  }
   function report(message) { error.textContent = message; error.hidden = !message; }
   function close() {
     serial++; revision++; session = ''; valid = false;
@@ -111,6 +114,7 @@ export function setupContinuation({ client, getSession, onCreated, toast }) {
     event.preventDefault();
     if (start.disabled || session !== getSession()) return;
     const token = serial, id = session, day = selectedDate();
+    if (day !== requestedDate) { await preview(true); return; }
     const body = { kind: 'continuation', session_ids: [id], material_ids: [...materials.querySelectorAll(':checked')].map(input => input.value), instructions: question.value.trim() };
     if (day) body.local_date = day;
     submitting = true; sync(); report('');

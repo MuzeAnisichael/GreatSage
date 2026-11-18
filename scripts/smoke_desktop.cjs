@@ -557,7 +557,78 @@ conflict=add_structured('SYNTHETIC UI language Chinese.','SYNTHETIC Settings','l
     await evaluate("document.querySelector('.artifact-close').click();window.__researchSmoke.releaseArtifacts()");
     await until(() => evaluate("document.querySelector('.artifact-version')?.disabled === false"), 'late artifact response settled');
     check(await evaluate("!document.querySelector('.artifact-dialog').open && !document.querySelector('.artifact-body').children.length && !document.querySelector('.citation-list').children.length && !document.querySelector('.artifact-review-content').children.length && !document.body.textContent.includes('SYNTHETIC LATE ARTIFACT VERSION')"), 'Closing artifact detail invalidates a late version response');
-    await evaluate("window.fetch=window.__researchSmoke.originalFetch;delete window.__researchSmoke");
+    // Drive the cross-day controls using disposable sources and a simulated microphone.
+    await evaluate(`(() => {
+      const f = window.__researchSmoke, doc = 'synthetic-research-document', revision = 'synthetic-research-regenerated';
+      const previous = window.fetch, json = value => Response.json(value);
+      Object.assign(f, { briefPosts: [], corrections: [], writes: 0, voiceStarts: 0, briefVersion: 1 });
+      const original = f.artifact, stamp = new Date().toISOString();
+      window.fetch = async (url, options = {}) => {
+        const target = new URL(url, location.href), route = target.pathname, method = options.method || 'GET';
+        if (route === '/api/continuation/scope') {
+          const day = target.searchParams.get('local_date');
+          return json({ session_id: f.summary.session_id, local_date: day, first_at: stamp, last_at: stamp, message_count: day === '2001-01-01' ? 0 : 2 });
+        }
+        if (route === '/api/materials') return json([{ id: 'smoke-md', name: 'handoff.md', path: 'handoff.md', status: 'active', version: 1, size: 10, updated_at: stamp }]);
+        if (route === '/api/tasks' && method === 'POST') {
+          f.briefPosts.push(JSON.parse(options.body)); return json(f.summary);
+        }
+        if (route === '/api/tasks/' + f.id || route === '/api/tasks/' + revision) {
+          const v = route.endsWith(revision) ? 2 : 1;
+          const call = { ...f.call, id: 'synthetic-brief-write', status: f.writes ? 'succeeded' : 'awaiting_approval',
+            arguments: { ...f.call.arguments, artifact_id: doc, version: v } };
+          return json({ ...f.detail, id: v === 1 ? f.id : revision, params: { ...f.detail.params, profile: 'continuation' },
+            tool_calls: [call], artifacts: [{ ...f.detail.artifacts[0], task_versions: [v], current_version: f.briefVersion }] });
+        }
+        if (route === '/api/artifacts/' + doc) {
+          const v = Number(target.searchParams.get('version') || f.briefVersion);
+          return json({ ...original(v), session_id: f.summary.session_id, profile: 'continuation', current_version: f.briefVersion,
+            versions: original(v).versions.filter(item => item.version <= f.briefVersion), generating_task_id: v === 1 ? f.id : revision,
+            content: ['# 接续简报', '## 已确认的决定', '- 保留草稿 [S1]', '## 下一步', '- 核对原文 [S1]', '## 待确认事项', v === 1 ? '- 发布日候选周五 [S1]' : '- 发布日待确认 [S1]'].join(String.fromCharCode(10)) });
+        }
+        if (route === '/api/artifacts/' + doc + '/review') {
+          const v = Number(target.searchParams.get('version'));
+          return json({ ...f.review(v, null), current_version: f.briefVersion, generating_task_id: v === 1 ? f.id : revision,
+            diff: v === 1 ? null : { from_version: 1, to_version: 2, text: ['- 发布日候选周五 [S1]', '+ 发布日待确认 [S1]'].join(String.fromCharCode(10)) } });
+        }
+        if (route.endsWith('/correction-voice/start')) {
+          f.voiceStarts++; return json({ capture_id: 'test-voice', max_seconds: 60, provider: 'synthetic' });
+        }
+        if (route === '/api/correction-voice/test-voice/finish') {
+          return json({ text: '转写候选日期', artifact_id: doc, expected_version: 1, session_id: f.summary.session_id });
+        }
+        if (route === '/api/artifacts/' + doc + '/regenerate') {
+          f.corrections.push(JSON.parse(options.body)); f.briefVersion = 2; return json({ id: revision });
+        }
+        if (route === '/api/tool-calls/synthetic-brief-write/approve') {
+          f.writes++; return json({ status: 'succeeded' });
+        }
+        return previous.call(window, url, options);
+      };
+      document.querySelector('#view-tasks [data-open-continuation]').click();
+    })()`);
+    await until(() => evaluate("document.querySelector('.continuation-start')?.disabled === false"), 'continuation source scope');
+    await evaluate("(()=>{const d=document.querySelector('.continuation-dialog');const range=d.querySelector('select');range.value='day';range.dispatchEvent(new Event('change'));const date=d.querySelector('[type=date]');date.value='2001-01-01';date.dispatchEvent(new Event('change'))})()");
+    await until(() => evaluate("document.querySelector('.continuation-start').disabled && document.querySelector('.continuation-scope').textContent.includes('没有可用')"), 'empty cross-day date');
+    await evaluate("(()=>{const d=document.querySelector('.continuation-dialog'),q=d.querySelector('textarea'),range=d.querySelector('select');q.value='昨天确认了什么';range.value='auto';range.dispatchEvent(new Event('change'));d.querySelector('.continuation-materials input').checked=true})()");
+    await until(() => evaluate("!document.querySelector('.continuation-start').disabled"), 'explicit yesterday scope');
+    await evaluate("document.querySelector('.continuation-start').click()");
+    await until(() => evaluate("[...document.querySelectorAll('.artifact-row button')].some(b=>b.textContent==='查看简报')"), 'continuation task artifact');
+    check(await evaluate("(()=>{const b=window.__researchSmoke.briefPosts[0];return b.kind==='continuation' && b.session_ids.length===1 && b.session_ids[0]===window.__researchSmoke.summary.session_id && b.material_ids[0]==='smoke-md' && Boolean(b.local_date)})()"), 'Brief uses one selected session, a local date and the selected Markdown source');
+    await until(() => evaluate("document.querySelector('.artifact-dialog').open && document.querySelectorAll('.brief-columns section').length===3 && !!document.querySelector('.artifact-passages')"), 'auto-open three-section handoff brief');
+    await evaluate("document.querySelector('.brief-columns .source-link').click();document.querySelector('.brief-correct').click();document.querySelector('.brief-voice button').click()");
+    await until(() => evaluate("document.querySelector('.citation[data-marker=S1]').open && document.querySelector('.brief-voice').textContent.includes('正在录音')"), 'brief citation and opt-in microphone');
+    await evaluate("[...document.querySelectorAll('.brief-voice button')].find(b=>b.textContent==='停止并转写').click()");
+    await until(() => evaluate("document.querySelector('.regenerate-form textarea').value==='转写候选日期'"), 'editable correction transcript');
+    check(await evaluate("window.__researchSmoke.corrections.length===0 && window.__researchSmoke.writes===0"), 'Transcription edits only the local draft');
+    await evaluate("document.querySelector('.regenerate-form textarea').value='人工改为待确认日期';document.querySelector('.regenerate-start').click()");
+    await until(() => evaluate("document.querySelector('.artifact-version').value==='2' && document.querySelector('.artifact-diff')?.textContent.includes('v1 → v2')"), 'exact correction version and parent diff');
+    check(await evaluate("window.__researchSmoke.corrections[0].instructions==='人工改为待确认日期' && window.__researchSmoke.corrections[0].expected_version===1 && window.__researchSmoke.writes===0 && document.querySelector('.artifact-export').hidden"), 'Correction and review leave the file untouched');
+    await evaluate("document.querySelector('.brief-approval').click()");
+    await until(() => evaluate("document.querySelector('.brief-feedback button')?.textContent==='批准保存此版本'"), 'separate version-bound save approval');
+    await evaluate("document.querySelector('.brief-feedback button').click()");
+    await until(() => evaluate("window.__researchSmoke.writes===1 && document.querySelector('.brief-feedback').textContent.includes('已批准保存 v2')"), 'explicit approval for corrected brief');
+    await evaluate("document.querySelector('.artifact-close').click();window.fetch=window.__researchSmoke.originalFetch;delete window.__researchSmoke");
     check(!(await request('/api/tasks')).some(task => task.id === 'synthetic-research-task'), 'Research UI fixture never starts a backend model task');
     await evaluate("document.querySelector('[data-view=settings]').click();document.querySelector('[name=voice_approval]').click()");
     await until(() => evaluate("document.querySelector('#confirm-dialog').open && document.querySelector('#confirm-title').textContent.includes('语音确认')"), 'voice approval warning');

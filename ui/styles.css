@@ -653,5 +653,4 @@ dialog p { margin: 8px 0 20px; color: var(--text-2); line-height: 1.7; }
 .brief-columns p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; margin: 6px 0; }
 .brief-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .brief-feedback { padding: 10px 0; }
-.continuation-approval:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 900px) { .inspector-grid { grid-template-columns: minmax(0, 1fr); } }

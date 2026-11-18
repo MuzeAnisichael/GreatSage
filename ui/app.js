@@ -53,6 +53,7 @@ async function busy(button, operation) {
 
 function showView(view) {
   if (!$('#view-' + view)) return;
+  if (view !== 'tasks') work?.cancelBriefPreview();
   $$('.view').forEach(node => { node.hidden = node.id !== 'view-' + view; node.classList.toggle('active', !node.hidden); });
   $$('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === view));
   $('#page-breadcrumb').textContent = ({ conversation: '对话与感知', tasks: '任务与产物', materials: '资料库', memory: '长期记忆', skills: '技能库', inspector: '运行监控', logs: '运行日志', settings: '设置' })[view];
@@ -856,6 +857,7 @@ sessionWorkspace = setupSessionWorkspace({
   beforeActivate: () => stopLocalResponse(),
   onActivated: (result, id) => { applySessionPayload(result, id); showView('conversation'); },
   onOpenTasks: id => { work.setSessionFilter(id); showView('tasks'); },
+  onContinueWork: () => work.openContinuation(),
 });
 mcp = setupMCP({ client, toast, busy });
 voiceHealth = setupVoiceHealth({ client, busy, toast,

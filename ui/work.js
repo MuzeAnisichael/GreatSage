@@ -18,10 +18,16 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   const taskKind = task => (task.profile || task.params?.profile) === 'continuation' ? '接续简报' : taskKinds[task.kind] || task.kind;
   const active = status => ['queued', 'running', 'waiting_approval'].includes(status);
   const toolTitle = name => work.tools.find(tool => tool.name === name)?.title || name;
+  let firstBrief = null;
+  function cancelBriefPreview() {
+    if (firstBrief?.opening && !artifactDialog.open) closeArtifactDialog();
+    firstBrief = null;
+  }
   const continuation = setupContinuation({ client, toast, getSession: () => work.activeSessionId,
     onCreated(task, sessionId) {
       setSessionFilter(sessionId);
       work.selected = task.id;
+      firstBrief = { id: task.id, sessionId, opening: false };
       showTasks();
     },
   });
@@ -148,6 +154,7 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   }
 
   function setSessionFilter(sessionId) {
+    cancelBriefPreview();
     const select = $('#task-session-filter');
     for (const option of [...select.options]) if (option.dataset.dynamic) option.remove();
     if (sessionId) {
@@ -333,6 +340,7 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   }
 
   async function showTask(id) {
+    if (firstBrief && firstBrief.id !== id) cancelBriefPreview();
     work.selected = id;
     renderTaskList();
     let task;
@@ -385,9 +393,19 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
         detail.append(row);
       }
     }
+    const intent = firstBrief;
+    if (intent?.id === id && !intent.opening && intent.sessionId === work.activeSessionId && visible('tasks')) {
+      const created = task.artifacts?.find(item => item.task_versions?.includes(1));
+      if (created && !document.querySelector('dialog[open]')) {
+        intent.opening = true;
+        try { await openArtifact(created.id, 1, true, id); }
+        finally { if (firstBrief === intent) firstBrief = null; }
+      } else if (created || !active(task.status)) cancelBriefPreview();
+    }
   }
   $('#refresh-tasks').addEventListener('click', () => busy($('#refresh-tasks'), () => Promise.all([refreshTasks(), refreshApprovals()])));
   $('#task-session-filter').addEventListener('change', event => busy(event.target, async () => {
+    cancelBriefPreview();
     work.sessionFilter = event.target.value;
     work.selected = null;
     work.tasks = [];
@@ -1008,9 +1026,12 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
     inDialog('.regenerate-update-sources').hidden = brief;
     inDialog('.regenerate-start').textContent = brief ? '提交纠正，查看差异' : '开始重新生成';
     inDialog('.regenerate-error').hidden = true;
-    if (!artifactDialog.open) artifactDialog.showModal();
+    if (!artifactDialog.open) {
+      if (firstBrief?.opening && document.querySelector('dialog[open]')) { invalidateArtifactDialog(); return; }
+      artifactDialog.showModal();
+    }
     await loadArtifactReview();
-    if (expectedTask && artifactOpenIntent && work.artifact === artifact) {
+    if (expectedTask && artifact.parent_version && artifactOpenIntent && work.artifact === artifact) {
       inDialog('.artifact-diff')?.scrollIntoView({ block: 'center' });
     }
   }
@@ -1235,10 +1256,12 @@ export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   const scheduleTasks = () => { clearTimeout(taskTimer); taskTimer = setTimeout(() => refreshTasks().catch(() => {}), 300); };
   const visible = view => !document.querySelector(`#view-${view}`).hidden;
   return {
+    openContinuation: continuation.open, cancelBriefPreview,
     init: () => Promise.all([refreshApprovals(), loadTools()]),
     fillSettings: () => editors.forEach(render => render()),
     setActiveSession(id) {
       if (work.activeSessionId !== (id || '')) {
+        cancelBriefPreview();
         continuation.close();
         closeArtifactDialog();
       }

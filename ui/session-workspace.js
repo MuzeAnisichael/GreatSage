@@ -1,5 +1,5 @@
 // Explicit session switching and session-scoped task navigation.
-export function setupSessionWorkspace({ client, busy, toast, beforeActivate, onActivated, onOpenTasks }) {
+export function setupSessionWorkspace({ client, busy, toast, beforeActivate, onActivated, onOpenTasks, onContinueWork }) {
   const $ = (selector, parent = document) => parent.querySelector(selector);
   const node = (tag, className, text) => {
     const element = document.createElement(tag);
@@ -63,8 +63,8 @@ export function setupSessionWorkspace({ client, busy, toast, beforeActivate, onA
         node('small', '', `${when(session.updated_at || session.last_message_at || session.created_at)} · ${session.message_count || 0} 条原文`));
       header.append(title, node('span', `badge ${active ? 'ok' : ''}`, active ? '当前会话' : '历史会话'));
       const actions = node('div', 'session-card-actions');
-      if (!active) {
-        const activate = node('button', 'button primary small', '继续此会话');
+      for (const brief of active ? [true] : [false, true]) {
+        const activate = node('button', brief ? 'button ghost small' : 'button primary small', brief ? '接续工作' : '继续此会话');
         activate.type = 'button';
         activate.addEventListener('click', () => busy(activate, async () => {
           if (activating) return;
@@ -72,13 +72,16 @@ export function setupSessionWorkspace({ client, busy, toast, beforeActivate, onA
           activating = true;
           for (const button of dialog.querySelectorAll('button')) button.disabled = true;
           try {
-            beforeActivate?.();
-            const result = await client.request(`/api/sessions/${encodeURIComponent(session.id)}/activate`, { method: 'POST' });
-            if (!openIntent || generation !== requestGeneration) return;
-            await onActivated?.(result, session.id);
-            setActive(result?.status?.session_id || result?.session_id || session.id);
+            if (!active) {
+              beforeActivate?.();
+              const result = await client.request(`/api/sessions/${encodeURIComponent(session.id)}/activate`, { method: 'POST' });
+              if (!openIntent || generation !== requestGeneration) return;
+              await onActivated?.(result, session.id);
+              setActive(result?.status?.session_id || result?.session_id || session.id);
+            }
             close();
-            toast('已继续所选会话；未完成任务不会自动恢复。');
+            if (brief) await onContinueWork();
+            else toast('已继续所选会话；未完成任务不会自动恢复。');
           } finally {
             activating = false;
             for (const button of dialog.querySelectorAll('button')) button.disabled = false;
