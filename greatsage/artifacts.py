@@ -238,7 +238,9 @@ class ArtifactsMixin:
 
     def artifact(self, id: str, version: int | None = None) -> dict:
         with self._lock:
-            row = self._db.execute("SELECT * FROM artifacts WHERE id=?", (id,)).fetchone()
+            row = self._db.execute("""SELECT a.*, COALESCE(t.session_id, '') AS session_id,
+                COALESCE(json_extract(t.params, '$.profile'), '') AS profile
+                FROM artifacts a LEFT JOIN tasks t ON t.id=a.task_id WHERE a.id=?""", (id,)).fetchone()
             if not row:
                 raise KeyError(id)
             number = version or row["current_version"]

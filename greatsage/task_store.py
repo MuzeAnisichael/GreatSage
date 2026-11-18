@@ -103,6 +103,7 @@ class TaskStoreMixin:
         pending = sum(call["status"] == "awaiting_approval" for call in task["tool_calls"])
         return {key: task[key] for key in ("id", "kind", "title", "status", "origin", "session_id", "trace_id", "error",
                                            "created_at", "updated_at")} | {
+            "profile": task["params"].get("profile", ""),
             "steps_done": done, "steps_total": len(task["steps"]), "pending_approvals": pending,
             "current_step": current["title"] if current else "", "progress": (current or {}).get("detail", {}).get("progress", ""),
             "artifact_ids": [item["id"] for item in task["artifacts"]]}
