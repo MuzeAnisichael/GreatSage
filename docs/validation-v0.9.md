@@ -27,7 +27,22 @@ Windows 本机，OpenRouter `openai/gpt-4.1`，中文，温度 0，配置上下�
 
 本机枚举 3 个 Windows WASAPI 输入。产品录音入口收到默认麦克风首帧后立即取消并释放；没有存储、转写或上传环境声音。Windows SAPI 合成 4.51 秒的固定句“周五不是截止日期，发布日期待确认。”，由本地缓存 Faster-Whisper base、CPU/int8 经录音纠正路径实际返回“週五不是截止日期 發布日期待確認”。本例保留否定词与待确认状态，有繁简和标点差异。该结果没有覆盖真人姓名、自然语速、串音或云 ASR。首次沙箱内语音合成失败，单独重试合成步骤成功。[语音探针](../scripts/probe_correction_voice.py)
 
-## 回归、构建与复现
+## Windows 构建与交付
+
+运行代码的基准提交为 `4c8d61f`，随后仅补验证文档。提交 `38331ad` 的 [PR 回归](https://github.com/MuzeAnisichael/GreatSage/actions/runs/44245574893) 为 **489 passed，3 skipped，2 warnings**（pytest 100.32 秒），冻结前端的语法检查、后端 smoke 与仓库检查均通过。[分支回归](https://github.com/MuzeAnisichael/GreatSage/actions/runs/44245540482)
+
+- PyInstaller 6.22.2 冻结后端通过 **14/14**，合成服务 4 次模型调用和 1 次工具执行。原始记录位于 `.runtime/backend-smoke/20261118T053821Z-2e939b/result.json`。
+- Electron 40.10.6 的实际应用目录通过 **78/78**，包含接续工作台、可编辑模拟转写与审批。packaged=true、parallelSources=true、live=false，退出码 0，stderr 为空。原始记录位于 `.runtime/desktop-smoke/2026-11-18T05-39-43-900Z/result.json`。
+- 首次 Electron 压缩遇到缓存重命名权限错误。复用已验收的同一应用目录，electron-builder 26.15.3 通过 `--prepackaged` 生成 ZIP 与 NSIS。ZIP 的 19 个 UI 文件和源码哈希一致，其中桌面可执行文件、冻结后端与 app.asar 均匹配已验收目录。构建日志位于 `.runtime/v09-pyinstaller.log` 与 `.runtime/v09-release-build.log`。
+
+| [Windows 预发布资产](https://github.com/MuzeAnisichael/GreatSage/releases/tag/v0.9.0-alpha.1) | 字节数 | SHA256 |
+| --- | ---: | --- |
+| GreatSage-0.9.0-alpha.1-win-x64.zip | 292306926 | `c76c282af7683127a4dce94f23093c1a99ec331e4b64131f7374b5dae379f20c` |
+| GreatSage-0.9.0-alpha.1-win-x64-Setup.exe | 218596203 | `5fcf96e82b2f9d1a404dfab391f0caee2ffc6f7df65f85a4ea94dab0923e5466` |
+
+同页提供 `SHA256SUMS.txt`。实验性安装器 ProductVersion 为 0.9.0-alpha.1，Authenticode 状态为 NotSigned。安装、升级、卸载与干净设备实测仍待完成。
+
+## 定向回归与复现
 
 - 引擎与选源 9 项定向检查及 1 项显式刷新回归通过。默认更正逐条替换，显式重选时按版本顺序重放可读取的用户纠正。新资料缺少被纠正条目或超预算时停止并保留原版。[引擎与来源测试](../tests/test_continuation.py)
 - 语音模块 11 项定向检查通过，覆盖设备独占、草稿返回、超时与会话／版本变化。UI 模块纳入 `npm run check`。[语音测试](../tests/test_correction_voice.py)
