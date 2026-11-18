@@ -108,10 +108,14 @@ class SourceSelection:
         elif not records:
             error = "没有可用的来源，请选择有原文的会话或资料。"
         continuation = params.get("profile") == "continuation"
+        replay_ids = manifest.get("correction_ids", []) if continuation and params.get("refresh_brief") else []
+        if set(replay_ids) & excluded:
+            error = "更新简报时需要重放生效中的用户纠正，不能将它们排除。"
+        pins -= set(replay_ids)
         if continuation:
             query += " 决定 定了 确认 确定 负责 下一步 进度 完成 备选 待定 候选 建议 deadline decision todo"
         recency = {ref["id"]: index for index, ref in enumerate(manifest["sources"])}
-        ranked = sorted(records, key=lambda item: (item["id"] in pins,
+        ranked = sorted((row for row in records if row["id"] not in replay_ids), key=lambda item: (item["id"] in pins,
             _relevance(query, item["label"] + " " + item["text"]),
             recency[item["id"]] if continuation and item["source_kind"] == "message" else -1), reverse=True)
         eligible = [item for item in ranked if item["id"] not in excluded]
@@ -143,11 +147,18 @@ class SourceSelection:
             error = "全文范围无法放入本轮预算（最多 8 段、64000 字符），请缩小范围或改为按问题选择；没有执行部分全文任务。"
         if not error and not chosen:
             error = "未选出可用片段：请具体描述问题、固定来源，或调整上下文预算。"
+        if (not error and continuation and (not params.get("revision_artifact_id") or params.get("refresh_brief"))
+                and not any(row["source_kind"] == "message" for row in chosen)):
+            error = "本轮没有选中会话原文，请固定一条范围内的会话原文后重新选择。"
         selected = [{"kind": row["source_kind"], "id": row["id"], "handle": f"S{index}",
                      "content_hash": digest(row["text"])} for index, row in enumerate(chosen, 1)]
+        patches = [{"kind": "message", "id": sid, "handle": f"S{index}", "content_hash": digest(by_id[sid]["text"])}
+                   for index, sid in enumerate(replay_ids, len(selected) + 1) if sid in by_id]
+        reasons.update({ref["id"]: "correction_history" for ref in patches})
         return {"mode": mode, "sources": selected, "reasons": reasons,
                 "total_sources": len(manifest["sources"]), "selected_chars": sum(len(row["text"]) for row in chosen),
-                "all_selected": len(chosen) == len(manifest["sources"]),
+                **({"patch_sources": patches} if patches else {}),
+                "all_selected": len(chosen) + len(patches) == len(manifest["sources"]),
                 "selection_status": "stale" if stale else "needs_attention" if error else "selected", "error": error}
 
     def inspect(self, task):
@@ -159,7 +170,8 @@ class SourceSelection:
         if "source_scope" not in params:
             detail = {**detail, "sources": [], "selected_chars": 0, "all_selected": False,
                       "selection_status": "stale", "error": "旧任务未保存范围快照；下方仅为当前候选，请明确更新来源后重新选择。"}
-        selected = {ref["id"]: ref for ref in detail["sources"]}
+        patches = detail.get("patch_sources", [])
+        selected = {ref["id"]: ref for ref in [*detail["sources"], *patches]}
         pins, excluded = set(params.get("pinned_source_ids", [])), set(params.get("excluded_source_ids", []))
         if params.get("correction_source_id"):
             pins.add(params["correction_source_id"])
@@ -179,7 +191,8 @@ class SourceSelection:
                 "scope": {"material_ids": params.get("material_ids", []), "session_ids": params.get("session_ids", []),
                           **({"time_range": manifest["time_range"]} if "time_range" in manifest else {})},
                 "total_sources": detail["total_sources"], "selected_count": len(selected),
-                "selected_chars": detail["selected_chars"], "max_sources": MAX_SOURCES, "max_chars": MAX_CHARS,
+                "selected_chars": detail["selected_chars"], "max_sources": MAX_SOURCES + len(patches), "max_chars": MAX_CHARS,
+                "patch_count": len(patches),
                 "pinned_source_ids": list(pins), "excluded_source_ids": list(excluded), "all_selected": detail["all_selected"],
                 "selection_status": "stale" if stale else detail["selection_status"],
                 "error": "来源已变化，请明确更新来源后重新选择。" if stale else detail["error"],
