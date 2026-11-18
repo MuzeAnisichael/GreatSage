@@ -850,7 +850,7 @@ enhancements = setupMemoryPanel({ client, state, toast, busy, confirmAction, ref
     else toast('该记忆已变化，请刷新列表后查看。');
   },
 });
-work = setupWork({ client, toast, busy, confirmAction });
+work = setupWork({ client, toast, busy, confirmAction, showTasks: () => showView('tasks') });
 sessionWorkspace = setupSessionWorkspace({
   client, busy, toast,
   beforeActivate: () => stopLocalResponse(),

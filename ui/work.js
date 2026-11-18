@@ -1,5 +1,6 @@
-// v0.3 work surface: materials, background tasks, approvals, artifacts and tool settings.
-export function setupWork({ client, toast, busy, confirmAction }) {
+import { setupContinuation } from './continuation.js';
+
+export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   const $ = (selector, parent = document) => parent.querySelector(selector);
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const action = (label, className, handler) => { const el = node('button', className, label); el.type = 'button'; if (handler) el.addEventListener('click', () => busy(el, handler)); return el; };
@@ -15,6 +16,16 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const taskKinds = { action: '操作', minutes: '纪要', research: '研究文档' };
   const active = status => ['queued', 'running', 'waiting_approval'].includes(status);
   const toolTitle = name => work.tools.find(tool => tool.name === name)?.title || name;
+  const continuation = setupContinuation({ client, toast, getSession: () => work.activeSessionId,
+    onCreated(task, sessionId) {
+      setSessionFilter(sessionId);
+      work.selected = task.id;
+      showTasks();
+    },
+  });
+  for (const button of document.querySelectorAll('[data-open-continuation]')) {
+    button.addEventListener('click', () => busy(button, continuation.open));
+  }
 
   const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
   const compactNumber = value => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
@@ -1073,6 +1084,10 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     init: () => Promise.all([refreshApprovals(), loadTools()]),
     fillSettings: () => editors.forEach(render => render()),
     setActiveSession(id) {
+      if (work.activeSessionId !== (id || '')) {
+        continuation.close();
+        closeArtifactDialog();
+      }
       work.activeSessionId = id || '';
       const activeOption = $('#task-session-filter option[value="active"]');
       activeOption.textContent = id ? `当前会话 ${String(id).slice(0, 8)}` : '当前会话';
