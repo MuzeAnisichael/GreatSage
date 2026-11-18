@@ -1,6 +1,6 @@
 # 功能与代码导航
 
-更新日期：2026-11-18。适用于包含 v0.8 会话续接、范围选材和连续修订的当前源码实现；功能已实现不等于已发布，构建与验证状态以 [project-status.md](project-status.md) 为准。本轮边界见 [v0.8-plan.md](v0.8-plan.md)，[validation-v0.7.md](validation-v0.7.md) 只记录上一版证据。
+更新于 2026-11-18。当前源码包含 v0.9 跨天工作接续，构建与验证状态见[项目现状](project-status.md)，本轮范围见[v0.9 方案](v0.9-plan.md)。
 
 遇到问题时先按下表找到功能入口，再沿调用链找实现与事件。这里记录稳定的文件路径和符号，不维护易漂移的行号，也不逐个列出辅助函数。架构与边界见 [architecture.md](architecture.md)，后续能力见 [roadmap.md](roadmap.md)。
 
@@ -22,6 +22,7 @@ GreatSage/
 │  ├─ memory.js / audit.js           历史、记忆冲突、索引及审计
 │  ├─ structured-memory.js           提取设置、候选、实体关系与原文证据
 │  ├─ work.js / mcp.js               资料、任务、产物、审批与 MCP 配置
+│  ├─ continuation.js / correction-voice.js  接续范围、简报栏目与口述草稿
 │  ├─ inspector.js                   运行监控
 │  ├─ voice.js                       音源状态、故障说明与恢复操作
 │  └─ pet.html / pet.js / pet.css    桌宠
@@ -29,6 +30,8 @@ GreatSage/
 │  ├─ __main__.py / server.py        本地服务入口、认证与路由
 │  ├─ runtime.py                    前台交互与后台任务协调
 │  ├─ audio.py / winloopback.py      Windows 采集
+│  ├─ continuation.py               日期范围、原句分类、简报局部修改
+│  ├─ correction_voice.py           绑定文档版本的麦克风录制与分段转写
 │  ├─ segmentation.py / echo.py     分段与回声抑制措施
 │  ├─ voice_pipeline.py             Pipecat 分音源生命周期、背压及固定身份
 │  ├─ voice_turns.py                本地话轮记录、稳定身份与有界待确认队列
@@ -245,6 +248,18 @@ flowchart LR
 5. `TaskManager.regenerate → ResearchWorkflow.revise`：从 lineage 追溯最近生成任务；保存独立纠正消息，默认复用冻结范围，`update_sources=True` 才重读当前范围。研究 prompt 中的旧草稿是非证据上下文；纠正为固定用户来源。`commit_revision(expected_version)` 原子追加同一文档版本，再经 `save` 请求新批准。
 
 关键存储为 `session_state`、任务 `params.source_scope`／collect 的选择详情、`research_sources`、`artifact_revision_links` 与原有版本／引用／工具调用表；选材元数据没有摘录副本，暂存研究报告和可选审计正文仍按既有来源清理规则管理。重点回归入口是 [test_sessions.py](../tests/test_sessions.py)、[test_task_session_lifecycle.py](../tests/test_task_session_lifecycle.py)、[test_workbench_research.py](../tests/test_workbench_research.py)；产品质量与真实模型结论仍需单独证据。
+
+### 4c. v0.9 跨天简报与口述纠正
+
+| 从哪里查起 | 关键调用 | 能定位的问题 |
+| --- | --- | --- |
+| [接续入口](../ui/continuation.js) | `setupContinuation → GET /api/continuation/scope → preview_scope → scoped_messages` | 当前会话、本机日期边界、时间范围预览和无记录日 |
+| [简报生成](../greatsage/continuation.py) | `ResearchWorkflow.collect → SourceSelection.select`，随后 `ResearchWorkflow.research → generate → units → render` | 冻结的来源、按句编号、决定／下一步／待确认、引用归属 |
+| [语音纠正](../greatsage/correction_voice.py) | `setupCorrectionVoice → CorrectionVoice.start → AudioCaptureManager.start`，停止录制后 `CorrectionVoice.finish → Providers.transcribe` | 麦克风首帧、常规监听互斥、草稿、超时、取消与旧目标过滤 |
+| [版本修改](../greatsage/research.py) | `ResearchWorkflow.revise → generate → apply_patch`，随后 `compose → commit_revision` | 纠正来源、父版本、唯一替换文字、未改条目和来源标记 |
+| [差异与保存](../ui/work.js) | `watchRevision → openArtifact → loadArtifactReview`，工作目录写入走 `ResearchWorkflow.save` | 界面等到指定任务产生新版本再显示差异，按实际版本点击批准或拒绝 |
+
+虚构语音与本地 ASR 的复现入口为 [probe_correction_voice.py](../scripts/probe_correction_voice.py)。默认只合成固定语句。显式加 `--microphone` 另验真实设备收到首帧后立即取消。录制竞态与空信号用例见 [test_correction_voice.py](../tests/test_correction_voice.py)。
 
 ### 5. 工具 → 审批中断 → 恢复
 

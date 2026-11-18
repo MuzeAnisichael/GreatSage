@@ -98,6 +98,8 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         # Validate first, then stop/reconfigure the active pipeline.
         previous_mcp = runtime.settings.raw()["mcp_servers"]
         updated = runtime.settings.update(patch)
+        if runtime.correction_voice.busy:
+            await runtime.correction_voice.cancel()
         if was_listening:
             # Disable old voice identities before any asynchronous cleanup can yield.
             await runtime.set_listening(False)
@@ -501,11 +503,18 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     async def tasks(session_id: str | None = None):
         return runtime.memory.tasks(session_id=session_id or None)
 
+    @app.get("/api/continuation/scope", dependencies=api)
+    async def continuation_scope(session_id: str, local_date: str = "", instructions: str = ""):
+        from .continuation import preview_scope
+        if len(session_id) > 64 or len(local_date) > 10 or len(instructions) > 4000:
+            raise ValueError("会话、日期或问题超出长度限制。")
+        return preview_scope(runtime.memory, session_id, local_date=local_date, instructions=instructions)
+
     @app.post("/api/tasks", dependencies=api)
     async def create_task(body: dict):
         kind = body.get("kind", "minutes")
-        if kind not in ("minutes", "research"):
-            raise ValueError("请选择纪要或资料文档任务。")
+        if kind not in ("minutes", "research", "continuation"):
+            raise ValueError("请选择纪要、资料文档或接续简报任务。")
         for flag in ("use_session", "document"):
             if not isinstance(body.get(flag, flag == "use_session"), bool):
                 raise ValueError(f"{flag} 必须是布尔值。")
@@ -514,10 +523,15 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
                   "use_session": body.get("use_session", True)}
         if "session_ids" in body:
             params["session_ids"] = id_list(body, "session_ids")
-        if kind == "research":
+        if kind in ("research", "continuation"):
             params.update(save_path=text_field(body, "save_path", 240), overwrite=body.get("overwrite", False))
             from .source_selection import selection_options
             params.update(selection_options(body))
+            if kind == "continuation":
+                if runtime._session_switching or params.get("session_ids", [runtime.session_id]) != [runtime.session_id]:
+                    raise ValueError("请先打开目标会话，再生成接续简报。")
+                params.update(profile="continuation", session_ids=[runtime.session_id], use_session=True,
+                              local_date=text_field(body, "local_date", 10))
             return await runtime.tasks.start_research(params, "console", runtime.session_id)
         return await runtime.tasks.start_minutes(params, "console", runtime.session_id)
 
@@ -637,6 +651,21 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
         await runtime.emit("artifact_updated", {"id": artifact_id, "version": result["version"]})
         return result
 
+    @app.post("/api/artifacts/{artifact_id}/correction-voice/start", dependencies=api)
+    async def start_correction_voice(artifact_id: str, body: dict):
+        version = expected_version(body)
+        if version is None:
+            raise ValueError("请指定录音对应的文档版本。")
+        return await runtime.correction_voice.start(artifact_id, text_field(body, "session_id", 64, True), version)
+
+    @app.post("/api/correction-voice/{capture_id}/finish", dependencies=api)
+    async def finish_correction_voice(capture_id: str):
+        return await runtime.correction_voice.finish(capture_id)
+
+    @app.delete("/api/correction-voice/{capture_id}", dependencies=api)
+    async def cancel_correction_voice(capture_id: str):
+        return await runtime.correction_voice.cancel(capture_id)
+
     @app.post("/api/artifacts/{artifact_id}/regenerate", dependencies=api)
     async def regenerate_artifact(artifact_id: str, body: dict):
         if type(body.get("update_sources", False)) is not bool:
@@ -656,6 +685,7 @@ def create_app(data_dir: Path, token: str, exclude_pid=None, runtime=None, ui_di
     @app.delete("/api/artifacts/{artifact_id}", dependencies=api)
     async def delete_artifact(artifact_id: str):
         runtime.memory.delete_artifact(artifact_id)
+        await runtime.correction_voice.cancel_for_artifact(artifact_id)
         await runtime.emit("artifact_updated", {"id": artifact_id, "deleted": True})
         return {"ok": True}
 

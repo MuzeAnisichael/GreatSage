@@ -1,6 +1,6 @@
 # GreatSage 实现架构
 
-更新日期：2026-11-18。本文记录包含 v0.8 会话续接、来源选择和文档修订的当前源码架构；沿用 LangChain、LangGraph、MCP、Pipecat、LangMem 与 Deep Agents 固定角色委派，保留 GreatSage 的权限、来源／删除、实时采集与桌面职责。功能实现不等于已发布，当前验证与交付边界见[项目现状](project-status.md)。记忆范围见[v0.6 方案](v0.6-plan.md)，研究底座及历史证据见[v0.7 方案](v0.7-plan.md)、[v0.7 验证](validation-v0.7.md)，本轮范围见[v0.8 方案](v0.8-plan.md)。旧版真实模型、构建和安装记录不能代替本轮验收；按功能定位见[代码导航](code-map.md)。
+更新于 2026-11-18。v0.9 在资料工作台上增加跨天接续简报、口述纠正和逐版本保存审批。LangChain、LangGraph、MCP、Pipecat、LangMem 与 Deep Agents 保留各自的职责。实现位置见[代码导航](code-map.md)，本轮验收边界见[v0.9 方案](v0.9-plan.md)，交付状态见[项目现状](project-status.md)。
 
 ## 1. 组成与调用关系
 
@@ -40,6 +40,12 @@ flowchart LR
     Research --> LLM
     Tasks --> Artifacts[纪要／待办／文档产物]
     Artifacts --> ReviewUI[引用定位／版本差异／用户纠正]
+    Sessions --> Scope[本机会话日期与选定资料]
+    Scope --> Brief[原句分类与简报局部修订]
+    Brief --> Artifacts
+    Mic --> Dictate[显式录制与独立转写]
+    Dictate --> Draft[可编辑纠正草稿]
+    Draft -->|用户提交| Brief
     ReviewUI --> Tasks
     Tasks --> Policy[权限层与审批]
     Policy --> Tools[工作目录内的本地工具]
@@ -49,6 +55,10 @@ flowchart LR
 ```
 
 Electron 管理主窗口、桌宠、托盘和本地服务生命周期；Python 服务管理音频、模型、记忆和事件。两者通过回环 HTTP 与 WebSocket 通信。采集线程不等待 ASR 或 LLM 网络请求。
+
+**一次跨天接续。** 用户先打开已保存的项目会话。前端预览本机时间范围和记录条数，创建带 `profile=continuation` 的研究任务。后端冻结来源并选材，将原文拆成带编号的句子交给模型分类，再将选中句子的原文与引用渲染到固定栏目。用户提交纠正时，模型提出目标条目和局部替换，后端核验定位、原值与纠正来源，原子追加同一文档版本。工作台显示父子版本差异。写文件沿用研究任务的保存审批，在执行前复核版本、内容哈希及来源。[接续方案](v0.9-plan.md) · [实现](../greatsage/continuation.py)
+
+**录音和草稿的生命周期。** 录制与常规监听互斥，独立的 `AudioCaptureManager` 只打开所选麦克风。收到第一帧才报告录制成功，用户点击停止后才调用设置中的分段 ASR。每次录音绑定会话、简报和版本，另记录数据代际及设置版本。取消、超时、切换目标或关闭编辑器会使旧响应失效。PCM 仅短时驻留内存，识别文字先交给编辑框，用户提交后才会持久化为纠正来源。[后端](../greatsage/correction_voice.py) · [编辑器](../ui/correction-voice.js)
 
 | 文件／目录 | 责任 |
 | --- | --- |

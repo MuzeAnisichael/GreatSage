@@ -15,6 +15,7 @@ import uuid
 from pathlib import PurePosixPath
 
 from .budget import TokenCounter
+from . import continuation
 from .delegation import DelegationError, run_delegation
 from .tools import TRUSTED_ORIGINS, ToolError
 from .source_selection import SourceSelection, selection_options
@@ -118,7 +119,11 @@ class ResearchWorkflow:
             raise ValueError("所选会话不存在。")
         if not materials and not sessions:
             raise ValueError("请至少选择一份资料或一个会话。")
-        title = str(params.get("title") or "资料整理与核对").strip()[:80]
+        brief = params.get("profile") == "continuation"
+        if brief and (sessions != [session_id] or session_id != self.runtime.session_id
+                      or self.runtime._session_switching):
+            raise ValueError("请先切换至所选会话，再创建或修订该会话的接续简报。")
+        title = str(params.get("title") or ("接续简报" if brief else "资料整理与核对")).strip()[:80]
         path = str(params.get("save_path") or "").strip().replace("\\", "/")
         if path and (PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts
                      or ":" in path or not path.lower().endswith(".md") or len(path) > 240):
@@ -128,6 +133,9 @@ class ResearchWorkflow:
         clean = {"material_ids": list(dict.fromkeys(materials)), "session_ids": list(dict.fromkeys(sessions)),
                  "instructions": str(params.get("instructions") or "")[:4000], "save_path": path,
                  "overwrite": params.get("overwrite", False), **selection_options(params)}
+        if brief:
+            day = continuation.resolve_date(params.get("local_date"), title + " " + clean["instructions"])
+            clean.update(profile="continuation", local_date=day)
         if revision:
             clean.update(revision)
         if parent_task_id:
@@ -141,6 +149,19 @@ class ResearchWorkflow:
                 raise ValueError("用户纠正来源已删除。")
             clean["source_scope"] = {**clean["source_scope"], "sources": [*clean["source_scope"]["sources"],
                 {"id": correction, "kind": "message", "content_hash": digest(rows[0]["text"])}]}
+        if brief and revision:
+            draft = self.memory.artifact(revision["revision_artifact_id"], revision["expected_version"])
+            history = list(dict.fromkeys(link["correction_source_id"] for link in draft["lineage"]
+                if link["version"] <= revision["expected_version"] and link["correction_source_id"]))
+            if correction and correction not in history:
+                history.append(correction)
+            rows = {row["id"]: row for row in self.manager._messages(history) if row["source"] == "artifact_correction"}
+            manifest = clean["source_scope"]
+            known = {ref["id"] for ref in manifest["sources"]}
+            extra = [{"id": sid, "kind": "message", "content_hash": digest(rows[sid]["text"])}
+                     for sid in history if sid in rows and sid not in known]
+            clean["source_scope"] = {**manifest, "sources": [*manifest["sources"], *extra],
+                                     "correction_ids": [sid for sid in history if sid in rows]}
         id = self.memory.create_task("research", title, origin, session_id, trace_id or uuid.uuid4().hex, clean,
                                     [("collect", "收集来源"), ("research", "规划、整理与证据核对"),
                                      ("compose", "生成可审阅文档"), ("save", "审批并保存文档")])
@@ -159,11 +180,13 @@ class ResearchWorkflow:
         manifest, _, stale = SourceSelection(self.manager).records(params)
         if (stale or "source_scope" not in params) and not update_sources:
             raise ValueError("来源已变化，请明确勾选更新来源后重试。")
-        revision = {key: params[key] for key in ("revision_artifact_id", "expected_version", "correction_source_id") if key in params}
+        revision = {key: params[key] for key in ("revision_artifact_id", "expected_version", "correction_source_id", "refresh_brief") if key in params}
         if revision:
             artifact = self.memory.artifact(revision["revision_artifact_id"])
             if artifact["version"] != revision["expected_version"]:
                 raise ValueError("文档已有新版本，请打开最新文档重新修订。")
+            if update_sources and params.get("profile") == "continuation":
+                revision["refresh_brief"] = True
         return await self.start(params, "console", self.runtime.session_id,
                                 inherited_scope=None if update_sources else manifest,
                                 revision=revision, parent_task_id=task_id)
@@ -178,10 +201,18 @@ class ResearchWorkflow:
         if original["kind"] != "research":
             raise ValueError("该产物不是资料文档任务生成的。")
         params = {**original["params"], "title": original["title"]}
+        brief = params.get("profile") == "continuation"
+        if brief and (original["session_id"] != self.runtime.session_id or self.runtime._session_switching):
+            raise ValueError("请先切换到该简报所属会话后再提交纠正。")
         manifest, _, stale = SourceSelection(self.manager).records(params)
         if (stale or "source_scope" not in params) and not update_sources:
             raise ValueError("文档来源已变化，请明确勾选更新来源后再修订。")
         note = str(instructions or "").strip()[:4000]
+        if brief and not note and not update_sources:
+            raise ValueError("请先输入或编辑纠正内容，再提交修订。")
+        if brief and update_sources:
+            # Validate the new calendar window before persisting a new note.
+            manifest = SourceSelection(self.manager).freeze({**params, "correction_source_id": ""})
         correction = ""
         if note:
             correction = self.memory.add_message("user", note, "artifact_correction", self.runtime.session_id,
@@ -192,9 +223,10 @@ class ResearchWorkflow:
         params["save_path"] = str(path.with_name(re.sub(r"\.v\d+$", "", path.stem) + f".v{artifact['version'] + 1}.md"))
         params["overwrite"] = False
         return await self.start(params, "console", self.runtime.session_id,
-                                inherited_scope=None if update_sources else manifest,
+                                inherited_scope=manifest if brief or not update_sources else None,
                                 revision={"revision_artifact_id": artifact_id, "expected_version": artifact["version"],
-                                          "correction_source_id": correction}, parent_task_id=original["id"])
+                                          "correction_source_id": correction,
+                                          **({"refresh_brief": bool(update_sources)} if brief else {})}, parent_task_id=original["id"])
 
     def guard(self, task_id):
         token = self.manager.run_tokens.get(task_id)
@@ -209,27 +241,71 @@ class ResearchWorkflow:
     def records(self, collected):
         if not collected or not collected.get("sources"):
             raise ValueError("任务来源已清除，请重新创建任务。")
-        records = self.manager._records(collected["sources"])
-        hashes = {ref["id"]: ref["content_hash"] for ref in collected["sources"]}
+        refs = [*collected["sources"], *collected.get("retained_sources", [])]
+        records = self.manager._records(refs)
+        hashes = {ref["id"]: ref["content_hash"] for ref in refs}
         if len(records) != len(hashes) or any(hashes.get(item["id"]) != digest(item["text"]) for item in records):
             raise ValueError("选定来源已修改或删除，请重新创建任务。")
         return records
 
+    def check_brief_scope(self, task):
+        if task["params"].get("profile") == "continuation":
+            _, _, stale = SourceSelection(self.manager).records(task["params"])
+            if stale:
+                raise ValueError("简报冻结的来源已变化，请明确更新来源后重新生成。")
+
     async def collect(self, task):
         selection = SourceSelection(self.manager).select(task)
+        params = task["params"]
+        retained = selection.get("patch_sources", [])
+        if (not selection["error"] and params.get("profile") == "continuation" and
+                params.get("revision_artifact_id") and not params.get("refresh_brief")):
+            # Only the new instruction is model evidence for the patch. Its
+            # untouched lines continue to depend on the base version's citations.
+            draft = self.memory.artifact(params["revision_artifact_id"], params["expected_version"])
+            refs_by_id = {ref["id"]: ref for ref in params["source_scope"]["sources"]}
+            old = {item["source_id"]: item["marker"] for item in draft["citations"]}
+            if (old.keys() - refs_by_id.keys() or old.keys() & set(params.get("excluded_source_ids", []))
+                    or any(not item["valid"] for item in draft["citations"])):
+                raise ValueError("旧版本引用已不可用，请明确更新来源后重新生成。")
+            number = max((int(marker[1:]) for marker in old.values()), default=0)
+            for ref in selection["sources"]:
+                if ref["id"] in old:
+                    ref["handle"] = old[ref["id"]]
+                else:
+                    number += 1
+                    ref["handle"] = f"S{number}"
+            chosen = {ref["id"] for ref in selection["sources"]}
+            retained = [{**refs_by_id[sid], "handle": marker} for sid, marker in old.items() if sid not in chosen]
         await self.manager._progress(task["id"], "collect", selection=selection,
                                      progress=f"选中 {len(selection['sources'])}/{selection['total_sources']} 段来源")
         if selection["error"]:
             raise ValueError(selection["error"])
         refs = selection["sources"]
-        self.memory.bind_research_sources(task["id"], [ref["id"] for ref in refs])
+        self.memory.bind_research_sources(task["id"], [ref["id"] for ref in refs + retained])
         messages = sum(ref["kind"] == "message" for ref in refs)
-        return {"sources": refs, "messages": messages, "chunks": len(refs) - messages}
+        return {"sources": refs, "messages": messages, "chunks": len(refs) - messages,
+                **({"retained_sources": retained} if retained else {})}
 
     async def research(self, task):
         collected = self.memory.step(task["id"], "collect")["result"]
         records = self.records(collected)
         current = self.guard(task["id"])
+        if task["params"].get("profile") == "continuation":
+            draft = None
+            if task["params"].get("revision_artifact_id"):
+                draft = self.memory.artifact(task["params"]["revision_artifact_id"])
+                if draft["version"] != task["params"]["expected_version"]:
+                    raise ValueError("简报已有新版本，请刷新后重新修订。")
+            try:
+                async with asyncio.timeout(ATTEMPT_SECONDS):
+                    content = await continuation.generate(self.manager, task, records, draft, MAX_CALLS)
+            except TimeoutError:
+                raise ValueError("接续简报超出时间预算，已保留原有版本。") from None
+            if not current():
+                raise ValueError("运行状态已改变，已丢弃过期简报。")
+            self.records(collected)
+            return {"brief_content": content}
         config = self.manager._llm(2048)
         counter = TokenCounter(config, self.runtime.data_dir)
         skills = self.runtime.skills.select(task["title"] + " " + task["params"]["instructions"], max_chars=5000)
@@ -402,9 +478,13 @@ class ResearchWorkflow:
                     self.memory.update_task(task["id"], state=fresh)
 
     async def compose(self, task):
+        self.check_brief_scope(task)
         records = self.records(self.memory.step(task["id"], "collect")["result"])
-        report = validate_report(self.memory.step(task["id"], "research")["result"], records)
-        content = render_report(task["title"], report, records)
+        result = self.memory.step(task["id"], "research")["result"]
+        if task["params"].get("profile") == "continuation":
+            content = result["brief_content"]
+        else:
+            content = render_report(task["title"], validate_report(result, records), records)
         existing = self.memory.artifacts(task_id=task["id"])
         if task["params"].get("revision_artifact_id"):
             artifact = self.memory.commit_revision(
@@ -421,6 +501,7 @@ class ResearchWorkflow:
 
     async def save(self, task):
         current = self.guard(task["id"])
+        self.check_brief_scope(task)
         self.records(self.memory.step(task["id"], "collect")["result"])
         result = self.memory.step(task["id"], "compose")["result"]
         artifact = self.memory.artifact(result["artifact_ids"][0])
@@ -442,6 +523,7 @@ class ResearchWorkflow:
         def check():
             if not current():
                 raise ToolError("任务状态已改变，请重新审阅后保存。")
+            self.check_brief_scope(task)
             self.records(self.memory.step(task["id"], "collect")["result"])
 
         key = f"research-save:{artifact['version']}:{content_hash}"

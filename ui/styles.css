@@ -641,4 +641,17 @@ dialog p { margin: 8px 0 20px; color: var(--text-2); line-height: 1.7; }
 .inspector-table-wrap { overflow-x: auto; }
 .inspector-table { border-collapse: collapse; width: 100%; text-align: left; font-size: 12px; }
 .inspector-table th, .inspector-table td { padding: 10px 8px; border-bottom: 1px solid var(--border); }
+.continuation-dialog form { display: grid; gap: 14px; }
+.continuation-dialog form > :is(h2, p) { margin: 0; }
+.continuation-dialog details, .continuation-scope { padding: 12px; border: 1px solid var(--border); border-radius: 9px; }
+.continuation-dialog details summary { cursor: pointer; }
+.continuation-materials { display: grid; gap: 8px; margin-top: 12px; max-height: 180px; overflow: auto; }
+.continuation-materials label { display: flex; gap: 8px; align-items: center; }
+.brief-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 14px 0; }
+.brief-columns section { padding: 12px; border: 1px solid var(--border); border-radius: 9px; min-width: 0; }
+.brief-columns h3 { font-size: 14px; margin: 0 0 9px; }
+.brief-columns .brief-scope { grid-column: 1 / -1; }
+.brief-columns p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; margin: 6px 0; }
+.brief-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.brief-feedback { padding: 10px 0; }
 @media (max-width: 900px) { .inspector-grid { grid-template-columns: minmax(0, 1fr); } }

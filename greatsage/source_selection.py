@@ -10,6 +10,7 @@ import hashlib
 import re
 
 from .budget import TokenCounter
+from .continuation import scoped_messages
 from .memory import _relevance
 
 MAX_SOURCES, MAX_CHARS, MAX_SOURCE_CHARS, MAX_SCOPE = 8, 64_000, 32_000, 1500
@@ -42,8 +43,14 @@ class SourceSelection:
     def freeze(self, params):
         """Freeze the user-chosen scope, not the entire searchable library."""
         refs, materials = [], []
+        timing = None
         for sid in params.get("session_ids", []):
-            rows = self.memory.history(MAX_SCOPE + 1, sid)
+            if params.get("profile") == "continuation":
+                timing, rows = scoped_messages(self.memory, sid, params.get("local_date"))
+                if not rows:
+                    raise ValueError("所选时段没有会话原文，请选择其他日期或接上次进展。")
+            else:
+                rows = self.memory.history(MAX_SCOPE + 1, sid)
             if len(rows) > MAX_SCOPE:
                 raise ValueError("所选会话超过 1500 条消息，请缩小来源范围；没有截取部分会话。")
             refs += [{"kind": "message", "id": row["id"], "content_hash": digest(row["text"])}
@@ -61,7 +68,7 @@ class SourceSelection:
             refs.append({"kind": "message", "id": correction, "content_hash": digest(rows[0]["text"])})
         if len(refs) > MAX_SCOPE:
             raise ValueError("所选来源超过 1500 条，请缩小范围；没有静默截取来源。")
-        return {"materials": materials, "sources": refs}
+        return {"materials": materials, "sources": refs, **({"time_range": timing} if timing else {})}
 
     def records(self, params):
         manifest = params.get("source_scope") or self.freeze(params)
@@ -100,8 +107,17 @@ class SourceSelection:
             error = "用户纠正来源必须参与修订，不能排除。"
         elif not records:
             error = "没有可用的来源，请选择有原文的会话或资料。"
-        ranked = sorted(records, key=lambda item: (
-            item["id"] in pins, _relevance(query, item["label"] + " " + item["text"])), reverse=True)
+        continuation = params.get("profile") == "continuation"
+        replay_ids = manifest.get("correction_ids", []) if continuation and params.get("refresh_brief") else []
+        if set(replay_ids) & excluded:
+            error = "更新简报时需要重放生效中的用户纠正，不能将它们排除。"
+        pins -= set(replay_ids)
+        if continuation:
+            query += " 决定 定了 确认 确定 负责 下一步 进度 完成 备选 待定 候选 建议 deadline decision todo"
+        recency = {ref["id"]: index for index, ref in enumerate(manifest["sources"])}
+        ranked = sorted((row for row in records if row["id"] not in replay_ids), key=lambda item: (item["id"] in pins,
+            _relevance(query, item["label"] + " " + item["text"]),
+            recency[item["id"]] if continuation and item["source_kind"] == "message" else -1), reverse=True)
         eligible = [item for item in ranked if item["id"] not in excluded]
         config = self.manager._llm(2048)
         counter = TokenCounter(config, self.manager.runtime.data_dir)
@@ -118,7 +134,7 @@ class SourceSelection:
                 fits = (len(candidate) <= MAX_SOURCES and len(item["text"]) <= MAX_SOURCE_CHARS
                         and sum(len(row["text"]) for row in candidate) <= MAX_CHARS
                         and counter.count([{"id": row["id"], "text": row["text"]} for row in candidate]) <= source_budget)
-                relevant = full or small_scope or sid in pins or _relevance(query, item["label"] + " " + item["text"]) > 0
+                relevant = continuation or full or small_scope or sid in pins or _relevance(query, item["label"] + " " + item["text"]) > 0
                 if relevant and fits:
                     chosen.append(item)
                     reason = "pinned" if sid in pins else "full" if full else "small_scope" if small_scope else "relevant"
@@ -131,11 +147,18 @@ class SourceSelection:
             error = "全文范围无法放入本轮预算（最多 8 段、64000 字符），请缩小范围或改为按问题选择；没有执行部分全文任务。"
         if not error and not chosen:
             error = "未选出可用片段：请具体描述问题、固定来源，或调整上下文预算。"
+        if (not error and continuation and (not params.get("revision_artifact_id") or params.get("refresh_brief"))
+                and not any(row["source_kind"] == "message" for row in chosen)):
+            error = "本轮没有选中会话原文，请固定一条范围内的会话原文后重新选择。"
         selected = [{"kind": row["source_kind"], "id": row["id"], "handle": f"S{index}",
                      "content_hash": digest(row["text"])} for index, row in enumerate(chosen, 1)]
+        patches = [{"kind": "message", "id": sid, "handle": f"S{index}", "content_hash": digest(by_id[sid]["text"])}
+                   for index, sid in enumerate(replay_ids, len(selected) + 1) if sid in by_id]
+        reasons.update({ref["id"]: "correction_history" for ref in patches})
         return {"mode": mode, "sources": selected, "reasons": reasons,
                 "total_sources": len(manifest["sources"]), "selected_chars": sum(len(row["text"]) for row in chosen),
-                "all_selected": len(chosen) == len(manifest["sources"]),
+                **({"patch_sources": patches} if patches else {}),
+                "all_selected": len(chosen) + len(patches) == len(manifest["sources"]),
                 "selection_status": "stale" if stale else "needs_attention" if error else "selected", "error": error}
 
     def inspect(self, task):
@@ -147,7 +170,8 @@ class SourceSelection:
         if "source_scope" not in params:
             detail = {**detail, "sources": [], "selected_chars": 0, "all_selected": False,
                       "selection_status": "stale", "error": "旧任务未保存范围快照；下方仅为当前候选，请明确更新来源后重新选择。"}
-        selected = {ref["id"]: ref for ref in detail["sources"]}
+        patches = detail.get("patch_sources", [])
+        selected = {ref["id"]: ref for ref in [*detail["sources"], *patches]}
         pins, excluded = set(params.get("pinned_source_ids", [])), set(params.get("excluded_source_ids", []))
         if params.get("correction_source_id"):
             pins.add(params["correction_source_id"])
@@ -163,10 +187,12 @@ class SourceSelection:
                                "chars": len(row["text"]) if available else 0, "content_hash": ref["content_hash"],
                                "available": available, "excerpt": row["text"][:400] if available else "",
                                "handle": selected.get(sid, {}).get("handle")})
-        return {"task_id": task["id"], "mode": detail["mode"],
-                "scope": {key: params.get(key, []) for key in ("material_ids", "session_ids")},
+        return {"task_id": task["id"], "mode": detail["mode"], "profile": params.get("profile"),
+                "scope": {"material_ids": params.get("material_ids", []), "session_ids": params.get("session_ids", []),
+                          **({"time_range": manifest["time_range"]} if "time_range" in manifest else {})},
                 "total_sources": detail["total_sources"], "selected_count": len(selected),
-                "selected_chars": detail["selected_chars"], "max_sources": MAX_SOURCES, "max_chars": MAX_CHARS,
+                "selected_chars": detail["selected_chars"], "max_sources": MAX_SOURCES + len(patches), "max_chars": MAX_CHARS,
+                "patch_count": len(patches),
                 "pinned_source_ids": list(pins), "excluded_source_ids": list(excluded), "all_selected": detail["all_selected"],
                 "selection_status": "stale" if stale else detail["selection_status"],
                 "error": "来源已变化，请明确更新来源后重新选择。" if stale else detail["error"],

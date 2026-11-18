@@ -103,6 +103,7 @@ class TaskStoreMixin:
         pending = sum(call["status"] == "awaiting_approval" for call in task["tool_calls"])
         return {key: task[key] for key in ("id", "kind", "title", "status", "origin", "session_id", "trace_id", "error",
                                            "created_at", "updated_at")} | {
+            "profile": task["params"].get("profile", ""),
             "steps_done": done, "steps_total": len(task["steps"]), "pending_approvals": pending,
             "current_step": current["title"] if current else "", "progress": (current or {}).get("detail", {}).get("progress", ""),
             "artifact_ids": [item["id"] for item in task["artifacts"]]}
@@ -192,6 +193,20 @@ class TaskStoreMixin:
                              (id, task_id, call_key, tool, _json(arguments), effect, target[:1000], decision, reason,
                               status, None, None, None, error, stamp, stamp))
         return self.tool_call(id)
+
+    def reissue_expired_call(self, row: dict, decision: str, reason: str) -> dict:
+        """Keep the expired click address for audit and issue a new one for the same operation."""
+        fresh, now = uuid.uuid4().hex, _now()
+        with self._lock, self._db:
+            archived = self._db.execute("""UPDATE tool_calls SET call_key=? WHERE id=?
+                AND status='expired' AND call_key=?""", ("expired:" + row["id"], row["id"], row["call_key"]))
+            if archived.rowcount != 1:
+                raise ValueError("这项审批已重新发起，请刷新任务。")
+            self._db.execute("""INSERT INTO tool_calls
+                (id,task_id,call_key,tool,arguments,effect,target,decision,reason,status,created_at,updated_at)
+                SELECT ?,task_id,?,tool,arguments,effect,target,?,?,'proposed',?,?
+                FROM tool_calls WHERE id=?""", (fresh, row["call_key"], decision, reason, now, now, row["id"]))
+        return self.tool_call(fresh)
 
     def update_tool_call(self, id: str, **fields) -> dict:
         for key in ("approval", "result", "undo"):

@@ -1,5 +1,7 @@
-// v0.3 work surface: materials, background tasks, approvals, artifacts and tool settings.
-export function setupWork({ client, toast, busy, confirmAction }) {
+import { briefColumns, setupContinuation } from './continuation.js';
+import { setupCorrectionVoice } from './correction-voice.js';
+
+export function setupWork({ client, toast, busy, confirmAction, showTasks }) {
   const $ = (selector, parent = document) => parent.querySelector(selector);
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const action = (label, className, handler) => { const el = node('button', className, label); el.type = 'button'; if (handler) el.addEventListener('click', () => busy(el, handler)); return el; };
@@ -13,8 +15,25 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const kinds = { minutes: '纪要', todos: '待办', document: '文档草稿' };
   const origins = { user_text: '你的文字', user_voice: '你的语音', console: '控制台' };
   const taskKinds = { action: '操作', minutes: '纪要', research: '研究文档' };
+  const taskKind = task => (task.profile || task.params?.profile) === 'continuation' ? '接续简报' : taskKinds[task.kind] || task.kind;
   const active = status => ['queued', 'running', 'waiting_approval'].includes(status);
   const toolTitle = name => work.tools.find(tool => tool.name === name)?.title || name;
+  let firstBrief = null;
+  function cancelBriefPreview() {
+    if (firstBrief?.opening && !artifactDialog.open) closeArtifactDialog();
+    firstBrief = null;
+  }
+  const continuation = setupContinuation({ client, toast, getSession: () => work.activeSessionId,
+    onCreated(task, sessionId) {
+      setSessionFilter(sessionId);
+      work.selected = task.id;
+      firstBrief = { id: task.id, sessionId, opening: false };
+      showTasks();
+    },
+  });
+  for (const button of document.querySelectorAll('[data-open-continuation]')) {
+    button.addEventListener('click', () => busy(button, continuation.open));
+  }
 
   const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
   const compactNumber = value => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
@@ -135,6 +154,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   }
 
   function setSessionFilter(sessionId) {
+    cancelBriefPreview();
     const select = $('#task-session-filter');
     for (const option of [...select.options]) if (option.dataset.dynamic) option.remove();
     if (sessionId) {
@@ -183,7 +203,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       bar.style.width = `${Math.round(100 * task.steps_done / Math.max(1, task.steps_total))}%`;
       progress.append(bar);
       const step = active(task.status) && task.current_step ? ` · ${task.current_step}${task.progress ? ` ${task.progress}` : ''}` : '';
-      item.append(head, progress, node('small', '', `${taskKinds[task.kind] || task.kind} · ${origins[task.origin] || task.origin} · ${when(task.created_at)}${step}`));
+      item.append(head, progress, node('small', '', `${taskKind(task)} · ${origins[task.origin] || task.origin} · ${when(task.created_at)}${step}`));
       item.addEventListener('click', () => showTask(task.id).catch(error => toast(error.message, 'error')));
       list.append(item);
     }
@@ -253,6 +273,11 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       scopeItem('保存位置', savePath, params.overwrite ? '已允许覆盖；执行前仍需确认' : '工作目录内的 Markdown 文件'),
     );
     overview.append(node('h4', '', '研究范围'), scope);
+    const timeRange = params.source_scope?.time_range;
+    if (params.profile === 'continuation' && timeRange) {
+      scope.append(scopeItem('会话时间（本机）', timeRange.local_date || '会话至任务创建时',
+        `${timeRange.message_count} 条 · ${when(timeRange.first_at)} 至 ${when(timeRange.last_at)}`));
+    }
     if (params.instructions) {
       const brief = node('div', 'research-brief');
       brief.append(node('span', '', '任务要求'), node('p', '', params.instructions));
@@ -315,6 +340,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   }
 
   async function showTask(id) {
+    if (firstBrief && firstBrief.id !== id) cancelBriefPreview();
     work.selected = id;
     renderTaskList();
     let task;
@@ -326,7 +352,7 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     const head = node('div', 'task-detail-head');
     const title = node('div');
     const titleLine = node('div', 'task-title-line');
-    titleLine.append(node('h3', '', task.title), node('span', 'tag', taskKinds[task.kind] || task.kind));
+    titleLine.append(node('h3', '', task.title), node('span', 'tag', taskKind(task)));
     title.append(titleLine, node('small', '', `${origins[task.origin] || task.origin}发起 · ${when(task.created_at)}`));
     const actions = node('div', 'panel-tools');
     if (active(task.status)) actions.append(action('取消任务', 'button ghost small danger-hover', async () => { await client.request(`/api/tasks/${id}/cancel`, { method: 'POST' }); await refreshTasks(); }));
@@ -360,14 +386,26 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       detail.append(node('h4', '', '产物'));
       for (const artifact of task.artifacts) {
         const row = node('div', 'artifact-row');
-        row.append(node('strong', '', artifact.title), node('span', 'tag', kinds[artifact.kind] || artifact.kind), badge(artifact.status),
-                   node('small', '', `v${artifact.current_version}`), action('打开', 'button ghost small', () => openArtifact(artifact.id)));
+        const brief = task.params?.profile === 'continuation';
+        const version = brief ? artifact.task_versions?.at(-1) : undefined;
+        row.append(node('strong', '', artifact.title), node('span', 'tag', brief ? '接续简报' : kinds[artifact.kind] || artifact.kind), badge(artifact.status),
+                   node('small', '', `v${version || artifact.current_version}`), action(brief ? '查看简报' : '打开', 'button ghost small', () => openArtifact(artifact.id, version)));
         detail.append(row);
       }
+    }
+    const intent = firstBrief;
+    if (intent?.id === id && !intent.opening && intent.sessionId === work.activeSessionId && visible('tasks')) {
+      const created = task.artifacts?.find(item => item.task_versions?.includes(1));
+      if (created && !document.querySelector('dialog[open]')) {
+        intent.opening = true;
+        try { await openArtifact(created.id, 1, true, id); }
+        finally { if (firstBrief === intent) firstBrief = null; }
+      } else if (created || !active(task.status)) cancelBriefPreview();
     }
   }
   $('#refresh-tasks').addEventListener('click', () => busy($('#refresh-tasks'), () => Promise.all([refreshTasks(), refreshApprovals()])));
   $('#task-session-filter').addEventListener('change', event => busy(event.target, async () => {
+    cancelBriefPreview();
     work.sessionFilter = event.target.value;
     work.selected = null;
     work.tasks = [];
@@ -718,6 +756,8 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     <div class="artifact-head"><h2></h2><span class="artifact-badges"></span></div>
     <p class="approval-warning artifact-stale" hidden>部分来源已删除或已变更，对应引用已失效。可以按修改意见重新生成，或核对后自己修改。</p>
     <div class="artifact-body"></div>
+    <div class="brief-controls" hidden><button type="button" class="button primary small brief-correct">纠正简报</button><button type="button" class="button ghost small brief-approval">查看保存审批</button></div>
+    <div class="brief-feedback" hidden role="status"></div>
     <section class="artifact-review-panel"><div class="artifact-review-head"><div><h3>证据审阅与版本对比</h3><small>引用状态只说明标记能否定位原文，不代表结论已经过事实认证。</small></div><label><span>对比</span><select class="artifact-compare-version" aria-label="选择对比版本"></select></label></div><div class="artifact-review-content"><div class="small-empty">正在读取证据审阅信息…</div></div></section>
     <h3>引用原文与定位</h3><div class="citation-list"></div>
     <div class="regenerate-form" hidden><label class="field"><span>纠正或修改要求</span><textarea rows="3" maxlength="4000" placeholder="例如：负责人应为林岚；保留两个冲突日期并标为待确认。"></textarea><small>纠正会单独保存为用户来源；旧模型产物只作为待修改对象，不会成为原始事实证据。</small></label><label class="switch-row regenerate-update-sources"><span><strong>采用更新后的来源</strong><small>只有明确开启，重新生成任务才会用当前资料替换旧来源版本</small></span><input type="checkbox" role="switch" /></label><p class="field-error regenerate-error" hidden></p><div class="panel-tools"><button type="button" class="button primary small regenerate-start">开始重新生成</button><button type="button" class="button subtle small regenerate-cancel">取消</button></div></div>
@@ -726,8 +766,32 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const inDialog = selector => $(selector, artifactDialog);
   let artifactRequestGeneration = 0;
   let artifactOpenIntent = false;
+  let revisionIntent = null;
+  let revisionTimer;
+  let submittingCorrection = false;
+  let voiceBusy = false;
+  const voiceArea = node('div', 'brief-voice');
+  const correctionForm = inDialog('.regenerate-form'), correctionInput = $('textarea', correctionForm);
+  correctionForm.insertBefore(voiceArea, inDialog('.regenerate-update-sources'));
+  const correctionVoice = setupCorrectionVoice({ client, container: voiceArea, textarea: correctionInput,
+    getTarget() {
+      const a = work.artifact;
+      return artifactOpenIntent && !correctionForm.hidden && a?.profile === 'continuation' && a.session_id === work.activeSessionId
+        ? { artifact_id: a.id, expected_version: a.version, session_id: a.session_id } : null;
+    },
+    onBusyChange(value) { voiceBusy = value; inDialog('.regenerate-start').disabled = value || submittingCorrection; },
+  });
+  function cancelRevisionWatch() { revisionIntent = null; clearTimeout(revisionTimer); }
+  function feedback(text) {
+    const area = inDialog('.brief-feedback');
+    area.replaceChildren(document.createTextNode(text)); area.hidden = !text;
+    return area;
+  }
 
   function invalidateArtifactDialog() {
+    correctionVoice.reset();
+    cancelRevisionWatch();
+    feedback('');
     artifactOpenIntent = false;
     artifactRequestGeneration += 1;
     work.artifact = null;
@@ -740,7 +804,6 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     if (artifactDialog.open) artifactDialog.close();
   }
   artifactDialog.addEventListener('cancel', invalidateArtifactDialog);
-  artifactDialog.addEventListener('close', invalidateArtifactDialog);
 
   function todoTable(artifact) {
     const table = node('div', 'todo-table');
@@ -783,6 +846,15 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       const body = node('div', 'citation-evidence');
       body.append(node('small', '', '引用原文'), node('p', 'record-text', item.valid ? item.excerpt || '此引用没有可显示的摘录。' : '失效引用不再显示旧原文。'));
       if (item.locator) body.append(node('small', '', `定位：${locatorText(item.locator)}`));
+      if (artifact.profile === 'continuation' && item.valid && item.source_id && artifact.generating_task_id) {
+        const full = node('pre', 'record-text');
+        const read = action('读取原文', 'button ghost small', async () => {
+          const source = await client.request(`/api/tasks/${encodeURIComponent(artifact.generating_task_id)}/sources/${encodeURIComponent(item.source_id)}`);
+          if (work.artifact !== artifact || !row.isConnected) return;
+          full.textContent = source.available === false ? '原文已失效。' : source.text || '没有原文可显示。';
+        });
+        body.append(read, full);
+      }
       row.append(summary, body);
       return row;
     }), ...(review?.unknown_markers || artifact.unknown_markers || []).map(marker => node('div', 'citation invalid', `[${marker}] 没有对应来源`)));
@@ -855,13 +927,21 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       }
     } else diffBlock.append(node('p', 'source-note', review.parent_version ? '该版本没有可显示的差异。' : '首版没有父版本可比较。'));
     container.append(diffBlock);
+    if (artifact.profile === 'continuation' && review.diff) container.insertBefore(diffBlock, summary.nextSibling);
     renderCitations(artifact, review);
   }
 
   function syncArtifactActions(artifact = work.artifact) {
     if (!artifact) return;
     const latest = Number(artifact.version) === Number(artifact.current_version);
-    inDialog('.artifact-save').hidden = artifact.kind === 'todos';
+    const brief = artifact.profile === 'continuation';
+    inDialog('.brief-controls').hidden = !brief;
+    inDialog('.brief-correct').disabled = !latest || work.activeSessionId !== artifact.session_id || Boolean(revisionIntent);
+    inDialog('.brief-correct').title = !latest ? '请选择最新版本进行纠正' : work.activeSessionId !== artifact.session_id ? '请先继续简报所属会话，再提交纠正' : '用文字或麦克风提出纠正';
+    inDialog('.brief-approval').disabled = !latest || !artifact.generating_task_id || Boolean(revisionIntent);
+    inDialog('.artifact-regenerate').hidden = brief;
+    inDialog('.artifact-export').hidden = brief;
+    inDialog('.artifact-save').hidden = brief || artifact.kind === 'todos';
     inDialog('.artifact-save').disabled = !latest;
     inDialog('.artifact-regenerate').disabled = !latest;
     inDialog('.artifact-export').disabled = !latest;
@@ -891,11 +971,30 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     }
   }
 
-  async function openArtifact(id, version, requestOpen = true) {
+  async function openArtifact(id, version, requestOpen = true, expectedTask = '') {
     if (requestOpen) artifactOpenIntent = true;
     else if (!artifactOpenIntent) return;
+    correctionVoice.reset();
+    cancelRevisionWatch();
+    feedback('');
+    const previous = work.artifact;
+    work.artifact = null;
+    correctionForm.hidden = true;
     const generation = ++artifactRequestGeneration;
-    const artifact = await client.request(`/api/artifacts/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`);
+    const affected = [inDialog('.artifact-actions'), inDialog('.brief-controls')];
+    for (const panel of affected) panel.inert = true;
+    let artifact;
+    try {
+      artifact = await client.request(`/api/artifacts/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`);
+      if (expectedTask && artifact.generating_task_id !== expectedTask) throw new Error('版本与提交的纠正任务不匹配，请从任务记录核对。');
+    } catch (err) {
+      if (!artifactOpenIntent || generation !== artifactRequestGeneration) return;
+      work.artifact = previous;
+      if (previous) inDialog('.artifact-version').value = previous.version;
+      throw err;
+    } finally {
+      if (generation === artifactRequestGeneration) for (const panel of affected) panel.inert = false;
+    }
     if (!artifactOpenIntent || generation !== artifactRequestGeneration) return;
     work.artifact = artifact;
     inDialog('h2').textContent = artifact.title;
@@ -905,7 +1004,14 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     inDialog('.artifact-compare-version').replaceChildren(new Option('父版本（默认）', ''));
     inDialog('.artifact-stale').hidden = artifact.status !== 'stale';
     const body = inDialog('.artifact-body');
-    if (artifact.kind === 'todos') body.replaceChildren(todoTable(artifact));
+    const brief = artifact.profile === 'continuation';
+    artifactDialog.insertBefore(correctionForm, inDialog(brief ? '.brief-feedback' : '.artifact-actions'));
+    if (brief) body.replaceChildren(briefColumns(artifact.content, marker => {
+      const target = inDialog(`.citation[data-marker="${CSS.escape(marker)}"]`);
+      if (!target) { toast('未找到这一标记对应的原文。'); return; }
+      target.open = true; target.scrollIntoView({ block: 'center' }); target.focus();
+    }));
+    else if (artifact.kind === 'todos') body.replaceChildren(todoTable(artifact));
     else {
       const editor = node('textarea', 'artifact-editor');
       editor.value = artifact.content; editor.rows = 18; editor.setAttribute('aria-label', 'Markdown 内容');
@@ -916,12 +1022,75 @@ export function setupWork({ client, toast, busy, confirmAction }) {
     inDialog('.regenerate-form').hidden = true;
     inDialog('.regenerate-form textarea').value = '';
     inDialog('.regenerate-update-sources input').checked = false;
+    voiceArea.hidden = !brief;
+    inDialog('.regenerate-update-sources').hidden = false;
+    inDialog('.regenerate-start').textContent = brief ? '提交纠正，查看差异' : '开始重新生成';
     inDialog('.regenerate-error').hidden = true;
-    if (!artifactDialog.open) artifactDialog.showModal();
+    if (!artifactDialog.open) {
+      if (firstBrief?.opening && document.querySelector('dialog[open]')) { invalidateArtifactDialog(); return; }
+      artifactDialog.showModal();
+    }
     await loadArtifactReview();
+    if (expectedTask && artifact.parent_version && artifactOpenIntent && work.artifact === artifact) {
+      inDialog('.artifact-diff')?.scrollIntoView({ block: 'center' });
+    }
   }
 
   inDialog('.artifact-close').addEventListener('click', closeArtifactDialog);
+  function showCorrection() {
+    if (!work.artifact) return;
+    correctionForm.hidden = false; inDialog('.regenerate-error').hidden = true;
+    correctionInput.focus();
+  }
+  inDialog('.brief-correct').addEventListener('click', showCorrection);
+  inDialog('.brief-approval').addEventListener('click', () => busy(inDialog('.brief-approval'), async () => {
+    const a = work.artifact;
+    if (!a) return;
+    const task = await client.request(`/api/tasks/${encodeURIComponent(a.generating_task_id)}`);
+    if (!artifactOpenIntent || work.artifact !== a) return;
+    const call = (task.tool_calls || []).find(item => item.tool === 'export_artifact' &&
+      item.arguments?.artifact_id === a.id && Number(item.arguments.version) === Number(a.version));
+    if (!call) { feedback('此版本尚无保存请求。可在任务详情查看进度，再查询审批。'); return; }
+    if (call.status !== 'awaiting_approval') {
+      feedback(`v${a.version} 保存状态：${statusLabels[call.status] || call.status} · ${call.target}`); return;
+    }
+    const panel = feedback(approvalSummary(call));
+    const controls = node('div', 'panel-tools');
+    for (const [label, approved] of [['批准保存此版本', true], ['拒绝保存', false]]) {
+      controls.append(action(label, 'button small ' + (approved ? 'primary' : 'ghost'), async () => {
+        if (!artifactOpenIntent || work.artifact !== a || !controls.isConnected) return;
+        for (const button of controls.children) button.disabled = true;
+        try {
+          await decide(call.id, approved);
+          if (work.artifact === a) feedback(approved ? `已批准保存 v${a.version}。可再次查询写入结果。` : `已拒绝保存 v${a.version}。`);
+        } finally { for (const button of controls.children) button.disabled = false; }
+      }));
+    }
+    panel.append(controls); panel.scrollIntoView({ block: 'nearest' });
+  }));
+
+  async function watchRevision(intent) {
+    if (revisionIntent !== intent || !artifactOpenIntent) return;
+    try {
+      const task = await client.request(`/api/tasks/${encodeURIComponent(intent.taskId)}`);
+      if (revisionIntent !== intent || !artifactOpenIntent) return;
+      const version = task.artifacts?.find(item => item.id === intent.artifactId)?.task_versions?.find(v => v > intent.parentVersion);
+      if (version) {
+        await openArtifact(intent.artifactId, version, false, intent.taskId);
+        return;
+      }
+      if (!active(task.status)) {
+        cancelRevisionWatch(); syncArtifactActions();
+        feedback(task.error || `纠正任务${statusLabels[task.status] || task.status}，没有生成新版本。`); return;
+      }
+      revisionTimer = setTimeout(() => watchRevision(intent), 1500);
+    } catch (err) {
+      if (!artifactOpenIntent || (revisionIntent && revisionIntent !== intent)) return;
+      if (work.artifact?.id !== intent.artifactId || work.activeSessionId !== intent.sessionId) return;
+      feedback(err.message + '。可以从任务记录重新查看。');
+      cancelRevisionWatch(); syncArtifactActions();
+    }
+  }
   inDialog('.artifact-version').addEventListener('change', event => busy(event.target, () => openArtifact(work.artifact.id, Number(event.target.value), false)));
   inDialog('.artifact-compare-version').addEventListener('change', event => busy(event.target, () => loadArtifactReview(event.target.value)));
   inDialog('.artifact-save').addEventListener('click', () => busy(inDialog('.artifact-save'), async () => {
@@ -941,10 +1110,11 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       resyncArtifactActionsAfterBusy();
     }
   }));
-  inDialog('.artifact-regenerate').addEventListener('click', () => { inDialog('.regenerate-form').hidden = false; inDialog('.regenerate-error').hidden = true; inDialog('.regenerate-form textarea').focus(); });
-  inDialog('.regenerate-cancel').addEventListener('click', () => { inDialog('.regenerate-form').hidden = true; inDialog('.regenerate-error').hidden = true; });
+  inDialog('.artifact-regenerate').addEventListener('click', showCorrection);
+  inDialog('.regenerate-cancel').addEventListener('click', () => { correctionVoice.reset(); correctionForm.hidden = true; inDialog('.regenerate-error').hidden = true; });
   inDialog('.regenerate-start').addEventListener('click', () => busy(inDialog('.regenerate-start'), async () => {
     const artifact = work.artifact;
+    if (!artifact || voiceBusy || submittingCorrection) return;
     if (artifact.kind === 'todos' && !await confirmAction('重新生成待办清单？', '新清单会替换当前的待办，你手动修改过的条目会被覆盖；旧清单保留在版本记录中。', '重新生成')) return;
     const instructions = inDialog('.regenerate-form textarea').value.trim();
     const updateSources = inDialog('.regenerate-update-sources input').checked;
@@ -955,11 +1125,27 @@ export function setupWork({ client, toast, busy, confirmAction }) {
       return;
     }
     error.hidden = true;
-    const task = await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}/regenerate`, {
-      method: 'POST', body: { instructions, expected_version: artifact.version, update_sources: updateSources },
-    });
+    const brief = artifact.profile === 'continuation';
+    if (brief && work.activeSessionId !== artifact.session_id) return;
+    submittingCorrection = true;
+    voiceArea.inert = true;
+    let task;
+    try {
+      task = await client.request(`/api/artifacts/${encodeURIComponent(artifact.id)}/regenerate`, {
+        method: 'POST', body: { instructions, expected_version: artifact.version, update_sources: updateSources },
+      });
+    } finally { submittingCorrection = false; voiceArea.inert = false; }
     if (!artifactOpenIntent || work.artifact !== artifact) {
       toast('重新生成任务已创建；你已离开原产物窗口，可在任务列表查看进度。');
+      return;
+    }
+    if (brief) {
+      correctionVoice.reset();
+      correctionForm.hidden = true;
+      const intent = { taskId: task.id, artifactId: artifact.id, parentVersion: artifact.version, sessionId: artifact.session_id };
+      revisionIntent = intent; syncArtifactActions();
+      feedback(`已提交基于 v${artifact.version} 的纠正，生成后将显示本次差异。可关闭此窗口，稍后在任务列表查看。`);
+      void watchRevision(intent);
       return;
     }
     closeArtifactDialog();
@@ -1070,9 +1256,15 @@ export function setupWork({ client, toast, busy, confirmAction }) {
   const scheduleTasks = () => { clearTimeout(taskTimer); taskTimer = setTimeout(() => refreshTasks().catch(() => {}), 300); };
   const visible = view => !document.querySelector(`#view-${view}`).hidden;
   return {
+    openContinuation: continuation.open, cancelBriefPreview,
     init: () => Promise.all([refreshApprovals(), loadTools()]),
     fillSettings: () => editors.forEach(render => render()),
     setActiveSession(id) {
+      if (work.activeSessionId !== (id || '')) {
+        cancelBriefPreview();
+        continuation.close();
+        closeArtifactDialog();
+      }
       work.activeSessionId = id || '';
       const activeOption = $('#task-session-filter option[value="active"]');
       activeOption.textContent = id ? `当前会话 ${String(id).slice(0, 8)}` : '当前会话';
